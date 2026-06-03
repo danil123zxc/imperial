@@ -24,7 +24,7 @@ The project uses pytest with `pythonpath = ["src"]` and `testpaths = ["tests"]`.
 
 ## Commit & Pull Request Guidelines
 
-This checkout has no `.git` directory, so no repository history is available to infer conventions. Use short imperative subjects, optionally Conventional Commit style such as `feat: add phoenix tracing` or `fix: preserve citation sources`. PRs should describe the change, list test commands run, note corpus/config impacts, and include screenshots for UI changes.
+Use short imperative commit subjects, optionally Conventional Commit style such as `feat: add phoenix tracing` or `fix: preserve citation sources`. Before editing code, capture `git status --short` as the session baseline. After every code-changing task or checkpoint, run the relevant tests or checks, inspect `git status --short` and `git diff`, then commit. Stage only files or hunks changed by the current agent session; avoid `git add .`. Do not commit pre-existing user changes, unrelated generated artifacts, secrets, corpus artifacts, or local state. If a file contains mixed user and session edits that cannot be safely separated, stop and ask before committing. PRs should describe the change, list test commands run, note corpus/config impacts, and include screenshots for UI changes.
 
 ## Security & Configuration Tips
 
