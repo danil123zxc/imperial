@@ -1,0 +1,206 @@
+# Imperial RAG
+
+Imperial RAG is a local/private retrieval-augmented generation system for the Imperial document corpus. It ingests files from `documents/`, extracts searchable text, builds local keyword and optional vector indexes, and answers questions only from retrieved evidence with source citations.
+
+The project is designed for private local operation: source files stay in the workspace, generated state lives under `.imperial_rag/`, Qdrant runs locally when vector search is needed, and Phoenix can be self-hosted locally for tracing and evaluation storage.
+
+## What It Does
+
+- Scans every file under `documents/` into a manifest.
+- Extracts text from supported documents, spreadsheets, PDFs, images, and OCR-backed sources.
+- Writes extracted artifacts and chunks under `.imperial_rag/`.
+- Builds a SQLite full-text keyword index for exact Russian/company terminology.
+- Optionally indexes chunks into local Qdrant for semantic vector search.
+- Retrieves hybrid evidence and generates strict citation-based answers.
+- Provides a CLI query path and a local Streamlit chat UI.
+- Runs deterministic citation/refusal/source-hint evaluations, with optional Phoenix experiment storage.
+
+## Architecture
+
+```text
+documents/
+  -> manifest + extraction + OCR
+  -> .imperial_rag/extracted/ artifacts and chunks
+  -> .imperial_rag/keyword.sqlite3 SQLite FTS
+  -> optional local Qdrant collection
+  -> retrieval + strict citation answer generation
+  -> CLI / Streamlit UI
+  -> optional Phoenix traces and eval experiments
+```
+
+Core package code lives in `src/imperial_rag/`:
+
+- `pipeline.py`, `extraction.py`, `ocr.py`, and `chunking.py` handle ingestion and text preparation.
+- `manifest.py` tracks discovered files, extraction status, duplicate groups, and index status.
+- `indexing.py` owns SQLite FTS keyword indexing and Qdrant vector indexing helpers.
+- `retrieval.py`, `answering.py`, `workflows.py`, and `runtime.py` own query-time RAG behavior.
+- `tracing.py` configures Phoenix tracing.
+- `web_app.py` provides the Streamlit UI.
+
+## Quickstart
+
+Install dependencies:
+
+```bash
+uv sync --extra dev
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Fill in local secrets such as `OPENAI_API_KEY` in `.env` or your shell environment. Do not commit real keys.
+
+Run ingestion without vector indexing:
+
+```bash
+uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial
+```
+
+Ask a question against the processed local state:
+
+```bash
+uv run python scripts/query.py "question text"
+```
+
+Run the local UI:
+
+```bash
+uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.0.0.1 --server.port 8501
+```
+
+Then open `http://127.0.0.1:8501`.
+
+## Local Services
+
+### Qdrant
+
+Qdrant is optional unless you want vector indexing and semantic retrieval. Start it locally before running ingestion with `--index-vectors`:
+
+```bash
+./scripts/start_qdrant.sh
+```
+
+In another terminal, index vectors:
+
+```bash
+uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --index-vectors
+```
+
+Defaults:
+
+- URL: `http://localhost:6333`
+- collection: `imperial_chunks`
+- storage: `.imperial_rag/qdrant_storage`
+
+### Phoenix
+
+Phoenix is optional for local tracing and evaluation storage.
+
+Start the self-hosted Phoenix service:
+
+```bash
+docker compose up phoenix
+```
+
+Phoenix UI:
+
+```text
+http://localhost:6006
+```
+
+Run a query or ingestion command with tracing enabled:
+
+```bash
+uv run python scripts/query.py "question text" --trace-phoenix
+uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --trace-phoenix
+```
+
+## Evaluation
+
+Gold questions live in `evals/questions.jsonl`.
+
+Run deterministic local citation/refusal/source-hint checks:
+
+```bash
+uv run python scripts/run_phoenix_eval.py
+```
+
+Store the dataset and experiment in local Phoenix:
+
+```bash
+uv run python scripts/run_phoenix_eval.py --use-phoenix
+```
+
+Phoenix mode requires the Phoenix service to be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults to `http://localhost:6006`.
+
+## Testing
+
+Run the full test suite:
+
+```bash
+uv run python -m pytest -q
+```
+
+Run the live Qdrant health test only when local Qdrant is intentionally running:
+
+```bash
+IMPERIAL_RAG_LIVE_QDRANT=1 uv run python -m pytest tests/test_qdrant_health.py -q
+```
+
+## Project Layout
+
+```text
+src/imperial_rag/          Python package code
+scripts/                   Ingestion, query, eval, and service helper scripts
+tests/                     pytest suite
+evals/questions.jsonl      Deterministic evaluation questions
+docs/superpowers/          Design specs and implementation plans
+documents/                 Private source corpus
+.imperial_rag/             Generated local state, indexes, extracted text, caches
+compose.yaml               Local Phoenix service
+pyproject.toml             Python package and dependency configuration
+```
+
+## Configuration
+
+Important environment variables are documented in `.env.example`.
+
+Common settings:
+
+- `OPENAI_API_KEY`: required for answer generation, OpenAI embeddings, vector indexing, and OCR-backed paths.
+- `IMPERIAL_RAG_WORKSPACE_ROOT`: workspace root, defaulting to `/Users/danil/Public/imperial`.
+- `QDRANT_URL`: Qdrant endpoint, defaulting to `http://localhost:6333`.
+- `QDRANT_COLLECTION`: Qdrant collection, defaulting to `imperial_chunks`.
+- `PHOENIX_PROJECT_NAME`: Phoenix project name, defaulting to `imperial-rag`.
+- `PHOENIX_COLLECTOR_ENDPOINT`: Phoenix trace collector endpoint.
+- `PHOENIX_CLIENT_ENDPOINT`: Phoenix client/UI endpoint.
+- `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
+
+Retrieval and chunking tuning variables are also listed in `.env.example`, including chunk size, overlap, vector fetch limits, keyword limits, reranker choices, and final evidence limits.
+
+## Privacy And Local State
+
+Treat these paths as private:
+
+- `documents/`
+- `.imperial_rag/`
+- local Qdrant storage
+- Phoenix traces and experiment data
+- `.env` files containing real secrets
+
+Do not commit API keys, generated corpus artifacts, local indexes, OCR cache data, or private traces.
+
+## Troubleshooting
+
+If query answers always refuse or lack useful evidence, run ingestion first and confirm `.imperial_rag/extracted/chunks.jsonl` and `.imperial_rag/keyword.sqlite3` exist.
+
+If vector indexing fails, start Qdrant with `./scripts/start_qdrant.sh` before running ingestion with `--index-vectors`.
+
+If Phoenix experiment mode fails, start Phoenix with `docker compose up phoenix` and confirm `http://localhost:6006` is reachable.
+
+If semantic search, embeddings, answer generation, or OCR-backed paths fail, confirm `OPENAI_API_KEY` or the intended provider key is present in your local environment.
+
+If live Qdrant tests fail during normal unit testing, make sure `IMPERIAL_RAG_LIVE_QDRANT` is unset or set to `0`.
