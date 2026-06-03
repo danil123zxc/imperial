@@ -1,0 +1,36 @@
+[project]
+name = "imperial-rag"
+version = "0.1.0"
+description = "Local/private RAG system for the Imperial document corpus"
+requires-python = ">=3.12"
+dependencies = [
+  "langchain",
+  "langchain-community",
+  "langchain-core",
+  "langchain-openai",
+  "langchain-qdrant",
+  "langchain-cohere",
+  "langchain-text-splitters",
+  "langgraph",
+  "arize-phoenix-client",
+  "arize-phoenix-otel",
+  "openinference-instrumentation-langchain",
+  "openinference-instrumentation-openai",
+  "qdrant-client",
+  "python-docx",
+  "openpyxl",
+  "pypdf",
+  "pymupdf",
+  "pillow",
+  "striprtf",
+  "streamlit",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

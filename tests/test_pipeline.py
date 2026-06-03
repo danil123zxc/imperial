@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+from imperial_rag.pipeline import run_ingestion
+
+
+class FileStatus(str, Enum):
+    PENDING = "pending"
+    INDEXED = "indexed"
+    MANIFEST_ONLY = "manifest_only"
+    NO_TEXT = "no_text"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+
+
+class IndexStatus(str, Enum):
+    PENDING = "pending"
+    INDEXED = "indexed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class FakeSettings:
+    workspace_root: Path
+
+    @property
+    def documents_root(self) -> Path:
+        return self.workspace_root / "documents"
+
+    @property
+    def manifest_db_path(self) -> Path:
+        return self.workspace_root / ".imperial_rag" / "manifest.sqlite3"
+
+    @property
+    def keyword_db_path(self) -> Path:
+        return self.workspace_root / ".imperial_rag" / "keyword.sqlite3"
+
+    @property
+    def extraction_root(self) -> Path:
+        return self.workspace_root / ".imperial_rag" / "extracted"
+
+
+class FakeManifestStore:
+    last: "FakeManifestStore | None" = None
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+        self.records = []
+        self.status_updates = []
+        self.index_updates = []
+        FakeManifestStore.last = self
+
+    def replace_records(self, records):
+        self.records = list(records)
+
+    def update_status(self, **kwargs):
+        self.status_updates.append(kwargs)
+
+    def update_index_status(self, **kwargs):
+        self.index_updates.append(kwargs)
+
+
+class FakeKeywordIndex:
+    last_docs = None
+
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = db_path
+
+    def replace_all(self, documents):
+        FakeKeywordIndex.last_docs = list(documents)
+
+
+def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch)
+
+    summary = run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
+
+    chunks_path = tmp_path / ".imperial_rag" / "extracted" / "chunks.jsonl"
+    rows = [json.loads(line) for line in chunks_path.read_text(encoding="utf-8").splitlines()]
+    assert summary.total_files == 1
+    assert summary.indexed_files == 1
+    assert summary.chunk_count == 1
+    assert rows[0]["metadata"]["relative_path"] == "policy.txt"
+    assert rows[0]["metadata"]["chunk_id"] == "file1:body:0"
+    assert FakeKeywordIndex.last_docs is not None
+    assert FakeManifestStore.last is not None
+    assert FakeManifestStore.last.status_updates[0]["chunk_count"] == 1
+    assert FakeManifestStore.last.index_updates[0]["keyword_index_status"] == IndexStatus.INDEXED
+    assert FakeManifestStore.last.index_updates[0]["vector_index_status"] == IndexStatus.SKIPPED
+
+
+def test_run_ingestion_uses_retrieval_chunk_settings(tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    monkeypatch.setenv("IMPERIAL_RAG_CHUNK_SIZE", "321")
+    monkeypatch.setenv("IMPERIAL_RAG_CHUNK_OVERLAP", "45")
+    _install_fake_dependencies(monkeypatch)
+
+    run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
+
+    build_chunks = sys.modules["imperial_rag.chunking"].build_chunks
+    assert build_chunks.calls == [{"chunk_size": 321, "chunk_overlap": 45}]
+
+
+def _install_fake_dependencies(monkeypatch) -> None:
+    config = ModuleType("imperial_rag.config")
+    config.Settings = FakeSettings
+
+    retrieval = ModuleType("imperial_rag.retrieval")
+
+    class RetrievalSettings:
+        def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50) -> None:
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+
+        @classmethod
+        def from_env(cls):
+            return cls(
+                chunk_size=_safe_env_int("IMPERIAL_RAG_CHUNK_SIZE", 400),
+                chunk_overlap=_safe_env_int("IMPERIAL_RAG_CHUNK_OVERLAP", 50),
+            )
+
+    retrieval.RetrievalSettings = RetrievalSettings
+
+    record = SimpleNamespace(
+        file_id="file1",
+        absolute_path=Path("/fake/policy.txt"),
+        relative_path=Path("policy.txt"),
+        filename="policy.txt",
+    )
+    manifest = ModuleType("imperial_rag.manifest")
+    manifest.FileStatus = FileStatus
+    manifest.IndexStatus = IndexStatus
+    manifest.ManifestStore = FakeManifestStore
+    manifest.scan_files = lambda documents_root: [record]
+    manifest.assign_duplicate_groups = lambda records: records
+
+    document = SimpleNamespace(
+        page_content="Регламент возврата брака.",
+        metadata={"file_id": "file1", "relative_path": "policy.txt", "source_type": "body"},
+    )
+    extraction = ModuleType("imperial_rag.extraction")
+    extraction.extract_file = lambda record, **kwargs: SimpleNamespace(
+        status=FileStatus.INDEXED,
+        documents=[document],
+        extraction_method="fake",
+        message="",
+    )
+
+    chunk = SimpleNamespace(
+        page_content=document.page_content,
+        metadata={**document.metadata, "chunk_id": "file1:body:0"},
+    )
+    chunking = ModuleType("imperial_rag.chunking")
+
+    def build_chunks(documents, chunk_size=None, chunk_overlap=None):
+        build_chunks.calls.append({"chunk_size": chunk_size, "chunk_overlap": chunk_overlap})
+        return [chunk]
+
+    build_chunks.calls = []
+    chunking.build_chunks = build_chunks
+
+    indexing = ModuleType("imperial_rag.indexing")
+    indexing.KeywordIndex = FakeKeywordIndex
+    indexing.index_documents = lambda vector_store, documents: [doc.metadata["chunk_id"] for doc in documents]
+
+    for module in (config, retrieval, manifest, extraction, chunking, indexing):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+
+
+def _safe_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default

@@ -1,0 +1,232 @@
+from pathlib import Path
+
+import pytest
+from docx import Document as DocxDocument
+from imperial_rag.extraction import extract_file
+from imperial_rag.manifest import FileStatus, scan_files
+from imperial_rag.ocr import OcrCache, OcrResult
+from openpyxl import Workbook
+from PIL import Image
+
+
+class FakeOcrClient:
+    def __init__(self, prefix: str = "OCR") -> None:
+        self.prefix = prefix
+        self.calls: list[Path] = []
+
+    def extract_image_text(self, image_path: Path) -> OcrResult:
+        self.calls.append(image_path)
+        return OcrResult(text=f"{self.prefix}:{image_path.name}", method="fake_ocr")
+
+
+class EmptyOcrClient:
+    def extract_image_text(self, image_path: Path) -> OcrResult:
+        return OcrResult(text="", method="fake_ocr")
+
+
+def _record_for(path: Path):
+    for record in scan_files(path.parent):
+        if record.absolute_path == path.resolve():
+            return record
+    raise AssertionError(f"no scanned record for {path}")
+
+
+def _make_image(path: Path) -> None:
+    Image.new("RGB", (20, 20), "white").save(path)
+
+
+def test_archive_is_manifest_only(tmp_path):
+    path = tmp_path / "archive.rar"
+    path.write_bytes(b"archive")
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.MANIFEST_ONLY
+    assert result.documents == []
+    assert result.extraction_method is None
+    assert "archive files recorded but not extracted" in result.message
+
+
+def test_docx_text_and_table_extract_to_langchain_documents_with_citation_metadata(tmp_path):
+    path = tmp_path / "policy.docx"
+    docx = DocxDocument()
+    docx.add_paragraph("Регламент возврата товара")
+    table = docx.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Ответственный"
+    table.cell(0, 1).text = "Склад"
+    docx.save(path)
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.INDEXED
+    assert result.extraction_method == "python_docx"
+    assert [doc.metadata["source_type"] for doc in result.documents] == ["body", "table"]
+    assert "Регламент возврата товара" in result.documents[0].page_content
+    assert "Ответственный | Склад" in result.documents[1].page_content
+    for document in result.documents:
+        assert document.metadata["file_id"] == record.file_id
+        assert document.metadata["file_path"] == str(record.absolute_path)
+        assert document.metadata["relative_path"] == str(record.relative_path)
+        assert document.metadata["file_name"] == record.filename
+        assert document.metadata["file_extension"] == record.extension
+        assert document.metadata["file_hash"] == record.sha256
+        assert document.metadata["duplicate_group_id"] == record.duplicate_group_id
+        assert document.metadata["parent_folder"] == str(record.parent_folder)
+        assert document.metadata["inferred_category"] == record.inferred_category
+
+
+def test_docx_without_text_is_no_text(tmp_path):
+    path = tmp_path / "empty.docx"
+    DocxDocument().save(path)
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.NO_TEXT
+    assert result.documents == []
+    assert result.extraction_method == "python_docx"
+
+
+def test_docx_embedded_images_are_ocrd_without_losing_body_text(tmp_path):
+    embedded = tmp_path / "embedded.jpg"
+    _make_image(embedded)
+    path = tmp_path / "with-image.docx"
+    docx = DocxDocument()
+    docx.add_paragraph("Основной текст")
+    docx.add_picture(str(embedded))
+    docx.save(path)
+    record = _record_for(path)
+
+    result = extract_file(record, ocr_client=FakeOcrClient(), artifact_root=tmp_path / "artifacts")
+
+    source_types = [document.metadata["source_type"] for document in result.documents]
+    assert source_types == ["body", "embedded_image"]
+    assert result.documents[1].metadata["image_index"] == 1
+    assert result.documents[1].metadata["ocr_method"] == "fake_ocr"
+
+
+def test_docx_embedded_image_ocr_failure_does_not_break_text_extraction(tmp_path):
+    class FailingOcrClient:
+        def extract_image_text(self, image_path: Path) -> OcrResult:
+            raise RuntimeError("vision unavailable")
+
+    embedded = tmp_path / "embedded.jpg"
+    _make_image(embedded)
+    path = tmp_path / "with-failing-image.docx"
+    docx = DocxDocument()
+    docx.add_paragraph("Текст остается доступен")
+    docx.add_picture(str(embedded))
+    docx.save(path)
+    record = _record_for(path)
+
+    result = extract_file(record, ocr_client=FailingOcrClient(), artifact_root=tmp_path / "artifacts")
+
+    assert result.status == FileStatus.INDEXED
+    assert [document.metadata["source_type"] for document in result.documents] == ["body"]
+    assert "Текст остается доступен" in result.documents[0].page_content
+
+
+def test_standalone_image_uses_ocr_client_and_cache(tmp_path):
+    path = tmp_path / "scan.jpg"
+    _make_image(path)
+    record = _record_for(path)
+    cache = OcrCache(tmp_path / "processed")
+    first_client = FakeOcrClient(prefix="FIRST")
+
+    first = extract_file(record, ocr_client=first_client, ocr_cache=cache)
+    second_client = FakeOcrClient(prefix="SECOND")
+    second = extract_file(record, ocr_client=second_client, ocr_cache=cache)
+
+    assert first.status == FileStatus.INDEXED
+    assert first.documents[0].metadata["source_type"] == "image"
+    assert first.documents[0].page_content == "FIRST:scan.jpg"
+    assert len(first_client.calls) == 1
+    assert second.status == FileStatus.INDEXED
+    assert second.documents[0].page_content == "FIRST:scan.jpg"
+    assert second.documents[0].metadata["ocr_cached"] is True
+    assert second_client.calls == []
+    assert (tmp_path / "processed" / "ocr_cache.sqlite3").exists()
+
+
+def test_standalone_image_without_ocr_text_is_no_text(tmp_path):
+    path = tmp_path / "scan.png"
+    _make_image(path)
+    record = _record_for(path)
+
+    result = extract_file(record, ocr_client=EmptyOcrClient())
+
+    assert result.status == FileStatus.NO_TEXT
+    assert result.documents == []
+    assert result.extraction_method == "image_ocr"
+
+
+def test_pdf_extracts_native_text_and_ocrs_image_only_pages(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "scan.pdf"
+    pdf = fitz.open()
+    text_page = pdf.new_page()
+    text_page.insert_text((72, 72), "Native PDF text")
+    pdf.new_page()
+    pdf.save(path)
+    record = _record_for(path)
+
+    result = extract_file(
+        record,
+        ocr_client=FakeOcrClient(),
+        ocr_cache=OcrCache(tmp_path / "processed"),
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    assert result.status == FileStatus.INDEXED
+    assert result.extraction_method == "pymupdf"
+    assert [document.metadata["source_type"] for document in result.documents] == ["pdf_page", "pdf_page"]
+    assert result.documents[0].metadata["page_number"] == 1
+    assert "Native PDF text" in result.documents[0].page_content
+    assert result.documents[1].metadata["page_number"] == 2
+    assert result.documents[1].page_content.startswith("OCR:scan-page-2")
+
+
+def test_xlsx_sheets_extract_rows_as_structured_text(tmp_path):
+    path = tmp_path / "schedule.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "График"
+    sheet.append(["Сотрудник", "Смена"])
+    sheet.append(["Иванов", "Утро"])
+    workbook.save(path)
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.INDEXED
+    assert result.extraction_method == "openpyxl"
+    assert result.documents[0].metadata["source_type"] == "sheet"
+    assert result.documents[0].metadata["sheet_name"] == "График"
+    assert "Сотрудник | Смена" in result.documents[0].page_content
+    assert "Иванов | Утро" in result.documents[0].page_content
+
+
+def test_rtf_extracts_text(tmp_path):
+    path = tmp_path / "note.rtf"
+    path.write_text(r"{\rtf1\ansi Регламент склада}", encoding="utf-8")
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.INDEXED
+    assert result.extraction_method == "striprtf"
+    assert "Регламент склада" in result.documents[0].page_content
+
+
+def test_unsupported_extension_returns_unsupported(tmp_path):
+    path = tmp_path / "notes.xyz"
+    path.write_text("unsupported", encoding="utf-8")
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.UNSUPPORTED
+    assert result.documents == []
+    assert "unsupported extension" in result.message

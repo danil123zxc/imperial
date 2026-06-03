@@ -1,0 +1,332 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
+DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
+REFUSAL_FALLBACKS = (
+    "I could not find this clearly in the indexed documents.",
+    "не удалось найти",
+    "не найдено",
+    "нет в проиндексированных документах",
+)
+
+
+def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if not payload.get("question"):
+            raise ValueError(f"missing question on line {line_number}")
+        rows.append(payload)
+    return rows
+
+
+def target(inputs: dict[str, Any]) -> dict[str, Any]:
+    return run_target(inputs)
+
+
+def run_target(inputs: dict[str, Any], runtime: Any | None = None) -> dict[str, Any]:
+    question = str(inputs["question"])
+    resolved_runtime = runtime or build_runtime()
+    result = _coerce_result(resolved_runtime.query(question))
+    evidence = result.get("evidence", []) or result.get("documents", [])
+    return {
+        "answer": str(result.get("answer", "")),
+        "citations": list(result.get("citations") or result.get("sources") or []),
+        "sources": list(result.get("sources") or result.get("citations") or []),
+        "documents": [_document_payload(document) for document in evidence],
+        "retrieval": dict(result.get("retrieval") or {}),
+    }
+
+
+def build_runtime(settings: Any | None = None) -> Any:
+    try:
+        from imperial_rag.runtime import create_runtime
+    except (ImportError, AttributeError):
+        create_runtime = None
+    if create_runtime is not None:
+        return create_runtime(settings) if settings is not None else create_runtime()
+
+    try:
+        from imperial_rag.runtime import Runtime
+    except (ImportError, AttributeError):
+        Runtime = None
+
+    if Runtime is not None:
+        return Runtime(settings=settings) if settings is not None else Runtime()
+
+    from imperial_rag.runtime import build_live_query_workflow
+
+    workflow = build_live_query_workflow(settings) if settings is not None else build_live_query_workflow()
+
+    class WorkflowRuntime:
+        def query(self, question: str) -> dict[str, Any]:
+            return _coerce_result(workflow.invoke({"question": question}))
+
+    return WorkflowRuntime()
+
+
+def citation_behavior(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    expected = (reference_outputs or inputs).get("expected_behavior")
+    answer = str(outputs.get("answer", ""))
+    citations = outputs.get("citations") or outputs.get("sources") or []
+
+    if expected == "refuse_if_not_found":
+        score = _looks_like_refusal(answer) and not citations
+    elif expected == "cite_answer":
+        score = bool(citations) and not _looks_like_refusal(answer)
+    elif expected == "surface_conflict":
+        score = bool(citations) and _mentions_conflict(answer)
+    else:
+        score = False
+    return {"key": "citation_behavior", "score": bool(score)}
+
+
+def source_hint_behavior(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    reference = reference_outputs or inputs
+    hints = [str(hint).casefold() for hint in reference.get("expected_source_hints", [])]
+    if not hints:
+        return {"key": "source_hint_behavior", "score": True}
+    sources = outputs.get("sources") or []
+    citations = outputs.get("citations") or []
+    haystack = "\n".join(
+        [
+            *(str(source) for source in [*sources, *citations]),
+            *(_document_search_text(document) for document in outputs.get("documents", []) or []),
+        ]
+    ).casefold()
+    return {"key": "source_hint_behavior", "score": any(hint in haystack for hint in hints)}
+
+
+def phoenix_citation_behavior(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> bool:
+    return bool(citation_behavior(input or {}, output, expected)["score"])
+
+
+def phoenix_source_hint_behavior(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> bool:
+    return bool(source_hint_behavior(input or {}, output, expected)["score"])
+
+
+def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -> list[dict[str, Any]]:
+    resolved_runtime = runtime or build_runtime()
+    rows: list[dict[str, Any]] = []
+    for example in examples:
+        inputs = {"question": example["question"]}
+        reference_outputs = {
+            "expected_behavior": example["expected_behavior"],
+            "expected_source_hints": example.get("expected_source_hints", []),
+        }
+        outputs = run_target(inputs, runtime=resolved_runtime)
+        rows.append(
+            {
+                "question": example["question"],
+                "citation_behavior": citation_behavior(inputs, outputs, reference_outputs)["score"],
+                "source_hint_behavior": source_hint_behavior(inputs, outputs, reference_outputs)["score"],
+            }
+        )
+    return rows
+
+
+def main(argv: list[str] | None = None) -> None:
+    _ensure_src_on_path()
+    parser = argparse.ArgumentParser(description="Run Imperial RAG citation/refusal evaluations.")
+    parser.add_argument("--questions-path", type=Path, default=DEFAULT_QUESTIONS_PATH)
+    parser.add_argument("--workspace-root", type=Path)
+    parser.add_argument("--dataset-name")
+    parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
+    parser.add_argument("--use-phoenix", action="store_true", help="Store dataset and experiment results in Phoenix.")
+    parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
+    args = parser.parse_args(argv)
+
+    settings = _build_settings(args.workspace_root)
+    if args.trace_phoenix or args.use_phoenix:
+        _configure_tracing(settings, enabled=True)
+    examples = load_questions(args.questions_path)
+
+    if args.use_phoenix:
+        _run_phoenix_experiment(
+            examples=examples,
+            settings=settings,
+            dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
+            experiment_name=args.experiment_name,
+        )
+        return
+
+    rows = run_local_eval(examples, runtime=build_runtime(settings=settings))
+    passed = sum(1 for row in rows if row["citation_behavior"] and row["source_hint_behavior"])
+    print(f"local_eval_examples={len(rows)}")
+    print(f"local_eval_passed={passed}")
+
+
+def _run_phoenix_experiment(
+    examples: list[dict[str, Any]],
+    settings: Any,
+    dataset_name: str,
+    experiment_name: str,
+) -> None:
+    try:
+        from phoenix.client import Client
+    except ImportError as exc:
+        raise SystemExit("Phoenix client is not installed; install arize-phoenix-client.") from exc
+
+    client = Client(base_url=settings.phoenix_client_endpoint)
+    inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
+    dataset = client.datasets.create_dataset(
+        name=dataset_name,
+        dataset_description="Imperial RAG gold questions loaded from evals/questions.jsonl.",
+        inputs=inputs,
+        outputs=outputs,
+        metadata=metadata,
+    )
+    runtime = build_runtime(settings=settings)
+
+    def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
+        return run_target(inputs, runtime=runtime)
+
+    experiment = client.experiments.run_experiment(
+        dataset=dataset,
+        task=bound_target,
+        evaluators=[phoenix_citation_behavior, phoenix_source_hint_behavior],
+        experiment_name=experiment_name,
+        experiment_description="Imperial RAG deterministic citation, refusal, and source-hint regression checks.",
+    )
+    print(f"phoenix_dataset={dataset_name}")
+    print(f"phoenix_examples={len(examples)}")
+    print(f"phoenix_experiment={_experiment_identifier(experiment)}")
+
+
+def _to_phoenix_dataset_rows(
+    examples: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    inputs: list[dict[str, Any]] = []
+    outputs: list[dict[str, Any]] = []
+    metadata: list[dict[str, Any]] = []
+    for row_index, example in enumerate(examples):
+        expected = {
+            "expected_behavior": example["expected_behavior"],
+            "expected_source_hints": example.get("expected_source_hints", []),
+        }
+        stable_payload = json.dumps(
+            {"question": example["question"], "expected": expected},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        example_id = str(example.get("id") or hashlib.sha1(stable_payload.encode("utf-8")).hexdigest())
+        inputs.append({"question": example["question"]})
+        outputs.append(expected)
+        metadata.append({"id": example_id, "row_index": row_index, "source": str(DEFAULT_QUESTIONS_PATH)})
+    return inputs, outputs, metadata
+
+
+def _configure_tracing(settings: Any, enabled: bool) -> None:
+    from imperial_rag.tracing import configure_phoenix_tracing
+
+    configure_phoenix_tracing(settings, enabled=enabled)
+
+
+def _build_settings(workspace_root: Path | None) -> Any:
+    from imperial_rag.config import Settings
+
+    if workspace_root is None:
+        return Settings()
+    try:
+        return Settings(workspace_root=workspace_root)
+    except TypeError:
+        os.environ["IMPERIAL_RAG_WORKSPACE_ROOT"] = str(workspace_root)
+        return Settings()
+
+
+def _looks_like_refusal(answer: str) -> bool:
+    normalized = answer.casefold()
+    return any(text.casefold() in normalized for text in REFUSAL_FALLBACKS)
+
+
+def _mentions_conflict(answer: str) -> bool:
+    normalized = answer.casefold()
+    return any(marker in normalized for marker in ("противореч", "конфликт", "disagree", "conflict"))
+
+
+def _coerce_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return result
+    if hasattr(result, "to_dict"):
+        return result.to_dict()
+    return {
+        "answer": getattr(result, "answer", ""),
+        "citations": getattr(result, "citations", []),
+        "sources": getattr(result, "sources", []),
+        "evidence": getattr(result, "evidence", []),
+    }
+
+
+def _document_payload(document: Any) -> dict[str, Any]:
+    if isinstance(document, dict):
+        return document
+    return {
+        "page_content": str(getattr(document, "page_content", "")),
+        "metadata": dict(getattr(document, "metadata", {}) or {}),
+    }
+
+
+def _document_search_text(document: dict[str, Any]) -> str:
+    metadata = document.get("metadata", {}) or {}
+    return " ".join(
+        [
+            str(document.get("page_content", "")),
+            *(
+                str(metadata.get(field, ""))
+                for field in ("relative_path", "file_name", "parent_folder", "section_heading")
+            ),
+        ]
+    )
+
+
+def _experiment_identifier(experiment: Any) -> str:
+    fields = ("id", "experiment_id", "name")
+    if isinstance(experiment, Mapping):
+        for field in fields:
+            value = experiment.get(field)
+            if value:
+                return str(value)
+    for field in fields:
+        value = getattr(experiment, field, None)
+        if value:
+            return str(value)
+    return str(experiment)
+
+
+def _ensure_src_on_path() -> None:
+    root = Path(__file__).resolve().parents[1]
+    src = root / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+
+
+if __name__ == "__main__":
+    main()
