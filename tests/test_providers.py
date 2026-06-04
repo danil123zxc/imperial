@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
 from imperial_rag.config import Settings
@@ -100,3 +96,65 @@ def test_dashscope_configured_requires_key(monkeypatch):
     assert dashscope_configured() is False
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     assert dashscope_configured() is True
+
+
+def test_qwen_provider_vector_metadata_defaults():
+    from imperial_rag.providers import QwenProviderSettings
+
+    metadata = QwenProviderSettings(api_key=None).vector_metadata()
+
+    assert metadata.provider == "dashscope"
+    assert metadata.embedding_model == "text-embedding-v4"
+    assert metadata.embedding_dimensions == 2048
+    assert metadata.distance == "cosine"
+
+
+def test_vector_metadata_write_read_round_trip(tmp_path):
+    from imperial_rag.providers import QwenProviderSettings, read_vector_metadata, write_vector_metadata
+
+    settings = Settings(workspace_root=tmp_path)
+    metadata = QwenProviderSettings(api_key=None).vector_metadata()
+
+    write_vector_metadata(settings, metadata)
+
+    assert read_vector_metadata(settings) == metadata
+
+
+def test_missing_vector_metadata_returns_none_and_does_not_match_config(tmp_path):
+    from imperial_rag.providers import read_vector_metadata, vector_metadata_matches_config
+
+    settings = Settings(workspace_root=tmp_path)
+
+    assert read_vector_metadata(settings) is None
+    assert vector_metadata_matches_config(settings) is False
+
+
+def test_vector_metadata_matches_config(tmp_path):
+    from imperial_rag.providers import QwenProviderSettings, vector_metadata_matches_config, write_vector_metadata
+
+    settings = Settings(workspace_root=tmp_path)
+    provider_settings = QwenProviderSettings(api_key=None)
+
+    write_vector_metadata(settings, provider_settings.vector_metadata())
+
+    assert vector_metadata_matches_config(settings, provider_settings) is True
+
+
+def test_vector_metadata_mismatch_raises_without_dashscope_key_value(tmp_path):
+    from imperial_rag.providers import (
+        QwenProviderSettings,
+        VectorProviderMismatchError,
+        ensure_vector_metadata_compatible,
+        write_vector_metadata,
+    )
+
+    settings = Settings(workspace_root=tmp_path)
+    write_vector_metadata(settings, QwenProviderSettings(api_key=None).vector_metadata())
+
+    provider_settings = QwenProviderSettings(api_key="dashscope-secret-key", embedding_dimensions=1024)
+    with pytest.raises(VectorProviderMismatchError) as exc_info:
+        ensure_vector_metadata_compatible(settings, provider_settings)
+
+    message = str(exc_info.value)
+    assert "dashscope-secret-key" not in message
+    assert "text-embedding-v4" in message
