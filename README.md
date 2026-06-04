@@ -51,7 +51,7 @@ Create a local environment file:
 cp .env.example .env
 ```
 
-Fill in local secrets such as `OPENAI_API_KEY` in `.env` or your shell environment. Do not commit real keys.
+Fill in local secrets such as `DASHSCOPE_API_KEY` in `.env` or your shell environment. Do not commit real keys.
 
 Run ingestion without vector indexing:
 
@@ -92,8 +92,11 @@ uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --
 Defaults:
 
 - URL: `http://localhost:6333`
-- collection: `imperial_chunks`
+- collection: `imperial_chunks_qwen`
+- provider metadata: `.imperial_rag/vector_provider.json`
 - storage: `.imperial_rag/qdrant_storage`
+
+Changing embedding providers or embedding dimensions requires a clean vector collection. For Qwen vectors, use `QDRANT_COLLECTION=imperial_chunks_qwen`; if reusing an older collection name, recreate that collection before indexing. At runtime, semantic search is disabled when `.imperial_rag/vector_provider.json` does not match the configured Qwen embedding model and dimensions.
 
 ### Phoenix
 
@@ -170,14 +173,15 @@ Important environment variables are documented in `.env.example`.
 
 Common settings:
 
-- `OPENAI_API_KEY`: required for answer generation, OpenAI embeddings, vector indexing, and OCR-backed paths.
+- `DASHSCOPE_API_KEY`: required for hosted Qwen answer generation, embeddings/vector indexing, OCR, and reranking.
 - `IMPERIAL_RAG_WORKSPACE_ROOT`: workspace root, defaulting to `/Users/danil/Public/imperial`.
 - `QDRANT_URL`: Qdrant endpoint, defaulting to `http://localhost:6333`.
-- `QDRANT_COLLECTION`: Qdrant collection, defaulting to `imperial_chunks`.
+- `QDRANT_COLLECTION`: Qdrant collection, defaulting to `imperial_chunks_qwen`.
 - `PHOENIX_PROJECT_NAME`: Phoenix project name, defaulting to `imperial-rag`.
 - `PHOENIX_COLLECTOR_ENDPOINT`: Phoenix trace collector endpoint.
 - `PHOENIX_CLIENT_ENDPOINT`: Phoenix client/UI endpoint.
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
+- `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, and `COHERE_API_KEY`: legacy debugging compatibility only when `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE` is enabled.
 
 Retrieval and chunking tuning variables are also listed in `.env.example`, including chunk size, overlap, vector fetch limits, keyword limits, reranker choices, and final evidence limits.
 
@@ -201,6 +205,6 @@ If vector indexing fails, start Qdrant with `./scripts/start_qdrant.sh` before r
 
 If Phoenix experiment mode fails, start Phoenix with `docker compose up phoenix` and confirm `http://localhost:6006` is reachable.
 
-If semantic search, embeddings, answer generation, or OCR-backed paths fail, confirm `OPENAI_API_KEY` or the intended provider key is present in your local environment.
+If semantic search, embeddings, answer generation, OCR, or reranking fail under the defaults, confirm `DASHSCOPE_API_KEY` is present in your local environment.
 
 If live Qdrant tests fail during normal unit testing, make sure `IMPERIAL_RAG_LIVE_QDRANT` is unset or set to `0`.

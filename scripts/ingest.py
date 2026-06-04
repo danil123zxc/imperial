@@ -88,9 +88,15 @@ def _build_ocr_client(enable_ocr: bool) -> Any | None:
 def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
     if not index_vectors:
         return None
-    from imperial_rag.indexing import make_qdrant_store
+    from imperial_rag.providers import dashscope_configured
 
-    return make_qdrant_store(settings.qdrant_url, settings.qdrant_collection)
+    if not dashscope_configured():
+        print("DASHSCOPE_API_KEY is required when --index-vectors is used.", file=sys.stderr)
+        raise SystemExit(2)
+
+    from imperial_rag.indexing import create_qdrant_vector_store
+
+    return create_qdrant_vector_store(settings)
 
 
 def _ocr_appears_configured() -> bool:

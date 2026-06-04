@@ -24,14 +24,7 @@ def test_project_uses_phoenix_dependencies_instead_of_legacy_tracing_package():
     assert "openinference-instrumentation-openai" in dependencies
 
 
-def test_project_includes_cohere_reranking_dependency():
-    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = {_normalize_dependency_name(dependency) for dependency in pyproject["project"]["dependencies"]}
-
-    assert "langchain-cohere" in dependencies
-
-
-def test_project_includes_dashscope_qwen_dependencies():
+def test_project_default_provider_dependencies_are_dashscope_qwen():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = {_normalize_dependency_name(dependency) for dependency in pyproject["project"]["dependencies"]}
 
