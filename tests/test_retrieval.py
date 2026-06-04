@@ -551,6 +551,26 @@ def test_reranker_uses_deterministic_fallback_without_dashscope_api_key(monkeypa
     assert "reranker_missing_dashscope_api_key" in diagnostics["fallbacks"]
 
 
+def test_reranker_reports_deterministic_fallback_when_fallback_setting_is_stale(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    docs = [
+        Document(page_content="Общие правила склада.", metadata={"citation_id": "warehouse"}),
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+    ]
+    diagnostics = {"fallbacks": []}
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: False, raising=False)
+
+    settings = RetrievalSettings(fallback_reranker="cohere:stale", rerank_top_n=1)
+    reranked = Reranker(settings=settings).rerank("возврат брака", docs, diagnostics)
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["return"]
+    assert diagnostics["reranker"] == "fallback:deterministic"
+    assert "reranker_missing_dashscope_api_key" in diagnostics["fallbacks"]
+    assert "reranker_unsupported:cohere:stale" in diagnostics["fallbacks"]
+
+
 def test_reranker_falls_back_when_dashscope_provider_raises(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")

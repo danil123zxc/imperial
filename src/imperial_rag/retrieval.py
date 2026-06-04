@@ -458,7 +458,9 @@ class Reranker:
         return list(compressor.compress_documents(documents=documents, query=query))
 
     def _fallback_rerank(self, query: str, documents: list[Document], diagnostics: dict[str, Any]) -> list[Document]:
-        diagnostics["reranker"] = self.settings.fallback_reranker
+        if self.settings.fallback_reranker != "fallback:deterministic":
+            diagnostics.setdefault("fallbacks", []).append(f"reranker_unsupported:{self.settings.fallback_reranker}")
+        diagnostics["reranker"] = "fallback:deterministic"
         reranked = self._fallback.rank(query, documents, top_n=self.settings.rerank_top_n)
         backfilled = self._backfill(query, reranked, documents)
         diagnostics["reranked_candidates"] = len(backfilled)
