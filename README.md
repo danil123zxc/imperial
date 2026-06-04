@@ -137,7 +137,11 @@ Store the dataset and experiment in local Phoenix:
 uv run python scripts/run_phoenix_eval.py --use-phoenix
 ```
 
-Phoenix mode requires the Phoenix service to be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults to `http://localhost:6006`.
+Phoenix mode requires the Phoenix service to be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults to `http://localhost:6006`. By default, Phoenix experiments include deterministic citation/refusal/source-hint checks plus Ragas faithfulness. To store only deterministic scores:
+
+```bash
+uv run python scripts/run_phoenix_eval.py --use-phoenix --ragas-metrics none
+```
 
 Run Ragas quality checks over the same gold questions:
 

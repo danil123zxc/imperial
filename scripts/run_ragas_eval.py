@@ -19,15 +19,20 @@ if str(SRC_DIR) not in sys.path:
 
 from run_phoenix_eval import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, run_target
 from imperial_rag.ragas_eval import (
+    DEFAULT_RAGAS_METRICS,
+    REFERENCE_REQUIRED_RAGAS_METRICS,
+    SUPPORTED_RAGAS_METRICS,
     evaluate_faithfulness_rows,
     faithfulness_row_from_run_output,
+    parse_ragas_metric_names,
     retrieved_contexts_from_output,
+    validate_ragas_metric_requirements,
 )
 
 
-DEFAULT_METRICS = ("faithfulness",)
-REFERENCE_REQUIRED_METRICS = {"context_recall", "factual_correctness"}
-SUPPORTED_METRICS = DEFAULT_METRICS + ("context_recall", "factual_correctness")
+DEFAULT_METRICS = DEFAULT_RAGAS_METRICS
+REFERENCE_REQUIRED_METRICS = REFERENCE_REQUIRED_RAGAS_METRICS
+SUPPORTED_METRICS = SUPPORTED_RAGAS_METRICS
 
 
 class PreparedRagasRows:
@@ -58,27 +63,16 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
 
 
 def parse_metric_names(raw_metrics: str | None) -> list[str]:
-    if not raw_metrics:
-        return list(DEFAULT_METRICS)
-    names = [name.strip().casefold().replace("-", "_") for name in raw_metrics.split(",") if name.strip()]
-    unsupported = sorted(set(names) - set(SUPPORTED_METRICS))
-    if unsupported:
-        supported = ", ".join(SUPPORTED_METRICS)
-        raise SystemExit(f"Unsupported Ragas metrics: {', '.join(unsupported)}. Supported metrics: {supported}.")
-    return names
+    return parse_ragas_metric_names(raw_metrics, default=DEFAULT_METRICS)
 
 
 def validate_metric_requirements(metric_names: list[str], rows: list[dict[str, Any]]) -> None:
-    reference_metrics = sorted(set(metric_names) & REFERENCE_REQUIRED_METRICS)
-    if not reference_metrics:
-        return
-    missing_reference = [row["user_input"] for row in rows if not row.get("reference")]
-    if missing_reference:
-        joined_metrics = ", ".join(reference_metrics)
-        raise SystemExit(
-            f"Ragas metrics {joined_metrics} require reference_answer in evals/questions.jsonl. "
-            f"Missing reference_answer for {len(missing_reference)} prepared rows."
-        )
+    validate_ragas_metric_requirements(
+        metric_names,
+        rows,
+        reference_key="reference",
+        row_label_key="user_input",
+    )
 
 
 def evaluate_ragas_rows(

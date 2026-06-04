@@ -16,6 +16,50 @@ from imperial_rag.providers import MissingDashScopeKeyError, QwenProviderSetting
 
 FAITHFULNESS_LABEL = "faithfulness"
 FAITHFULNESS_METADATA_KEY = "ragas_faithfulness"
+DEFAULT_RAGAS_METRICS = ("faithfulness",)
+REFERENCE_REQUIRED_RAGAS_METRICS = {"context_recall", "factual_correctness"}
+SUPPORTED_RAGAS_METRICS = DEFAULT_RAGAS_METRICS + ("context_recall", "factual_correctness")
+NO_RAGAS_METRIC_ALIASES = {"none", "no", "off", "false", "0"}
+
+
+def parse_ragas_metric_names(
+    raw_metrics: str | None,
+    *,
+    default: Sequence[str] = DEFAULT_RAGAS_METRICS,
+    allow_none: bool = False,
+) -> list[str]:
+    if raw_metrics is None or not raw_metrics.strip():
+        return list(default)
+    names = [name.strip().casefold().replace("-", "_") for name in raw_metrics.split(",") if name.strip()]
+    if allow_none and any(name in NO_RAGAS_METRIC_ALIASES for name in names):
+        return []
+    unsupported = sorted(set(names) - set(SUPPORTED_RAGAS_METRICS))
+    if unsupported:
+        supported_names = list(SUPPORTED_RAGAS_METRICS)
+        if allow_none:
+            supported_names.append("none")
+        supported = ", ".join(supported_names)
+        raise SystemExit(f"Unsupported Ragas metrics: {', '.join(unsupported)}. Supported metrics: {supported}.")
+    return names
+
+
+def validate_ragas_metric_requirements(
+    metric_names: Sequence[str],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    reference_key: str,
+    row_label_key: str,
+) -> None:
+    reference_metrics = sorted(set(metric_names) & REFERENCE_REQUIRED_RAGAS_METRICS)
+    if not reference_metrics:
+        return
+    missing_reference = [str(row.get(row_label_key) or "") for row in rows if not row.get(reference_key)]
+    if missing_reference:
+        joined_metrics = ", ".join(reference_metrics)
+        raise SystemExit(
+            f"Ragas metrics {joined_metrics} require reference_answer in evals/questions.jsonl. "
+            f"Missing reference_answer for {len(missing_reference)} prepared rows."
+        )
 
 
 def faithfulness_row_from_run_output(

@@ -177,6 +177,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
     parser.add_argument("--use-phoenix", action="store_true", help="Store dataset and experiment results in Phoenix.")
     parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
+    parser.add_argument(
+        "--ragas-metrics",
+        default="faithfulness",
+        help="Comma-separated Ragas metrics to attach in Phoenix mode, or 'none'.",
+    )
     args = parser.parse_args(argv)
 
     settings = _build_settings(args.workspace_root)
@@ -190,6 +195,7 @@ def main(argv: list[str] | None = None) -> None:
             settings=settings,
             dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
             experiment_name=args.experiment_name,
+            ragas_metric_names=parse_phoenix_ragas_metrics(args.ragas_metrics),
         )
         return
 
@@ -204,13 +210,19 @@ def _run_phoenix_experiment(
     settings: Any,
     dataset_name: str,
     experiment_name: str,
+    ragas_metric_names: list[str] | None = None,
 ) -> None:
+    resolved_ragas_metric_names = list(ragas_metric_names if ragas_metric_names is not None else ["faithfulness"])
+    _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
+    evaluators = _phoenix_evaluators(resolved_ragas_metric_names)
+
     try:
         from phoenix.client import Client
     except ImportError as exc:
         raise SystemExit("Phoenix client is not installed; install arize-phoenix-client.") from exc
 
-    _get_ragas_faithfulness_scorer()
+    if "faithfulness" in resolved_ragas_metric_names:
+        _get_ragas_faithfulness_scorer()
     client = Client(base_url=settings.phoenix_client_endpoint)
     inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
     dataset = client.datasets.create_dataset(
@@ -228,15 +240,52 @@ def _run_phoenix_experiment(
     experiment = client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
-        evaluators=[phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_ragas_faithfulness],
+        evaluators=evaluators,
         experiment_name=experiment_name,
-        experiment_description=(
-            "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness."
-        ),
+        experiment_description=_phoenix_experiment_description(resolved_ragas_metric_names),
     )
     print(f"phoenix_dataset={dataset_name}")
     print(f"phoenix_examples={len(examples)}")
     print(f"phoenix_experiment={_experiment_identifier(experiment)}")
+
+
+def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:
+    from imperial_rag.ragas_eval import parse_ragas_metric_names
+
+    return parse_ragas_metric_names(raw_metrics, default=("faithfulness",), allow_none=True)
+
+
+def _validate_phoenix_ragas_metric_requirements(
+    metric_names: list[str],
+    examples: list[dict[str, Any]],
+) -> None:
+    from imperial_rag.ragas_eval import validate_ragas_metric_requirements
+
+    validate_ragas_metric_requirements(
+        metric_names,
+        examples,
+        reference_key="reference_answer",
+        row_label_key="question",
+    )
+
+
+def _phoenix_evaluators(metric_names: list[str]) -> list[Any]:
+    unsupported = sorted(set(metric_names) - {"faithfulness"})
+    if unsupported:
+        raise SystemExit(
+            "Phoenix Ragas evaluators currently support only faithfulness. "
+            "Run scripts/run_ragas_eval.py for reference-based Ragas metrics."
+        )
+    evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior]
+    if "faithfulness" in metric_names:
+        evaluators.append(phoenix_ragas_faithfulness)
+    return evaluators
+
+
+def _phoenix_experiment_description(metric_names: list[str]) -> str:
+    if "faithfulness" in metric_names:
+        return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness."
+    return "Imperial RAG deterministic citation/refusal/source-hint checks."
 
 
 def _to_phoenix_dataset_rows(

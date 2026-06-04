@@ -7,6 +7,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_eval_questions_are_russian_jsonl_with_expected_behavior():
     lines = Path("evals/questions.jsonl").read_text(encoding="utf-8").splitlines()
@@ -141,6 +143,18 @@ def test_phoenix_dataset_rows_have_stable_metadata_ids():
     assert metadata[0]["source"] == "evals/questions.jsonl"
 
 
+def test_parse_phoenix_ragas_metrics_supports_none_and_rejects_unknown():
+    module = _load_eval_runner()
+
+    assert module.parse_phoenix_ragas_metrics("none") == []
+    assert module.parse_phoenix_ragas_metrics("faithfulness") == ["faithfulness"]
+    assert module.parse_phoenix_ragas_metrics("") == ["faithfulness"]
+    assert module.parse_phoenix_ragas_metrics(" faithfulness , NONE ") == []
+
+    with pytest.raises(SystemExit, match="Unsupported Ragas metrics"):
+        module.parse_phoenix_ragas_metrics("answer_relevancy")
+
+
 def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch):
     module = _load_eval_runner()
     captured: dict[str, object] = {}
@@ -204,6 +218,76 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         module.phoenix_ragas_faithfulness,
     ]
     assert experiment_args["experiment_name"] == "imperial-rag-citation-grounding"
+
+
+def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
+    module = _load_eval_runner()
+    captured: dict[str, object] = {}
+
+    class FakeDatasets:
+        def create_dataset(self, **kwargs):
+            captured["dataset"] = kwargs
+            return {"dataset_id": "dataset-1"}
+
+    class FakeExperiments:
+        def run_experiment(self, **kwargs):
+            captured["experiment"] = kwargs
+            return SimpleNamespace(id="experiment-1")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.datasets = FakeDatasets()
+            self.experiments = FakeExperiments()
+
+    class FakeRuntime:
+        def query(self, question: str) -> dict[str, object]:
+            return {"answer": f"Ответ на {question}", "citations": ["[/docs/a.docx#chunk] body"]}
+
+    fake_phoenix = types.ModuleType("phoenix")
+    fake_client_module = types.ModuleType("phoenix.client")
+    fake_client_module.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
+    monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
+    monkeypatch.setattr(module, "_get_ragas_faithfulness_scorer", lambda: pytest.fail("Ragas scorer was built"))
+
+    module._run_phoenix_experiment(
+        examples=[
+            {
+                "question": "Что делать с браком?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["брак"],
+            }
+        ],
+        settings=SimpleNamespace(phoenix_client_endpoint="http://localhost:6006"),
+        dataset_name="imperial-rag-gold-questions",
+        experiment_name="imperial-rag-citation-grounding",
+        ragas_metric_names=[],
+    )
+
+    assert captured["experiment"]["evaluators"] == [
+        module.phoenix_citation_behavior,
+        module.phoenix_source_hint_behavior,
+    ]
+
+
+def test_phoenix_experiment_rejects_reference_ragas_metrics_without_references():
+    module = _load_eval_runner()
+
+    with pytest.raises(SystemExit, match="reference_answer"):
+        module._run_phoenix_experiment(
+            examples=[
+                {
+                    "question": "Что делать с браком?",
+                    "expected_behavior": "cite_answer",
+                    "expected_source_hints": ["брак"],
+                }
+            ],
+            settings=SimpleNamespace(phoenix_client_endpoint="http://localhost:6006"),
+            dataset_name="imperial-rag-gold-questions",
+            experiment_name="imperial-rag-citation-grounding",
+            ragas_metric_names=["context_recall"],
+        )
 
 
 def test_experiment_identifier_reads_mapping_result():
