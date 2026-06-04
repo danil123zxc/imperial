@@ -2,8 +2,161 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def test_faithfulness_row_from_run_output_extracts_docs_and_skips_empty_cases():
+    from imperial_rag import ragas_eval
+
+    row = ragas_eval.faithfulness_row_from_run_output(
+        {"question": " Как оформить возврат брака? "},
+        {
+            "answer": " Возврат оформляется по регламенту. ",
+            "documents": [
+                {"page_content": " Регламент описывает возврат брака. "},
+                {"page_content": "   "},
+            ],
+        },
+    )
+
+    assert row == {
+        "user_input": "Как оформить возврат брака?",
+        "response": "Возврат оформляется по регламенту.",
+        "retrieved_contexts": ["Регламент описывает возврат брака."],
+    }
+    assert (
+        ragas_eval.faithfulness_row_from_run_output(
+            {"question": "Как оформить возврат брака?"},
+            {"answer": "", "documents": [{"page_content": "Контекст"}]},
+        )
+        is None
+    )
+    assert (
+        ragas_eval.faithfulness_row_from_run_output(
+            {"question": "Как оформить возврат брака?"},
+            {"answer": "Ответ", "documents": []},
+        )
+        is None
+    )
+
+
+def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monkeypatch):
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            captured["client"] = self
+
+    class FakeFaithfulness:
+        def __init__(self, **kwargs):
+            captured["metric"] = kwargs
+
+    def fake_llm_factory(model, **kwargs):
+        captured["llm_factory_model"] = model
+        captured["llm_factory_kwargs"] = kwargs
+        return "ragas-llm"
+
+    monkeypatch.setattr(ragas_eval, "_import_async_openai", lambda: FakeAsyncOpenAI)
+    monkeypatch.setattr(ragas_eval, "_import_llm_factory", lambda: fake_llm_factory)
+    monkeypatch.setattr(ragas_eval, "_import_faithfulness_metric", lambda: FakeFaithfulness)
+
+    scorer = ragas_eval.build_faithfulness_scorer(
+        SimpleNamespace(
+            compat_base_url="https://dashscope.example/compatible-mode/v1",
+            chat_model="qwen-test",
+            require_api_key=lambda: "dashscope-key",
+        )
+    )
+
+    assert isinstance(scorer, FakeFaithfulness)
+    assert captured["client"].kwargs == {
+        "api_key": "dashscope-key",
+        "base_url": "https://dashscope.example/compatible-mode/v1",
+    }
+    assert captured["llm_factory_model"] == "qwen-test"
+    assert captured["llm_factory_kwargs"] == {"client": captured["client"], "provider": "openai"}
+    assert captured["metric"] == {"llm": "ragas-llm"}
+
+
+def test_import_faithfulness_metric_prefers_ragas_collections_api():
+    from imperial_rag import ragas_eval
+
+    metric_cls = ragas_eval._import_faithfulness_metric()
+
+    assert metric_cls.__name__ == "Faithfulness"
+    assert ".collections." in metric_cls.__module__
+
+
+def test_score_faithfulness_for_phoenix_returns_score_dictionary():
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeResult:
+        value = 0.8
+        reason = "all generated claims are supported"
+
+    class FakeScorer:
+        def score(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResult()
+
+    result = ragas_eval.score_faithfulness_for_phoenix(
+        input={"question": "Что делать с браком?"},
+        output={"answer": "Оформить по регламенту.", "documents": [{"page_content": "Регламент описывает возврат."}]},
+        scorer=FakeScorer(),
+    )
+
+    assert captured == {
+        "user_input": "Что делать с браком?",
+        "response": "Оформить по регламенту.",
+        "retrieved_contexts": ["Регламент описывает возврат."],
+    }
+    assert result == {
+        "score": 0.8,
+        "label": "faithfulness",
+        "explanation": "all generated claims are supported",
+        "metadata": {"metric": "ragas_faithfulness", "retrieved_context_count": 1},
+    }
+
+
+def test_score_faithfulness_for_phoenix_skips_empty_response_or_contexts():
+    from imperial_rag import ragas_eval
+
+    result = ragas_eval.score_faithfulness_for_phoenix(
+        input={"question": "Что делать с браком?"},
+        output={"answer": "", "documents": [{"page_content": "Контекст"}]},
+        scorer=object(),
+    )
+
+    assert result["score"] is None
+    assert result["label"] == "skipped"
+    assert result["metadata"]["reason"] == "missing_response_or_contexts"
+
+
+def test_evaluate_faithfulness_rows_returns_sidecar_records():
+    from imperial_rag import ragas_eval
+
+    class FakeScorer:
+        def score(self, **kwargs):
+            return SimpleNamespace(value=1.0, reason="supported")
+
+    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]}]
+
+    assert ragas_eval.evaluate_faithfulness_rows(rows, scorer=FakeScorer()) == [
+        {
+            "user_input": "q",
+            "faithfulness": 1.0,
+            "label": "faithfulness",
+            "explanation": "supported",
+            "retrieved_context_count": 1,
+        }
+    ]
 
 
 def test_ragas_eval_script_imports_without_importing_ragas_at_module_load():
@@ -76,7 +229,24 @@ def test_validate_metric_requirements_rejects_reference_metrics_without_referenc
         )
 
 
-def test_evaluate_ragas_rows_uses_dataset_metrics_and_evaluator_llm(monkeypatch):
+def test_evaluate_ragas_rows_delegates_default_faithfulness_to_shared_helper(monkeypatch):
+    module = _load_ragas_runner()
+    captured: dict[str, object] = {}
+
+    def fake_evaluate_faithfulness_rows(rows):
+        captured["rows"] = rows
+        return [{"faithfulness": 1.0}]
+
+    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]}]
+    monkeypatch.setattr(module, "evaluate_faithfulness_rows", fake_evaluate_faithfulness_rows)
+
+    result = module.evaluate_ragas_rows(rows, ["faithfulness"])
+
+    assert result == [{"faithfulness": 1.0}]
+    assert captured == {"rows": rows}
+
+
+def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
     module = _load_ragas_runner()
     captured: dict[str, object] = {}
 
@@ -86,15 +256,15 @@ def test_evaluate_ragas_rows_uses_dataset_metrics_and_evaluator_llm(monkeypatch)
 
     def fake_evaluate(**kwargs):
         captured.update(kwargs)
-        return {"scores": [{"faithfulness": 1.0}]}
+        return {"scores": [{"context_recall": 1.0}]}
 
-    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]}]
-    result = module.evaluate_ragas_rows(rows, ["faithfulness"], evaluate_fn=fake_evaluate)
+    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"], "reference": "ref"}]
+    result = module.evaluate_ragas_rows(rows, ["context_recall"], evaluate_fn=fake_evaluate)
 
-    assert result == {"scores": [{"faithfulness": 1.0}]}
+    assert result == {"scores": [{"context_recall": 1.0}]}
     assert captured == {
         "dataset": {"dataset": rows},
-        "metrics": ["metric:faithfulness"],
+        "metrics": ["metric:context_recall"],
         "llm": "wrapped-llm",
     }
 
@@ -102,9 +272,9 @@ def test_evaluate_ragas_rows_uses_dataset_metrics_and_evaluator_llm(monkeypatch)
 def test_build_ragas_metrics_imports_installed_ragas_metrics():
     module = _load_ragas_runner()
 
-    metrics = module.build_ragas_metrics(["faithfulness"])
+    metrics = module.build_ragas_metrics(["context_recall"])
 
-    assert [type(metric).__name__ for metric in metrics] == ["Faithfulness"]
+    assert [type(metric).__name__ for metric in metrics] == ["LLMContextRecall"]
 
 
 def test_result_records_support_scores_and_pandas_like_results():

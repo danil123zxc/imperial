@@ -18,6 +18,7 @@ REFUSAL_FALLBACKS = (
     "не найдено",
     "нет в проиндексированных документах",
 )
+_RAGAS_FAITHFULNESS_SCORER: Any | None = None
 
 
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
@@ -133,6 +134,20 @@ def phoenix_source_hint_behavior(
     return bool(source_hint_behavior(input or {}, output, expected)["score"])
 
 
+def phoenix_ragas_faithfulness(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import score_faithfulness_for_phoenix
+
+    return score_faithfulness_for_phoenix(
+        input=input or {},
+        output=output or {},
+        scorer=_get_ragas_faithfulness_scorer(),
+    )
+
+
 def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -> list[dict[str, Any]]:
     resolved_runtime = runtime or build_runtime()
     rows: list[dict[str, Any]] = []
@@ -195,6 +210,7 @@ def _run_phoenix_experiment(
     except ImportError as exc:
         raise SystemExit("Phoenix client is not installed; install arize-phoenix-client.") from exc
 
+    _get_ragas_faithfulness_scorer()
     client = Client(base_url=settings.phoenix_client_endpoint)
     inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
     dataset = client.datasets.create_dataset(
@@ -212,9 +228,11 @@ def _run_phoenix_experiment(
     experiment = client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
-        evaluators=[phoenix_citation_behavior, phoenix_source_hint_behavior],
+        evaluators=[phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_ragas_faithfulness],
         experiment_name=experiment_name,
-        experiment_description="Imperial RAG deterministic citation, refusal, and source-hint regression checks.",
+        experiment_description=(
+            "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness."
+        ),
     )
     print(f"phoenix_dataset={dataset_name}")
     print(f"phoenix_examples={len(examples)}")
@@ -248,6 +266,15 @@ def _configure_tracing(settings: Any, enabled: bool) -> None:
     from imperial_rag.tracing import configure_phoenix_tracing
 
     configure_phoenix_tracing(settings, enabled=enabled)
+
+
+def _get_ragas_faithfulness_scorer() -> Any:
+    global _RAGAS_FAITHFULNESS_SCORER
+    if _RAGAS_FAITHFULNESS_SCORER is None:
+        from imperial_rag.ragas_eval import build_faithfulness_scorer
+
+        _RAGAS_FAITHFULNESS_SCORER = build_faithfulness_scorer()
+    return _RAGAS_FAITHFULNESS_SCORER
 
 
 def _build_settings(workspace_root: Path | None) -> Any:

@@ -40,7 +40,7 @@ def test_eval_runner_deterministic_citation_behavior():
     )["score"] is True
 
 
-def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords():
+def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords(monkeypatch):
     module = _load_eval_runner()
 
     assert module.phoenix_citation_behavior(
@@ -51,6 +51,27 @@ def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords():
         output={"sources": ["source contains брак"]},
         expected={"expected_source_hints": ["брак"]},
     ) is True
+
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    def fake_score_faithfulness_for_phoenix(**kwargs):
+        captured.update(kwargs)
+        return {"score": 0.75, "label": "faithfulness", "metadata": {"metric": "ragas_faithfulness"}}
+
+    monkeypatch.setattr(module, "_get_ragas_faithfulness_scorer", lambda: "fake-scorer")
+    monkeypatch.setattr(ragas_eval, "score_faithfulness_for_phoenix", fake_score_faithfulness_for_phoenix)
+
+    assert module.phoenix_ragas_faithfulness(
+        input={"question": "Что делать с браком?"},
+        output={"answer": "Ответ", "documents": [{"page_content": "Контекст"}]},
+    ) == {"score": 0.75, "label": "faithfulness", "metadata": {"metric": "ragas_faithfulness"}}
+    assert captured == {
+        "input": {"question": "Что делать с браком?"},
+        "output": {"answer": "Ответ", "documents": [{"page_content": "Контекст"}]},
+        "scorer": "fake-scorer",
+    }
 
 
 def test_source_hint_behavior_scans_citations_when_sources_are_non_empty():
@@ -150,6 +171,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
     monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
+    monkeypatch.setattr(module, "_get_ragas_faithfulness_scorer", lambda: object())
 
     module._run_phoenix_experiment(
         examples=[
@@ -179,6 +201,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
     assert experiment_args["evaluators"] == [
         module.phoenix_citation_behavior,
         module.phoenix_source_hint_behavior,
+        module.phoenix_ragas_faithfulness,
     ]
     assert experiment_args["experiment_name"] == "imperial-rag-citation-grounding"
 

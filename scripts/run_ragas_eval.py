@@ -13,8 +13,16 @@ from typing import Any, Callable
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+SRC_DIR = SCRIPT_DIR.parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from run_phoenix_eval import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, run_target
+from imperial_rag.ragas_eval import (
+    evaluate_faithfulness_rows,
+    faithfulness_row_from_run_output,
+    retrieved_contexts_from_output,
+)
 
 
 DEFAULT_METRICS = ("faithfulness",)
@@ -37,18 +45,12 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
             skipped += 1
             continue
         outputs = run_target({"question": example["question"]}, runtime=resolved_runtime)
-        contexts = _retrieved_contexts(outputs)
-        response = str(outputs.get("answer", "")).strip()
-        if not contexts or not response:
+        row = faithfulness_row_from_run_output({"question": example["question"]}, outputs)
+        if row is None:
             skipped += 1
             continue
-        row = {
-            "user_input": example["question"],
-            "response": response,
-            "retrieved_contexts": contexts,
-            "expected_behavior": example.get("expected_behavior"),
-            "expected_source_hints": example.get("expected_source_hints", []),
-        }
+        row["expected_behavior"] = example.get("expected_behavior")
+        row["expected_source_hints"] = example.get("expected_source_hints", [])
         if example.get("reference_answer"):
             row["reference"] = example["reference_answer"]
         rows.append(row)
@@ -85,11 +87,21 @@ def evaluate_ragas_rows(
     evaluate_fn: Callable[..., Any] | None = None,
 ) -> Any:
     validate_metric_requirements(metric_names, rows)
+    faithfulness_records: list[dict[str, Any]] | None = None
+    reference_metric_names = [name for name in metric_names if name != "faithfulness"]
+    if "faithfulness" in metric_names:
+        faithfulness_records = evaluate_faithfulness_rows(rows)
+        if not reference_metric_names:
+            return faithfulness_records
+
     dataset = build_ragas_dataset(rows)
-    metrics = build_ragas_metrics(metric_names)
+    metrics = build_ragas_metrics(reference_metric_names)
     evaluator_llm = build_evaluator_llm()
     resolved_evaluate = evaluate_fn or _import_ragas_evaluate()
-    return resolved_evaluate(dataset=dataset, metrics=metrics, llm=evaluator_llm)
+    reference_result = resolved_evaluate(dataset=dataset, metrics=metrics, llm=evaluator_llm)
+    if faithfulness_records is not None:
+        return _merge_records_by_position(faithfulness_records, result_records(reference_result))
+    return reference_result
 
 
 def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
@@ -111,19 +123,21 @@ def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
 
 
 def build_ragas_metrics(metric_names: list[str]) -> list[Any]:
+    unsupported_here = sorted(set(metric_names) & {"faithfulness"})
+    if unsupported_here:
+        raise SystemExit("Ragas Faithfulness is evaluated through imperial_rag.ragas_eval.")
+
     _install_ragas_langchain_community_compat()
     try:
         from ragas.metrics._context_recall import LLMContextRecall
         from ragas.metrics._factual_correctness import FactualCorrectness
-        from ragas.metrics._faithfulness import Faithfulness
     except ImportError as exc:
         try:
-            from ragas.metrics import Faithfulness, FactualCorrectness, LLMContextRecall
+            from ragas.metrics import FactualCorrectness, LLMContextRecall
         except ImportError:
             raise SystemExit("Ragas metrics are not installed; run `uv sync --extra dev`.") from exc
 
     factories: dict[str, Callable[[], Any]] = {
-        "faithfulness": Faithfulness,
         "context_recall": LLMContextRecall,
         "factual_correctness": FactualCorrectness,
     }
@@ -147,6 +161,8 @@ def build_evaluator_llm() -> Any:
 
 
 def result_records(result: Any) -> list[dict[str, Any]]:
+    if isinstance(result, list):
+        return [dict(row) for row in result]
     if hasattr(result, "to_pandas"):
         return result.to_pandas().to_dict(orient="records")
     scores = getattr(result, "scores", None)
@@ -192,12 +208,20 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _retrieved_contexts(outputs: dict[str, Any]) -> list[str]:
-    contexts: list[str] = []
-    for document in outputs.get("documents", []) or []:
-        text = str(document.get("page_content", "")).strip()
-        if text:
-            contexts.append(text)
-    return contexts
+    return retrieved_contexts_from_output(outputs)
+
+
+def _merge_records_by_position(
+    primary_records: list[dict[str, Any]],
+    secondary_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not secondary_records:
+        return primary_records
+    merged: list[dict[str, Any]] = []
+    for index, primary in enumerate(primary_records):
+        secondary = secondary_records[index] if index < len(secondary_records) else {}
+        merged.append({**primary, **secondary})
+    return merged
 
 
 def _build_settings(workspace_root: Path | None) -> Any:
