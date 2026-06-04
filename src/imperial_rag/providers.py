@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -206,18 +207,26 @@ def _import_dashscope_rerank():
     return DashScopeRerank
 
 
+def _import_dashscope_text_rerank():
+    import dashscope
+
+    return dashscope.TextReRank
+
+
 def create_chat_model(settings: QwenProviderSettings | None = None) -> Any:
     resolved = settings or QwenProviderSettings.from_env()
-    resolved.require_api_key()
+    api_key = resolved.require_api_key()
     chat_cls = _import_chat_qwen()
-    return chat_cls(model=resolved.chat_model, temperature=0)
+    return chat_cls(model=resolved.chat_model, temperature=0, api_key=api_key, base_url=resolved.compat_base_url)
 
 
 def create_reranker(top_n: int, settings: QwenProviderSettings | None = None) -> Any:
     resolved = settings or QwenProviderSettings.from_env()
     api_key = resolved.require_api_key()
+    configure_dashscope_sdk(resolved)
     reranker_cls = _import_dashscope_rerank()
-    return reranker_cls(model=resolved.rerank_model, top_n=top_n, api_key=api_key)
+    client = _import_dashscope_text_rerank()
+    return reranker_cls(model=resolved.rerank_model, top_n=top_n, api_key=api_key, client=client)
 
 
 class DashScopeTextEmbeddings(Embeddings):
@@ -226,6 +235,7 @@ class DashScopeTextEmbeddings(Embeddings):
         self.api_key = self.settings.require_api_key()
         self.model = self.settings.embedding_model
         self.dimensions = self.settings.embedding_dimensions
+        configure_dashscope_sdk(self.settings)
         if client is None:
             import dashscope
 
@@ -260,21 +270,27 @@ class DashScopeTextEmbeddings(Embeddings):
             raise provider_error
         status_code = _response_get(response, "status_code")
         if status_code != 200:
-            code = _response_get(response, "code") or "dashscope_error"
-            message = _sanitize_provider_message(
-                _response_get(response, "message") or "DashScope request failed",
-                self.api_key,
-            )
+            _raise_dashscope_response_error("embedding", response, api_key=self.api_key)
+        output = _response_get(response, "output")
+        embeddings = _response_get(output, "embeddings")
+        if not isinstance(embeddings, list) or not embeddings:
+            raise DashScopeProviderError("DashScope embedding failed: missing output.embeddings")
+        if len(embeddings) != len(texts):
             raise DashScopeProviderError(
-                f"DashScope embedding failed: status_code={status_code} code={code} message={message}"
+                f"DashScope embedding failed: expected {len(texts)} embeddings but received {len(embeddings)}"
             )
-        output = _response_get(response, "output") or {}
-        embeddings = _response_get(output, "embeddings") or []
-        return [list(_response_get(item, "embedding")) for item in embeddings]
+        vectors: list[list[float]] = []
+        for index, item in enumerate(embeddings):
+            embedding = _response_get(item, "embedding")
+            if not embedding:
+                raise DashScopeProviderError(f"DashScope embedding failed: missing embedding at index {index}")
+            vectors.append(list(embedding))
+        return vectors
 
 
 def create_embeddings(settings: QwenProviderSettings | None = None) -> Embeddings:
     resolved = settings or QwenProviderSettings.from_env()
+    configure_dashscope_sdk(resolved)
     if resolved.embedding_dimensions is not None:
         return DashScopeTextEmbeddings(settings=resolved)
     from langchain_community.embeddings.dashscope import DashScopeEmbeddings
@@ -286,7 +302,17 @@ def _sanitize_provider_message(message: str, api_key: str | None) -> str:
     sanitized = str(message)
     if api_key:
         sanitized = sanitized.replace(api_key, "[redacted]")
+    sanitized = re.sub(r"sk-[A-Za-z0-9._-]+", "[redacted]", sanitized)
     return sanitized
+
+
+def _raise_dashscope_response_error(operation: str, response: Any, api_key: str | None = None) -> None:
+    status_code = _response_get(response, "status_code")
+    code = _sanitize_provider_message(_response_get(response, "code") or "dashscope_error", api_key)
+    message = _sanitize_provider_message(_response_get(response, "message") or "DashScope request failed", api_key)
+    raise DashScopeProviderError(
+        f"DashScope {operation} failed: status_code={status_code} code={code} message={message}"
+    )
 
 
 def build_qwen_ocr_message(image_path: Path, settings: QwenProviderSettings | None = None) -> dict[str, Any]:
@@ -305,6 +331,9 @@ def build_qwen_ocr_message(image_path: Path, settings: QwenProviderSettings | No
 
 
 def parse_qwen_ocr_response(response: Any) -> str:
+    status_code = _response_get(response, "status_code")
+    if status_code is not None and status_code != 200:
+        _raise_dashscope_response_error("OCR", response)
     output = _response_get(response, "output")
     choices = _response_get(output, "choices") or []
     if not choices:

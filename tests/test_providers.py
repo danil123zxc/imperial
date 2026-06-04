@@ -169,9 +169,11 @@ def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
     created = {}
 
     class FakeChatQwen:
-        def __init__(self, model, temperature):
+        def __init__(self, model, temperature, api_key, base_url):
             created["model"] = model
             created["temperature"] = temperature
+            created["api_key"] = api_key
+            created["base_url"] = base_url
 
     import imperial_rag.providers as providers
 
@@ -180,7 +182,42 @@ def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
     model = providers.create_chat_model()
 
     assert isinstance(model, FakeChatQwen)
-    assert created == {"model": "qwen3.7-max", "temperature": 0}
+    assert created == {
+        "model": "qwen3.7-max",
+        "temperature": 0,
+        "api_key": "dashscope-test-key",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    }
+
+
+def test_qwen_chat_factory_uses_explicit_key_and_compat_base_url(monkeypatch):
+    clear_provider_env(monkeypatch)
+    created = {}
+
+    class FakeChatQwen:
+        def __init__(self, model, temperature, api_key, base_url):
+            created["model"] = model
+            created["temperature"] = temperature
+            created["api_key"] = api_key
+            created["base_url"] = base_url
+
+    import imperial_rag.providers as providers
+
+    monkeypatch.setattr(providers, "_import_chat_qwen", lambda: FakeChatQwen)
+
+    settings = providers.QwenProviderSettings(
+        api_key="explicit-key",
+        compat_base_url="https://example.com/compatible-mode/v1",
+    )
+    model = providers.create_chat_model(settings=settings)
+
+    assert isinstance(model, FakeChatQwen)
+    assert created == {
+        "model": "qwen3.7-max",
+        "temperature": 0,
+        "api_key": "explicit-key",
+        "base_url": "https://example.com/compatible-mode/v1",
+    }
 
 
 def test_qwen_embedding_factory_uses_dimension_aware_wrapper(monkeypatch):
@@ -197,25 +234,81 @@ def test_qwen_embedding_factory_uses_dimension_aware_wrapper(monkeypatch):
     assert embeddings.dimensions == 2048
 
 
+def test_create_embeddings_configures_sdk_before_wrapper(monkeypatch):
+    clear_provider_env(monkeypatch)
+    config_calls = []
+    created = {}
+
+    class FakeEmbeddings:
+        def __init__(self, settings):
+            created["settings"] = settings
+            created["config_calls_before_init"] = list(config_calls)
+
+    import imperial_rag.providers as providers
+
+    settings = providers.QwenProviderSettings(api_key="explicit-key")
+    monkeypatch.setattr(providers, "configure_dashscope_sdk", lambda settings: config_calls.append(settings))
+    monkeypatch.setattr(providers, "DashScopeTextEmbeddings", FakeEmbeddings)
+
+    embeddings = providers.create_embeddings(settings=settings)
+
+    assert isinstance(embeddings, FakeEmbeddings)
+    assert created == {"settings": settings, "config_calls_before_init": [settings]}
+
+
 def test_qwen_reranker_factory_uses_dashscope_rerank(monkeypatch):
     clear_provider_env(monkeypatch)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     created = {}
 
+    class FakeTextReRank:
+        pass
+
     class FakeDashScopeRerank:
-        def __init__(self, model, top_n, api_key):
+        def __init__(self, model, top_n, api_key, client):
             created["model"] = model
             created["top_n"] = top_n
             created["api_key"] = api_key
+            created["client"] = client
 
     import imperial_rag.providers as providers
 
     monkeypatch.setattr(providers, "_import_dashscope_rerank", lambda: FakeDashScopeRerank)
+    monkeypatch.setattr(providers, "_import_dashscope_text_rerank", lambda: FakeTextReRank, raising=False)
 
     reranker = providers.create_reranker(top_n=7)
 
     assert isinstance(reranker, FakeDashScopeRerank)
-    assert created == {"model": "qwen3-rerank", "top_n": 7, "api_key": "dashscope-test-key"}
+    assert created == {"model": "qwen3-rerank", "top_n": 7, "api_key": "dashscope-test-key", "client": FakeTextReRank}
+
+
+def test_qwen_reranker_factory_configures_sdk_and_uses_client_with_explicit_settings(monkeypatch):
+    clear_provider_env(monkeypatch)
+    config_calls = []
+    created = {}
+
+    class FakeTextReRank:
+        pass
+
+    class FakeDashScopeRerank:
+        def __init__(self, model, top_n, api_key, client):
+            created["model"] = model
+            created["top_n"] = top_n
+            created["api_key"] = api_key
+            created["client"] = client
+
+    import imperial_rag.providers as providers
+
+    settings = providers.QwenProviderSettings(api_key="explicit-key")
+    monkeypatch.setattr(providers, "configure_dashscope_sdk", lambda settings: config_calls.append(settings))
+    monkeypatch.setattr(providers, "_import_dashscope_rerank", lambda: FakeDashScopeRerank)
+    monkeypatch.setattr(providers, "_import_dashscope_text_rerank", lambda: FakeTextReRank, raising=False)
+
+    reranker = providers.create_reranker(top_n=7, settings=settings)
+
+    assert isinstance(reranker, FakeDashScopeRerank)
+    assert config_calls == [settings]
+    assert created == {"model": "qwen3-rerank", "top_n": 7, "api_key": "explicit-key", "client": FakeTextReRank}
 
 
 def test_dashscope_text_embeddings_call_sdk_with_dimensions(monkeypatch):
@@ -245,6 +338,24 @@ def test_dashscope_text_embeddings_call_sdk_with_dimensions(monkeypatch):
             "api_key": "key",
         }
     ]
+
+
+def test_dashscope_text_embeddings_configures_sdk(monkeypatch):
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            raise AssertionError("call should not be reached")
+
+    import imperial_rag.providers as providers
+
+    settings = providers.QwenProviderSettings(api_key="key")
+    config_calls = []
+    monkeypatch.setattr(providers, "configure_dashscope_sdk", lambda settings: config_calls.append(settings))
+
+    embeddings = providers.DashScopeTextEmbeddings(settings=settings, client=FakeTextEmbedding)
+
+    assert embeddings.client is FakeTextEmbedding
+    assert config_calls == [settings]
 
 
 def test_dashscope_text_embeddings_raise_clean_error_without_secret():
@@ -288,6 +399,48 @@ def test_dashscope_text_embeddings_wrap_sdk_exception_without_secret():
     assert "sk-secret" not in message
 
 
+def test_dashscope_text_embeddings_raise_clean_error_for_missing_embeddings():
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            return SimpleNamespace(status_code=200, output={})
+
+    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+
+    embeddings = DashScopeTextEmbeddings(
+        settings=QwenProviderSettings(api_key="sk-secret"),
+        client=FakeTextEmbedding,
+    )
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        embeddings.embed_documents(["question"])
+
+    message = str(exc.value)
+    assert "embeddings" in message
+    assert "sk-secret" not in message
+
+
+def test_dashscope_text_embeddings_raise_clean_error_for_empty_embeddings():
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            return SimpleNamespace(status_code=200, output={"embeddings": []})
+
+    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+
+    embeddings = DashScopeTextEmbeddings(
+        settings=QwenProviderSettings(api_key="sk-secret"),
+        client=FakeTextEmbedding,
+    )
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        embeddings.embed_query("question")
+
+    message = str(exc.value)
+    assert "embeddings" in message
+    assert "sk-secret" not in message
+
+
 def test_build_qwen_ocr_message_includes_base64_and_options(tmp_path, monkeypatch):
     clear_provider_env(monkeypatch)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
@@ -327,3 +480,21 @@ def test_parse_qwen_ocr_response_extracts_text():
     }
 
     assert parse_qwen_ocr_response(response) == "Распознанный текст"
+
+
+def test_parse_qwen_ocr_response_raises_clean_error_for_provider_failure():
+    from imperial_rag.providers import DashScopeProviderError, parse_qwen_ocr_response
+
+    response = {
+        "status_code": 401,
+        "code": "InvalidApiKey",
+        "message": "bad sk-secret",
+    }
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        parse_qwen_ocr_response(response)
+
+    message = str(exc.value)
+    assert "InvalidApiKey" in message
+    assert "bad" in message
+    assert "sk-secret" not in message
