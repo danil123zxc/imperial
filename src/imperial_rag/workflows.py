@@ -5,7 +5,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypedDict
 
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from imperial_rag.answering import (
@@ -44,6 +43,19 @@ class QueryState(TypedDict, total=False):
     citations_valid: bool
     invalid_citations: list[str]
     retrieval: dict[str, Any]
+
+
+def _legacy_openai_chat_model():
+    from imperial_rag.providers import QwenProviderSettings
+
+    if not QwenProviderSettings.from_env().allow_legacy_openai:
+        raise RuntimeError(
+            "Legacy OpenAI chat is disabled. Use Qwen provider defaults or set "
+            "IMPERIAL_RAG_ALLOW_LEGACY_OPENAI=true."
+        )
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 
 def _document_key(document: Document) -> str:
@@ -226,7 +238,7 @@ def build_query_workflow(
         if generate is not None:
             answer = _coerce_answer(_call_with_supported_args(generate, state["question"], evidence, build_strict_messages(state["question"], evidence), state))
         else:
-            resolved_model = model or ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+            resolved_model = model or _legacy_openai_chat_model()
             response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
             answer = str(response.content)
         valid, invalid = validate_citations(answer, evidence)

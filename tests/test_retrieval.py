@@ -155,6 +155,32 @@ def test_hybrid_retriever_degrades_when_vector_search_fails():
     assert "vector_search_failed" in result.diagnostics["fallbacks"]
 
 
+def test_hybrid_retriever_reports_vector_provider_mismatch_without_vector_call():
+    calls = []
+
+    class ProviderMismatchVector:
+        provider_mismatch = True
+
+        def max_marginal_relevance_search(self, query, k, fetch_k, lambda_mult):
+            calls.append(query)
+            raise RuntimeError("vector search should not be called")
+
+    keyword_docs = [Document(page_content="keyword", metadata={"citation_id": "k"})]
+
+    result = HybridRetriever(
+        vector_search=ProviderMismatchVector(),
+        keyword_search=FakeKeywordSearch(keyword_docs),
+        settings=RetrievalSettings(),
+    ).retrieve("возврат")
+
+    assert calls == []
+    assert result.vector_docs == []
+    assert [doc.metadata["citation_id"] for doc in result.keyword_docs] == ["k"]
+    assert result.diagnostics["vector_search_status"] == "provider_mismatch"
+    assert result.diagnostics["keyword_search_status"] == "ok"
+    assert "vector_provider_mismatch" in result.diagnostics["fallbacks"]
+
+
 def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     vector_docs = [

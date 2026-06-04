@@ -1,34 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import os
-from typing import Any
+from dataclasses import dataclass
 
 from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
 from imperial_rag.indexing import KeywordIndex, make_qdrant_store
+from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import ChunkNeighborStore, RetrievalService, RetrievalSettings
 from imperial_rag.workflows import build_query_workflow
-
-
-class _LazyChatModel:
-    def __init__(self, model_name: str = "gpt-4.1-mini"):
-        self.model_name = model_name
-        self._model: Any | None = None
-
-    def invoke(self, messages):
-        if self._model is None:
-            from langchain_openai import ChatOpenAI
-
-            self._model = ChatOpenAI(model=self.model_name, temperature=0)
-        return self._model.invoke(messages)
 
 
 @dataclass(frozen=True)
 class QueryDependencies:
     vector_search: object
     keyword_search: object
-    chat_model: object = field(default_factory=_LazyChatModel)
+    chat_model: object
 
 
 class _NoopVectorSearch:
@@ -36,18 +22,32 @@ class _NoopVectorSearch:
         return []
 
 
+class _ProviderMismatchVectorSearch:
+    provider_mismatch = True
+
+    def similarity_search(self, query: str, k: int):
+        return []
+
+    def max_marginal_relevance_search(self, query: str, k: int, fetch_k: int, lambda_mult: float):
+        return []
+
+
 def build_query_dependencies(settings: Settings) -> QueryDependencies:
     vector_search: object
-    if _semantic_search_enabled():
+    semantic_search_enabled = _semantic_search_enabled()
+    if semantic_search_enabled and vector_metadata_matches_config(settings):
         try:
             vector_search = make_qdrant_store(settings.qdrant_url, settings.qdrant_collection)
         except Exception:
             vector_search = _NoopVectorSearch()
+    elif semantic_search_enabled:
+        vector_search = _ProviderMismatchVectorSearch()
     else:
         vector_search = _NoopVectorSearch()
     return QueryDependencies(
         vector_search=vector_search,
         keyword_search=KeywordIndex(settings.keyword_db_path),
+        chat_model=create_chat_model(),
     )
 
 
@@ -115,4 +115,4 @@ def build_live_query_workflow(settings: Settings | None = None):
 
 
 def _semantic_search_enabled() -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("AZURE_OPENAI_API_KEY"))
+    return dashscope_configured()

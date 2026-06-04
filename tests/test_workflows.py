@@ -1,3 +1,4 @@
+import pytest
 from langchain_core.documents import Document
 
 from imperial_rag.answering import REFUSAL_TEXT
@@ -207,6 +208,22 @@ def test_query_workflow_replaces_unsupported_generated_answer_with_refusal():
     assert result["answer"] == REFUSAL_TEXT
     assert result["citations_valid"] is False
     assert result["invalid_citations"] == ["missing"]
+
+
+def test_query_workflow_default_generation_requires_legacy_openai_flag(monkeypatch):
+    docs = [Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "return"})]
+
+    class FakeModel:
+        def invoke(self, messages):
+            return type("Response", (), {"content": "Возврат брака оформляется актом. [return]"})()
+
+    monkeypatch.delenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", raising=False)
+    monkeypatch.setattr("imperial_rag.workflows.ChatOpenAI", lambda **kwargs: FakeModel(), raising=False)
+
+    workflow = build_query_workflow(retrieve=lambda question: docs)
+
+    with pytest.raises(RuntimeError, match="Legacy OpenAI chat is disabled"):
+        workflow.invoke({"question": "Как оформить возврат брака?"})
 
 
 def test_rank_hybrid_candidates_deduplicates_and_boosts_keyword_exact_matches():

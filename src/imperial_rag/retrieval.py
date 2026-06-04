@@ -96,12 +96,16 @@ class HybridRetriever:
         vector_docs: list[Document] = []
         keyword_docs: list[Document] = []
 
-        try:
-            vector_docs = self._vector_docs(query)
-        except Exception:
-            vector_status = "unavailable"
-            fallbacks.append("vector_search_failed")
-            vector_docs = []
+        if getattr(self.vector_search, "provider_mismatch", False):
+            vector_status = "provider_mismatch"
+            fallbacks.append("vector_provider_mismatch")
+        else:
+            try:
+                vector_docs = self._vector_docs(query)
+            except Exception:
+                vector_status = "unavailable"
+                fallbacks.append("vector_search_failed")
+                vector_docs = []
 
         try:
             keyword_docs = self._keyword_docs(query)
