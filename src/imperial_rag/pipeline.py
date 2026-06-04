@@ -338,11 +338,12 @@ def _update_index_status(
     else:
         keyword_status = index_status.SKIPPED
         vector_status = index_status.SKIPPED
+    indexed_embedding_model = embedding_model if vector_status == index_status.INDEXED else None
     manifest_store.update_index_status(
         file_id=file_id,
         keyword_index_status=keyword_status,
         vector_index_status=vector_status,
-        embedding_model=embedding_model,
+        embedding_model=indexed_embedding_model,
     )
 
 

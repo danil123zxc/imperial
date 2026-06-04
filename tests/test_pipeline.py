@@ -124,10 +124,29 @@ def test_run_ingestion_records_embedding_model_when_vector_indexed(tmp_path, mon
 
     assert summary.vector_indexed is True
     assert FakeManifestStore.last is not None
+    assert FakeManifestStore.last.index_updates[0]["vector_index_status"] == IndexStatus.INDEXED
     assert FakeManifestStore.last.index_updates[0]["embedding_model"] == "text-embedding-v4:2048"
 
 
-def _install_fake_dependencies(monkeypatch) -> None:
+def test_run_ingestion_records_embedding_model_only_for_indexed_vectors(tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    (docs / "empty.txt").write_text("", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch, include_no_text_record=True)
+
+    summary = run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=True)
+
+    assert summary.vector_indexed is True
+    assert FakeManifestStore.last is not None
+    updates = {update["file_id"]: update for update in FakeManifestStore.last.index_updates}
+    assert updates["file1"]["vector_index_status"] == IndexStatus.INDEXED
+    assert updates["file1"]["embedding_model"] == "text-embedding-v4:2048"
+    assert updates["file2"]["vector_index_status"] == IndexStatus.SKIPPED
+    assert updates["file2"]["embedding_model"] is None
+
+
+def _install_fake_dependencies(monkeypatch, *, include_no_text_record: bool = False) -> None:
     config = ModuleType("imperial_rag.config")
     config.Settings = FakeSettings
 
@@ -153,11 +172,18 @@ def _install_fake_dependencies(monkeypatch) -> None:
         relative_path=Path("policy.txt"),
         filename="policy.txt",
     )
+    no_text_record = SimpleNamespace(
+        file_id="file2",
+        absolute_path=Path("/fake/empty.txt"),
+        relative_path=Path("empty.txt"),
+        filename="empty.txt",
+    )
+    records = [record, no_text_record] if include_no_text_record else [record]
     manifest = ModuleType("imperial_rag.manifest")
     manifest.FileStatus = FileStatus
     manifest.IndexStatus = IndexStatus
     manifest.ManifestStore = FakeManifestStore
-    manifest.scan_files = lambda documents_root: [record]
+    manifest.scan_files = lambda documents_root: records
     manifest.assign_duplicate_groups = lambda records: records
 
     document = SimpleNamespace(
@@ -165,12 +191,23 @@ def _install_fake_dependencies(monkeypatch) -> None:
         metadata={"file_id": "file1", "relative_path": "policy.txt", "source_type": "body"},
     )
     extraction = ModuleType("imperial_rag.extraction")
-    extraction.extract_file = lambda record, **kwargs: SimpleNamespace(
-        status=FileStatus.INDEXED,
-        documents=[document],
-        extraction_method="fake",
-        message="",
-    )
+
+    def extract_file(record, **kwargs):
+        if record.file_id == "file2":
+            return SimpleNamespace(
+                status=FileStatus.NO_TEXT,
+                documents=[],
+                extraction_method="fake",
+                message="",
+            )
+        return SimpleNamespace(
+            status=FileStatus.INDEXED,
+            documents=[document],
+            extraction_method="fake",
+            message="",
+        )
+
+    extraction.extract_file = extract_file
 
     chunk = SimpleNamespace(
         page_content=document.page_content,
