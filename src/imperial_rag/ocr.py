@@ -28,16 +28,27 @@ class QwenOcrClient:
         self.conversation_client = conversation_client
 
     def extract_image_text(self, image_path: Path) -> OcrResult:
-        from imperial_rag.providers import build_qwen_ocr_message, parse_qwen_ocr_response
-
-        response = self.conversation_client.call(
-            api_key=self.api_key,
-            model=self.settings.vision_model,
-            messages=[build_qwen_ocr_message(image_path, self.settings)],
-            ocr_options={"task": self.settings.ocr_task},
+        from imperial_rag.providers import (
+            DashScopeProviderError,
+            _sanitize_provider_message,
+            build_qwen_ocr_message,
+            parse_qwen_ocr_response,
         )
+
+        try:
+            response = self.conversation_client.call(
+                api_key=self.api_key,
+                model=self.settings.vision_model,
+                messages=[build_qwen_ocr_message(image_path, self.settings)],
+                ocr_options={"task": self.settings.ocr_task},
+            )
+        except Exception as exc:
+            message = _sanitize_provider_message(str(exc), self.api_key)
+            raise DashScopeProviderError(
+                f"DashScope OCR failed: exception={exc.__class__.__name__} message={message}"
+            ) from None
         return OcrResult(
-            text=parse_qwen_ocr_response(response),
+            text=parse_qwen_ocr_response(response, api_key=self.api_key),
             method=f"dashscope:{self.settings.vision_model}",
         )
 

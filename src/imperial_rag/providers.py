@@ -330,11 +330,14 @@ def build_qwen_ocr_message(image_path: Path, settings: QwenProviderSettings | No
     return {"role": "user", "content": [image_payload]}
 
 
-def parse_qwen_ocr_response(response: Any) -> str:
+def parse_qwen_ocr_response(response: Any, api_key: str | None = None) -> str:
     status_code = _response_get(response, "status_code")
     if status_code is not None and status_code != 200:
-        _raise_dashscope_response_error("OCR", response)
+        _raise_dashscope_response_error("OCR", response, api_key=api_key)
     output = _response_get(response, "output")
+    output_text = _response_get(output, "text")
+    if output_text:
+        return str(output_text).strip()
     choices = _response_get(output, "choices") or []
     if not choices:
         return ""

@@ -494,6 +494,58 @@ def test_qwen_ocr_client_calls_multimodal_conversation(tmp_path, monkeypatch):
     assert calls[0]["messages"][0]["role"] == "user"
 
 
+def test_qwen_ocr_client_wraps_sdk_exception_without_secret(tmp_path, monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-secret-key")
+    image_path = tmp_path / "scan.png"
+    image_path.write_bytes(b"fake-image")
+
+    class FakeConversation:
+        @staticmethod
+        def call(**kwargs):
+            raise RuntimeError("bad dashscope-secret-key")
+
+    from imperial_rag.ocr import QwenOcrClient
+    from imperial_rag.providers import DashScopeProviderError, QwenProviderSettings
+
+    client = QwenOcrClient(settings=QwenProviderSettings.from_env(), conversation_client=FakeConversation)
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        client.extract_image_text(image_path)
+
+    message = str(exc.value)
+    assert "RuntimeError" in message
+    assert "dashscope-secret-key" not in message
+
+
+def test_qwen_ocr_client_sanitizes_response_error_without_secret(tmp_path, monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-secret-key")
+    image_path = tmp_path / "scan.png"
+    image_path.write_bytes(b"fake-image")
+
+    class FakeConversation:
+        @staticmethod
+        def call(**kwargs):
+            return {
+                "status_code": 401,
+                "code": "InvalidApiKey",
+                "message": "bad dashscope-secret-key",
+            }
+
+    from imperial_rag.ocr import QwenOcrClient
+    from imperial_rag.providers import DashScopeProviderError, QwenProviderSettings
+
+    client = QwenOcrClient(settings=QwenProviderSettings.from_env(), conversation_client=FakeConversation)
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        client.extract_image_text(image_path)
+
+    message = str(exc.value)
+    assert "InvalidApiKey" in message
+    assert "dashscope-secret-key" not in message
+
+
 def test_parse_qwen_ocr_response_extracts_text():
     from imperial_rag.providers import parse_qwen_ocr_response
 
@@ -512,6 +564,12 @@ def test_parse_qwen_ocr_response_extracts_text():
     }
 
     assert parse_qwen_ocr_response(response) == "Распознанный текст"
+
+
+def test_parse_qwen_ocr_response_extracts_output_text():
+    from imperial_rag.providers import parse_qwen_ocr_response
+
+    assert parse_qwen_ocr_response({"output": {"text": "OCR text"}}) == "OCR text"
 
 
 def test_parse_qwen_ocr_response_raises_clean_error_for_provider_failure():
