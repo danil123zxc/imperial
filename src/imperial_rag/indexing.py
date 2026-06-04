@@ -10,11 +10,16 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
 from imperial_rag.config import Settings
+from imperial_rag.providers import (
+    QwenProviderSettings,
+    create_embeddings,
+    ensure_vector_metadata_compatible,
+    write_vector_metadata,
+)
 
 
 _ENDING_RE = re.compile(r"(иями|ями|ами|ого|его|ому|ему|ыми|ими|ов|ев|ей|ый|ий|ой|ая|яя|ое|ее|ам|ям|ах|ях|ом|ем|а|я|ы|и|у|ю|е|о|ь)$")
@@ -337,12 +342,21 @@ def _json_dumps(value: Any) -> str:
 
 
 def create_qdrant_vector_store(settings: Settings, embeddings: object | None = None) -> QdrantVectorStore:
+    if embeddings is None:
+        ensure_vector_metadata_compatible(settings)
+        embeddings = create_embeddings()
     client = QdrantClient(url=settings.qdrant_url)
     return QdrantVectorStore(
         client=client,
         collection_name=settings.qdrant_collection,
-        embedding=embeddings or OpenAIEmbeddings(model="text-embedding-3-small"),
+        embedding=embeddings,
     )
+
+
+def embedding_model_identifier(provider_settings: QwenProviderSettings | None = None) -> str:
+    resolved = provider_settings or QwenProviderSettings.from_env()
+    dimensions = resolved.embedding_dimensions
+    return resolved.embedding_model if dimensions is None else f"{resolved.embedding_model}:{dimensions}"
 
 
 def make_qdrant_store(qdrant_url: str, collection_name: str, embeddings: object | None = None) -> QdrantVectorStore:
@@ -380,7 +394,10 @@ def index_vector_documents(
         if settings is None:
             raise ValueError("settings is required when vector_store is not provided")
         vector_store = create_qdrant_vector_store(settings, embeddings=embeddings)
-    return list(vector_store.add_documents(documents=documents, ids=resolved_ids))
+    added_ids = list(vector_store.add_documents(documents=documents, ids=resolved_ids))
+    if settings is not None:
+        write_vector_metadata(settings, QwenProviderSettings.from_env().vector_metadata())
+    return added_ids
 
 
 def index_documents(vector_store: object, documents: list[Document], ids: list[str] | None = None) -> list[str]:

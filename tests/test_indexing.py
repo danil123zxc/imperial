@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
+import pytest
 from langchain_core.documents import Document
 
 from imperial_rag.config import Settings
@@ -324,3 +325,68 @@ def test_create_qdrant_vector_store_uses_settings(monkeypatch, tmp_path: Path) -
     assert created["url"] == "http://127.0.0.1:6333"
     assert created["collection_name"] == "test"
     assert created["embedding"] is embeddings
+
+
+def test_create_qdrant_vector_store_uses_qwen_embeddings_by_default(monkeypatch, tmp_path: Path) -> None:
+    created = {}
+
+    class FakeClient:
+        def __init__(self, url):
+            created["url"] = url
+
+    class FakeVectorStore:
+        def __init__(self, client, collection_name, embedding):
+            created["client"] = client
+            created["collection_name"] = collection_name
+            created["embedding"] = embedding
+
+    fake_embeddings = object()
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setattr("imperial_rag.indexing.QdrantClient", FakeClient)
+    monkeypatch.setattr("imperial_rag.indexing.QdrantVectorStore", FakeVectorStore)
+    monkeypatch.setattr("imperial_rag.indexing.create_embeddings", lambda: fake_embeddings)
+
+    settings = Settings(workspace_root=tmp_path, qdrant_url="http://127.0.0.1:6333", qdrant_collection="test")
+    store = create_qdrant_vector_store(settings)
+
+    assert isinstance(store, FakeVectorStore)
+    assert created["embedding"] is fake_embeddings
+
+
+def test_index_vector_documents_records_qwen_vector_metadata(monkeypatch, tmp_path: Path) -> None:
+    from imperial_rag.providers import read_vector_metadata
+
+    class FakeVectorStore:
+        def add_documents(self, documents, ids):
+            return ids
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    settings = Settings(workspace_root=tmp_path)
+    docs = [Document(page_content="one", metadata={"citation_id": "file1:body:0"})]
+
+    index_vector_documents(docs, settings=settings, vector_store=FakeVectorStore())
+
+    metadata = read_vector_metadata(settings)
+    assert metadata is not None
+    assert metadata.provider == "dashscope"
+    assert metadata.embedding_model == "text-embedding-v4"
+    assert metadata.embedding_dimensions == 2048
+
+
+def test_create_qdrant_vector_store_rejects_mismatched_vector_metadata(monkeypatch, tmp_path: Path) -> None:
+    from imperial_rag.providers import VectorProviderMetadata, VectorProviderMismatchError, write_vector_metadata
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    settings = Settings(workspace_root=tmp_path)
+    write_vector_metadata(
+        settings,
+        VectorProviderMetadata(
+            provider="openai",
+            embedding_model="text-embedding-3-small",
+            embedding_dimensions=1536,
+            distance="cosine",
+        ),
+    )
+
+    with pytest.raises(VectorProviderMismatchError):
+        create_qdrant_vector_store(settings)

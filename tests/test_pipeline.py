@@ -114,6 +114,19 @@ def test_run_ingestion_uses_retrieval_chunk_settings(tmp_path, monkeypatch):
     assert build_chunks.calls == [{"chunk_size": 321, "chunk_overlap": 45}]
 
 
+def test_run_ingestion_records_embedding_model_when_vector_indexed(tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch)
+
+    summary = run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=True)
+
+    assert summary.vector_indexed is True
+    assert FakeManifestStore.last is not None
+    assert FakeManifestStore.last.index_updates[0]["embedding_model"] == "text-embedding-v4:2048"
+
+
 def _install_fake_dependencies(monkeypatch) -> None:
     config = ModuleType("imperial_rag.config")
     config.Settings = FakeSettings
@@ -174,7 +187,12 @@ def _install_fake_dependencies(monkeypatch) -> None:
 
     indexing = ModuleType("imperial_rag.indexing")
     indexing.KeywordIndex = FakeKeywordIndex
+    indexing.create_qdrant_vector_store = lambda settings: SimpleNamespace(add_documents=lambda documents, ids: ids)
+    indexing.index_vector_documents = lambda documents, settings=None, vector_store=None: [
+        doc.metadata["chunk_id"] for doc in documents
+    ]
     indexing.index_documents = lambda vector_store, documents: [doc.metadata["chunk_id"] for doc in documents]
+    indexing.embedding_model_identifier = lambda: "text-embedding-v4:2048"
 
     for module in (config, retrieval, manifest, extraction, chunking, indexing):
         monkeypatch.setitem(sys.modules, module.__name__, module)

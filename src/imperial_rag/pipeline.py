@@ -122,7 +122,11 @@ def _run(
     )
     _write_chunks(extraction_root, chunks)
     keyword_indexed = _replace_keyword_index(deps["KeywordIndex"], settings, chunks)
-    vector_indexed = _index_with_vector_store(deps["index_documents"], vector_store, chunks) if vector_store is not None else False
+    vector_indexed = (
+        _index_with_vector_store(deps["index_vector_documents"], settings, vector_store, chunks)
+        if vector_store is not None
+        else False
+    )
     chunk_count_by_file = _count_chunks_by_file(chunks)
 
     for record in records:
@@ -145,6 +149,7 @@ def _run(
             keyword_indexed=keyword_indexed,
             index_vectors=index_vectors,
             vector_indexed=vector_indexed,
+            embedding_model=deps["embedding_model_identifier"]() if vector_indexed else None,
         )
 
     status_counts = Counter(_status_value(status) for status in status_by_file.values())
@@ -166,7 +171,12 @@ def _load_dependencies() -> dict[str, Any]:
     from imperial_rag.chunking import build_chunks
     from imperial_rag.config import Settings
     from imperial_rag.extraction import extract_file
-    from imperial_rag.indexing import KeywordIndex, index_documents
+    from imperial_rag.indexing import (
+        KeywordIndex,
+        create_qdrant_vector_store,
+        embedding_model_identifier,
+        index_vector_documents,
+    )
     from imperial_rag.manifest import (
         FileStatus,
         IndexStatus,
@@ -182,7 +192,9 @@ def _load_dependencies() -> dict[str, Any]:
         "build_chunks": build_chunks,
         "extract_file": extract_file,
         "KeywordIndex": KeywordIndex,
-        "index_documents": index_documents,
+        "create_qdrant_vector_store": create_qdrant_vector_store,
+        "embedding_model_identifier": embedding_model_identifier,
+        "index_vector_documents": index_vector_documents,
         "FileStatus": FileStatus,
         "IndexStatus": IndexStatus,
         "ManifestStore": ManifestStore,
@@ -210,9 +222,9 @@ def _build_ocr_cache(extraction_root: Path) -> Any | None:
 def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
     if not index_vectors:
         return None
-    from imperial_rag.indexing import make_qdrant_store
+    from imperial_rag.indexing import create_qdrant_vector_store
 
-    return make_qdrant_store(settings.qdrant_url, settings.qdrant_collection)
+    return create_qdrant_vector_store(settings)
 
 
 def _ocr_appears_configured() -> bool:
@@ -297,10 +309,10 @@ def _replace_keyword_index(keyword_index_cls: Any, settings: Any, chunks: list[A
     return True
 
 
-def _index_with_vector_store(index_documents: Any, vector_store: Any, chunks: list[Any]) -> bool:
+def _index_with_vector_store(index_vector_documents: Any, settings: Any, vector_store: Any, chunks: list[Any]) -> bool:
     if not chunks:
         return True
-    index_documents(vector_store, chunks)
+    index_vector_documents(chunks, settings=settings, vector_store=vector_store)
     return True
 
 
@@ -313,6 +325,7 @@ def _update_index_status(
     keyword_indexed: bool,
     index_vectors: bool,
     vector_indexed: bool,
+    embedding_model: str | None,
 ) -> None:
     index_status = deps["IndexStatus"]
     file_status = deps["FileStatus"]
@@ -329,6 +342,7 @@ def _update_index_status(
         file_id=file_id,
         keyword_index_status=keyword_status,
         vector_index_status=vector_status,
+        embedding_model=embedding_model,
     )
 
 
