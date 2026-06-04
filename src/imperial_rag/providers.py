@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from langchain_core.embeddings import Embeddings
 
 
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
@@ -23,6 +27,10 @@ class MissingDashScopeKeyError(RuntimeError):
 
 
 class VectorProviderMismatchError(RuntimeError):
+    pass
+
+
+class DashScopeProviderError(RuntimeError):
     pass
 
 
@@ -184,3 +192,126 @@ def ensure_vector_metadata_compatible(settings: Any, provider_settings: QwenProv
             "Qdrant vector provider metadata mismatch: "
             f"existing={existing.to_dict()} expected={expected.to_dict()}"
         )
+
+
+def _import_chat_qwen():
+    from langchain_qwq import ChatQwen
+
+    return ChatQwen
+
+
+def _import_dashscope_rerank():
+    from langchain_community.document_compressors.dashscope_rerank import DashScopeRerank
+
+    return DashScopeRerank
+
+
+def create_chat_model(settings: QwenProviderSettings | None = None) -> Any:
+    resolved = settings or QwenProviderSettings.from_env()
+    resolved.require_api_key()
+    chat_cls = _import_chat_qwen()
+    return chat_cls(model=resolved.chat_model, temperature=0)
+
+
+def create_reranker(top_n: int, settings: QwenProviderSettings | None = None) -> Any:
+    resolved = settings or QwenProviderSettings.from_env()
+    api_key = resolved.require_api_key()
+    reranker_cls = _import_dashscope_rerank()
+    return reranker_cls(model=resolved.rerank_model, top_n=top_n, api_key=api_key)
+
+
+class DashScopeTextEmbeddings(Embeddings):
+    def __init__(self, settings: QwenProviderSettings | None = None, client: Any | None = None) -> None:
+        self.settings = settings or QwenProviderSettings.from_env()
+        self.api_key = self.settings.require_api_key()
+        self.model = self.settings.embedding_model
+        self.dimensions = self.settings.embedding_dimensions
+        if client is None:
+            import dashscope
+
+            client = dashscope.TextEmbedding
+        self.client = client
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts, text_type="document")
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text], text_type="query")[0]
+
+    def _embed(self, texts: list[str], text_type: str) -> list[list[float]]:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "input": texts,
+            "text_type": text_type,
+            "api_key": self.api_key,
+        }
+        if self.dimensions is not None:
+            kwargs["dimension"] = self.dimensions
+        response = self.client.call(**kwargs)
+        status_code = _response_get(response, "status_code")
+        if status_code != 200:
+            code = _response_get(response, "code") or "dashscope_error"
+            message = _sanitize_provider_message(
+                _response_get(response, "message") or "DashScope request failed",
+                self.api_key,
+            )
+            raise DashScopeProviderError(
+                f"DashScope embedding failed: status_code={status_code} code={code} message={message}"
+            )
+        output = _response_get(response, "output") or {}
+        embeddings = _response_get(output, "embeddings") or []
+        return [list(_response_get(item, "embedding")) for item in embeddings]
+
+
+def create_embeddings(settings: QwenProviderSettings | None = None) -> Embeddings:
+    resolved = settings or QwenProviderSettings.from_env()
+    if resolved.embedding_dimensions is not None:
+        return DashScopeTextEmbeddings(settings=resolved)
+    from langchain_community.embeddings.dashscope import DashScopeEmbeddings
+
+    return DashScopeEmbeddings(model=resolved.embedding_model, dashscope_api_key=resolved.require_api_key())
+
+
+def _sanitize_provider_message(message: str, api_key: str | None) -> str:
+    sanitized = str(message)
+    if api_key:
+        sanitized = sanitized.replace(api_key, "[redacted]")
+    return sanitized
+
+
+def build_qwen_ocr_message(image_path: Path, settings: QwenProviderSettings | None = None) -> dict[str, Any]:
+    resolved = settings or QwenProviderSettings.from_env()
+    mime_type, _ = mimetypes.guess_type(image_path.name)
+    mime_type = mime_type or "image/jpeg"
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    image_payload: dict[str, Any] = {"image": f"data:{mime_type};base64,{encoded}"}
+    if resolved.ocr_min_pixels is not None:
+        image_payload["min_pixels"] = resolved.ocr_min_pixels
+    if resolved.ocr_max_pixels is not None:
+        image_payload["max_pixels"] = resolved.ocr_max_pixels
+    if resolved.ocr_enable_rotate is not None:
+        image_payload["enable_rotate"] = resolved.ocr_enable_rotate
+    return {"role": "user", "content": [image_payload]}
+
+
+def parse_qwen_ocr_response(response: Any) -> str:
+    output = _response_get(response, "output")
+    choices = _response_get(output, "choices") or []
+    if not choices:
+        return ""
+    message = _response_get(choices[0], "message")
+    content = _response_get(message, "content") or []
+    if isinstance(content, str):
+        return content.strip()
+    text_parts: list[str] = []
+    for item in content:
+        text = _response_get(item, "text")
+        if text:
+            text_parts.append(str(text))
+    return "\n".join(part.strip() for part in text_parts if part.strip()).strip()
+
+
+def _response_get(value: Any, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)

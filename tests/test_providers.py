@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from imperial_rag.config import Settings
@@ -158,3 +160,149 @@ def test_vector_metadata_mismatch_raises_without_dashscope_key_value(tmp_path):
     message = str(exc_info.value)
     assert "dashscope-secret-key" not in message
     assert "text-embedding-v4" in message
+
+
+def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+
+    created = {}
+
+    class FakeChatQwen:
+        def __init__(self, model, temperature):
+            created["model"] = model
+            created["temperature"] = temperature
+
+    import imperial_rag.providers as providers
+
+    monkeypatch.setattr(providers, "_import_chat_qwen", lambda: FakeChatQwen)
+
+    model = providers.create_chat_model()
+
+    assert isinstance(model, FakeChatQwen)
+    assert created == {"model": "qwen3.7-max", "temperature": 0}
+
+
+def test_qwen_embedding_factory_uses_dimension_aware_wrapper(monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS", "2048")
+
+    from imperial_rag.providers import DashScopeTextEmbeddings, create_embeddings
+
+    embeddings = create_embeddings()
+
+    assert isinstance(embeddings, DashScopeTextEmbeddings)
+    assert embeddings.model == "text-embedding-v4"
+    assert embeddings.dimensions == 2048
+
+
+def test_qwen_reranker_factory_uses_dashscope_rerank(monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    created = {}
+
+    class FakeDashScopeRerank:
+        def __init__(self, model, top_n, api_key):
+            created["model"] = model
+            created["top_n"] = top_n
+            created["api_key"] = api_key
+
+    import imperial_rag.providers as providers
+
+    monkeypatch.setattr(providers, "_import_dashscope_rerank", lambda: FakeDashScopeRerank)
+
+    reranker = providers.create_reranker(top_n=7)
+
+    assert isinstance(reranker, FakeDashScopeRerank)
+    assert created == {"model": "qwen3-rerank", "top_n": 7, "api_key": "dashscope-test-key"}
+
+
+def test_dashscope_text_embeddings_call_sdk_with_dimensions(monkeypatch):
+    calls = []
+
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                status_code=200,
+                output={"embeddings": [{"embedding": [1.0, 2.0]}, {"embedding": [3.0, 4.0]}]},
+            )
+
+    from imperial_rag.providers import DashScopeTextEmbeddings, QwenProviderSettings
+
+    settings = QwenProviderSettings(api_key="key", embedding_dimensions=2048)
+    embeddings = DashScopeTextEmbeddings(settings=settings, client=FakeTextEmbedding)
+
+    assert embeddings.embed_documents(["a", "b"]) == [[1.0, 2.0], [3.0, 4.0]]
+    assert calls == [
+        {
+            "model": "text-embedding-v4",
+            "input": ["a", "b"],
+            "text_type": "document",
+            "dimension": 2048,
+            "api_key": "key",
+        }
+    ]
+
+
+def test_dashscope_text_embeddings_raise_clean_error_without_secret():
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            return SimpleNamespace(status_code=401, code="InvalidApiKey", message="bad key sk-secret")
+
+    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+
+    embeddings = DashScopeTextEmbeddings(
+        settings=QwenProviderSettings(api_key="sk-secret"),
+        client=FakeTextEmbedding,
+    )
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        embeddings.embed_query("question")
+
+    assert "sk-secret" not in str(exc.value)
+    assert "InvalidApiKey" in str(exc.value)
+
+
+def test_build_qwen_ocr_message_includes_base64_and_options(tmp_path, monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_OCR_MIN_PIXELS", "3072")
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_OCR_MAX_PIXELS", "8388608")
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_OCR_ENABLE_ROTATE", "false")
+    image_path = tmp_path / "scan.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    from imperial_rag.providers import build_qwen_ocr_message, QwenProviderSettings
+
+    message = build_qwen_ocr_message(image_path, QwenProviderSettings.from_env())
+
+    content = message["content"][0]
+    assert message["role"] == "user"
+    assert content["image"].startswith("data:image/jpeg;base64,")
+    assert content["min_pixels"] == 3072
+    assert content["max_pixels"] == 8388608
+    assert content["enable_rotate"] is False
+
+
+def test_parse_qwen_ocr_response_extracts_text():
+    from imperial_rag.providers import parse_qwen_ocr_response
+
+    response = {
+        "output": {
+            "choices": [
+                {
+                    "message": SimpleNamespace(
+                        content=[
+                            {"text": " Распознанный текст "},
+                        ]
+                    )
+                }
+            ]
+        }
+    }
+
+    assert parse_qwen_ocr_response(response) == "Распознанный текст"
