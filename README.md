@@ -139,6 +139,20 @@ uv run python scripts/run_phoenix_eval.py --use-phoenix
 
 Phoenix mode requires the Phoenix service to be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults to `http://localhost:6006`.
 
+Run Ragas quality checks over the same gold questions:
+
+```bash
+uv run python scripts/run_ragas_eval.py
+```
+
+The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness` because the current gold rows do not yet include `reference_answer`. Metrics such as `context_recall` and `factual_correctness` are supported only for rows with `reference_answer` added to `evals/questions.jsonl`.
+
+Write Ragas scores to JSONL:
+
+```bash
+uv run python scripts/run_ragas_eval.py --output-path .imperial_rag/evals/ragas-faithfulness.jsonl
+```
+
 ## Testing
 
 Run the full test suite:
