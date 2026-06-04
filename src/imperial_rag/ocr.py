@@ -55,6 +55,13 @@ class QwenOcrClient:
 
 class LegacyOpenAIOcrClient:
     def __init__(self, model: str = "gpt-4.1-mini") -> None:
+        from imperial_rag.providers import QwenProviderSettings
+
+        if not QwenProviderSettings.from_env().allow_legacy_openai:
+            raise RuntimeError(
+                "Legacy OpenAI OCR is disabled. Use Qwen OCR defaults or set "
+                "IMPERIAL_RAG_ALLOW_LEGACY_OPENAI=true."
+            )
         self._model_name = model
         self._model = None
 

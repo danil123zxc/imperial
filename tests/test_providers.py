@@ -100,6 +100,27 @@ def test_dashscope_configured_requires_key(monkeypatch):
     assert dashscope_configured() is True
 
 
+def test_legacy_openai_ocr_requires_explicit_opt_in(monkeypatch):
+    clear_provider_env(monkeypatch)
+
+    from imperial_rag.ocr import LegacyOpenAIOcrClient
+
+    with pytest.raises(RuntimeError, match="Legacy OpenAI OCR is disabled"):
+        LegacyOpenAIOcrClient()
+
+
+def test_legacy_openai_ocr_can_be_enabled_explicitly(monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "true")
+
+    from imperial_rag.ocr import LegacyOpenAIOcrClient
+
+    client = LegacyOpenAIOcrClient(model="legacy-test-model")
+
+    assert client._model_name == "legacy-test-model"
+    assert client._model is None
+
+
 def test_qwen_provider_vector_metadata_defaults():
     from imperial_rag.providers import QwenProviderSettings
 
