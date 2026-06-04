@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import Document
 
-from imperial_rag.providers import create_reranker, dashscope_configured
+from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
 
 
 def _env_int(name: str, default: int) -> int:
@@ -294,6 +294,14 @@ def _searchable_text(document: Document) -> str:
     ).casefold()
 
 
+def _dashscope_model_name(configured: str) -> str | None:
+    prefix = "dashscope:"
+    if not configured.startswith(prefix):
+        return None
+    model_name = configured[len(prefix):].strip()
+    return model_name or None
+
+
 class CandidateMerger:
     def merge(self, vector_docs: list[Document], keyword_docs: list[Document]) -> list[Document]:
         merged: list[Document] = []
@@ -424,12 +432,17 @@ class Reranker:
             diagnostics["reranked_candidates"] = 0
             return []
 
+        primary_model = _dashscope_model_name(self.settings.primary_reranker)
+        if primary_model is None:
+            diagnostics.setdefault("fallbacks", []).append(f"reranker_unsupported:{self.settings.primary_reranker}")
+            return self._fallback_rerank(query, candidates, diagnostics)
+
         if not dashscope_configured():
             diagnostics.setdefault("fallbacks", []).append("reranker_missing_dashscope_api_key")
             return self._fallback_rerank(query, candidates, diagnostics)
 
         try:
-            reranked = self._dashscope_rerank(query, candidates)
+            reranked = self._dashscope_rerank(query, candidates, primary_model)
         except Exception:
             diagnostics.setdefault("fallbacks", []).append(f"reranker_failed:{self.settings.primary_reranker}")
             return self._fallback_rerank(query, candidates, diagnostics)
@@ -439,8 +452,9 @@ class Reranker:
         diagnostics["reranked_candidates"] = len(backfilled)
         return backfilled
 
-    def _dashscope_rerank(self, query: str, documents: list[Document]) -> list[Document]:
-        compressor = create_reranker(top_n=self.settings.rerank_top_n)
+    def _dashscope_rerank(self, query: str, documents: list[Document], model_name: str) -> list[Document]:
+        provider_settings = replace(QwenProviderSettings.from_env(), rerank_model=model_name)
+        compressor = create_reranker(top_n=self.settings.rerank_top_n, settings=provider_settings)
         return list(compressor.compress_documents(documents=documents, query=query))
 
     def _fallback_rerank(self, query: str, documents: list[Document], diagnostics: dict[str, Any]) -> list[Document]:

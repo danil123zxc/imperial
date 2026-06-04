@@ -452,8 +452,8 @@ def test_reranker_uses_dashscope_provider_when_api_key_configured(monkeypatch):
             calls.append({"documents": documents, "query": query})
             return [documents[1]]
 
-    def fake_create_reranker(top_n):
-        calls.append({"top_n": top_n})
+    def fake_create_reranker(top_n, settings):
+        calls.append({"top_n": top_n, "rerank_model": settings.rerank_model})
         return FakeCompressor()
 
     monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
@@ -467,13 +467,70 @@ def test_reranker_uses_dashscope_provider_when_api_key_configured(monkeypatch):
 
     assert [doc.metadata["citation_id"] for doc in reranked] == ["act", "return"]
     assert calls == [
-        {"top_n": 2},
+        {"top_n": 2, "rerank_model": "qwen3-rerank"},
         {"documents": docs[:2], "query": "возврат брака"},
     ]
     assert diagnostics["reranker"] == "dashscope:qwen3-rerank"
     assert diagnostics["rerank_input"] == 2
     assert diagnostics["reranked_candidates"] == 2
     assert diagnostics["fallbacks"] == []
+
+
+def test_reranker_passes_explicit_dashscope_primary_model_to_provider(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen3-rerank-env")
+    docs = [
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+        Document(page_content="Возврат оформляется актом.", metadata={"citation_id": "act", "_keyword_rank": 1}),
+    ]
+    diagnostics = {"fallbacks": []}
+    calls = []
+
+    class FakeCompressor:
+        def compress_documents(self, documents, query):
+            return [documents[0]]
+
+    def fake_create_reranker(top_n, settings):
+        calls.append({"top_n": top_n, "rerank_model": settings.rerank_model})
+        return FakeCompressor()
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", fake_create_reranker, raising=False)
+
+    settings = RetrievalSettings(primary_reranker="dashscope:qwen3-rerank-explicit", rerank_top_n=1)
+    reranked = Reranker(settings=settings).rerank("возврат брака", docs, diagnostics)
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["return"]
+    assert calls == [{"top_n": 1, "rerank_model": "qwen3-rerank-explicit"}]
+    assert diagnostics["reranker"] == "dashscope:qwen3-rerank-explicit"
+    assert diagnostics["fallbacks"] == []
+
+
+def test_reranker_falls_back_for_unsupported_primary_without_provider_call(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    docs = [
+        Document(page_content="Общие правила склада.", metadata={"citation_id": "warehouse"}),
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+    ]
+    diagnostics = {"fallbacks": []}
+    calls = []
+
+    def fake_create_reranker(top_n, settings):
+        calls.append({"top_n": top_n, "rerank_model": settings.rerank_model})
+        raise AssertionError("unsupported primary should not create a DashScope reranker")
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", fake_create_reranker, raising=False)
+
+    settings = RetrievalSettings(primary_reranker="cohere:stale-reranker", rerank_top_n=1)
+    reranked = Reranker(settings=settings).rerank("возврат брака", docs, diagnostics)
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["return"]
+    assert calls == []
+    assert diagnostics["reranker"] == "fallback:deterministic"
+    assert "reranker_unsupported:cohere:stale-reranker" in diagnostics["fallbacks"]
 
 
 def test_reranker_uses_deterministic_fallback_without_dashscope_api_key(monkeypatch):
@@ -508,7 +565,7 @@ def test_reranker_falls_back_when_dashscope_provider_raises(monkeypatch):
             raise RuntimeError("dashscope unavailable")
 
     monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
-    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n: BrokenCompressor(), raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n, settings: BrokenCompressor(), raising=False)
 
     settings = RetrievalSettings(primary_reranker="dashscope:qwen3-rerank-test", rerank_top_n=1)
     reranked = Reranker(settings=settings).rerank("возврат брака", docs, diagnostics)
@@ -520,11 +577,14 @@ def test_reranker_falls_back_when_dashscope_provider_raises(monkeypatch):
 
 def test_reranker_backfills_when_primary_returns_too_few(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     docs = [
         Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
         Document(page_content="Возврат оформляется актом.", metadata={"citation_id": "act", "_keyword_rank": 1}),
     ]
     diagnostics = {"fallbacks": []}
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: False, raising=False)
 
     reranked = Reranker(settings=RetrievalSettings(rerank_top_n=3)).rerank("возврат брака", docs, diagnostics)
 
