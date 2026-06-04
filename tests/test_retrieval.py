@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.documents import Document
 
+import imperial_rag.retrieval as retrieval_module
 from imperial_rag.retrieval import CandidateMerger, FallbackRanker, RetrievalSettings
 from imperial_rag.retrieval import ChunkNeighborStore, EvidenceSelector, NeighborExpander
 from imperial_rag.retrieval import HybridRetriever
@@ -56,6 +57,7 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
         "IMPERIAL_RAG_FINAL_EVIDENCE_MIN",
         "IMPERIAL_RAG_FINAL_EVIDENCE_MAX",
         "IMPERIAL_RAG_MMR_LAMBDA_MULT",
+        "IMPERIAL_RAG_QWEN_RERANK_MODEL",
         "IMPERIAL_RAG_PRIMARY_RERANKER",
         "IMPERIAL_RAG_FALLBACK_RERANKER",
     ):
@@ -74,8 +76,30 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
     assert settings.final_evidence_min == 18
     assert settings.final_evidence_max == 24
     assert settings.mmr_lambda_mult == 0.4
-    assert settings.primary_reranker == "cohere:rerank-v3.5"
-    assert settings.fallback_reranker == "cohere:rerank-multilingual-v3.0"
+    assert settings.primary_reranker == "dashscope:qwen3-rerank"
+    assert settings.fallback_reranker == "fallback:deterministic"
+
+
+def test_retrieval_settings_qwen_rerank_model_sets_default_primary(monkeypatch):
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen3-rerank-custom")
+    monkeypatch.delenv("IMPERIAL_RAG_PRIMARY_RERANKER", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_FALLBACK_RERANKER", raising=False)
+
+    settings = RetrievalSettings.from_env()
+
+    assert settings.primary_reranker == "dashscope:qwen3-rerank-custom"
+    assert settings.fallback_reranker == "fallback:deterministic"
+
+
+def test_retrieval_settings_primary_reranker_overrides_qwen_default(monkeypatch):
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen3-rerank-custom")
+    monkeypatch.setenv("IMPERIAL_RAG_PRIMARY_RERANKER", "dashscope:explicit")
+    monkeypatch.delenv("IMPERIAL_RAG_FALLBACK_RERANKER", raising=False)
+
+    settings = RetrievalSettings.from_env()
+
+    assert settings.primary_reranker == "dashscope:explicit"
+    assert settings.fallback_reranker == "fallback:deterministic"
 
 
 def test_retrieval_settings_read_environment_overrides(monkeypatch):
@@ -90,8 +114,8 @@ def test_retrieval_settings_read_environment_overrides(monkeypatch):
     monkeypatch.setenv("IMPERIAL_RAG_FINAL_EVIDENCE_MIN", "14")
     monkeypatch.setenv("IMPERIAL_RAG_FINAL_EVIDENCE_MAX", "20")
     monkeypatch.setenv("IMPERIAL_RAG_MMR_LAMBDA_MULT", "0.65")
-    monkeypatch.setenv("IMPERIAL_RAG_PRIMARY_RERANKER", "cohere:custom-primary")
-    monkeypatch.setenv("IMPERIAL_RAG_FALLBACK_RERANKER", "cohere:custom-fallback")
+    monkeypatch.setenv("IMPERIAL_RAG_PRIMARY_RERANKER", "dashscope:custom-primary")
+    monkeypatch.setenv("IMPERIAL_RAG_FALLBACK_RERANKER", "fallback:custom")
 
     settings = RetrievalSettings.from_env()
 
@@ -106,8 +130,8 @@ def test_retrieval_settings_read_environment_overrides(monkeypatch):
     assert settings.final_evidence_min == 14
     assert settings.final_evidence_max == 20
     assert settings.mmr_lambda_mult == 0.65
-    assert settings.primary_reranker == "cohere:custom-primary"
-    assert settings.fallback_reranker == "cohere:custom-fallback"
+    assert settings.primary_reranker == "dashscope:custom-primary"
+    assert settings.fallback_reranker == "fallback:custom"
 
 
 def test_hybrid_retriever_uses_configured_candidate_counts():
@@ -183,6 +207,7 @@ def test_hybrid_retriever_reports_vector_provider_mismatch_without_vector_call()
 
 def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     vector_docs = [
         Document(page_content="vector return", metadata={"citation_id": "v", "file_id": "f", "source_type": "body", "chunk_index": 0})
     ]
@@ -411,19 +436,86 @@ def test_fallback_ranker_ignores_ambiguous_vector_score_direction():
     assert [doc.metadata["citation_id"] for doc in ranked] == ["better-rank", "ambiguous-score"]
 
 
-def test_reranker_uses_deterministic_fallback_without_api_key(monkeypatch):
+def test_reranker_uses_dashscope_provider_when_api_key_configured(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    docs = [
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+        Document(page_content="Возврат оформляется актом.", metadata={"citation_id": "act", "_keyword_rank": 1}),
+        Document(page_content="Общие правила склада.", metadata={"citation_id": "warehouse"}),
+    ]
+    diagnostics = {"fallbacks": []}
+    calls = []
+
+    class FakeCompressor:
+        def compress_documents(self, documents, query):
+            calls.append({"documents": documents, "query": query})
+            return [documents[1]]
+
+    def fake_create_reranker(top_n):
+        calls.append({"top_n": top_n})
+        return FakeCompressor()
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", fake_create_reranker, raising=False)
+
+    reranked = Reranker(settings=RetrievalSettings(rerank_input_limit=2, rerank_top_n=2)).rerank(
+        "возврат брака",
+        docs,
+        diagnostics,
+    )
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["act", "return"]
+    assert calls == [
+        {"top_n": 2},
+        {"documents": docs[:2], "query": "возврат брака"},
+    ]
+    assert diagnostics["reranker"] == "dashscope:qwen3-rerank"
+    assert diagnostics["rerank_input"] == 2
+    assert diagnostics["reranked_candidates"] == 2
+    assert diagnostics["fallbacks"] == []
+
+
+def test_reranker_uses_deterministic_fallback_without_dashscope_api_key(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     docs = [
         Document(page_content="Общие правила склада.", metadata={"citation_id": "warehouse"}),
         Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
     ]
     diagnostics = {"fallbacks": []}
 
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: False, raising=False)
+
     reranked = Reranker(settings=RetrievalSettings(rerank_top_n=1)).rerank("возврат брака", docs, diagnostics)
 
     assert [doc.metadata["citation_id"] for doc in reranked] == ["return"]
     assert diagnostics["reranker"] == "fallback:deterministic"
-    assert "reranker_missing_api_key" in diagnostics["fallbacks"]
+    assert "reranker_missing_dashscope_api_key" in diagnostics["fallbacks"]
+
+
+def test_reranker_falls_back_when_dashscope_provider_raises(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    docs = [
+        Document(page_content="Общие правила склада.", metadata={"citation_id": "warehouse"}),
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+    ]
+    diagnostics = {"fallbacks": []}
+
+    class BrokenCompressor:
+        def compress_documents(self, documents, query):
+            raise RuntimeError("dashscope unavailable")
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n: BrokenCompressor(), raising=False)
+
+    settings = RetrievalSettings(primary_reranker="dashscope:qwen3-rerank-test", rerank_top_n=1)
+    reranked = Reranker(settings=settings).rerank("возврат брака", docs, diagnostics)
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["return"]
+    assert diagnostics["reranker"] == "fallback:deterministic"
+    assert "reranker_failed:dashscope:qwen3-rerank-test" in diagnostics["fallbacks"]
 
 
 def test_reranker_backfills_when_primary_returns_too_few(monkeypatch):

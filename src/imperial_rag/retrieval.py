@@ -8,6 +8,8 @@ from typing import Any
 
 from langchain_core.documents import Document
 
+from imperial_rag.providers import create_reranker, dashscope_configured
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -43,11 +45,13 @@ class RetrievalSettings:
     final_evidence_min: int = 18
     final_evidence_max: int = 24
     mmr_lambda_mult: float = 0.4
-    primary_reranker: str = "cohere:rerank-v3.5"
-    fallback_reranker: str = "cohere:rerank-multilingual-v3.0"
+    primary_reranker: str = "dashscope:qwen3-rerank"
+    fallback_reranker: str = "fallback:deterministic"
 
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
+        qwen_rerank_model = _env_str("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen3-rerank")
+        primary_reranker = _env_str("IMPERIAL_RAG_PRIMARY_RERANKER", f"dashscope:{qwen_rerank_model}")
         return cls(
             chunk_size=_env_int("IMPERIAL_RAG_CHUNK_SIZE", cls.chunk_size),
             chunk_overlap=_env_int("IMPERIAL_RAG_CHUNK_OVERLAP", cls.chunk_overlap),
@@ -60,7 +64,7 @@ class RetrievalSettings:
             final_evidence_min=_env_int("IMPERIAL_RAG_FINAL_EVIDENCE_MIN", cls.final_evidence_min),
             final_evidence_max=_env_int("IMPERIAL_RAG_FINAL_EVIDENCE_MAX", cls.final_evidence_max),
             mmr_lambda_mult=_env_float("IMPERIAL_RAG_MMR_LAMBDA_MULT", cls.mmr_lambda_mult),
-            primary_reranker=_env_str("IMPERIAL_RAG_PRIMARY_RERANKER", cls.primary_reranker),
+            primary_reranker=primary_reranker,
             fallback_reranker=_env_str("IMPERIAL_RAG_FALLBACK_RERANKER", cls.fallback_reranker),
         )
 
@@ -290,13 +294,6 @@ def _searchable_text(document: Document) -> str:
     ).casefold()
 
 
-def _cohere_model_name(configured: str) -> str:
-    prefix = "cohere:"
-    if configured.startswith(prefix):
-        return configured[len(prefix):]
-    return configured
-
-
 class CandidateMerger:
     def merge(self, vector_docs: list[Document], keyword_docs: list[Document]) -> list[Document]:
         merged: list[Document] = []
@@ -427,31 +424,27 @@ class Reranker:
             diagnostics["reranked_candidates"] = 0
             return []
 
-        if not os.environ.get("COHERE_API_KEY", "").strip():
-            diagnostics.setdefault("fallbacks", []).append("reranker_missing_api_key")
+        if not dashscope_configured():
+            diagnostics.setdefault("fallbacks", []).append("reranker_missing_dashscope_api_key")
             return self._fallback_rerank(query, candidates, diagnostics)
 
-        for configured_model in (self.settings.primary_reranker, self.settings.fallback_reranker):
-            try:
-                reranked = self._cohere_rerank(query, candidates, _cohere_model_name(configured_model))
-            except Exception:
-                diagnostics.setdefault("fallbacks", []).append(f"reranker_failed:{configured_model}")
-                continue
-            diagnostics["reranker"] = configured_model
-            backfilled = self._backfill(query, reranked, candidates)
-            diagnostics["reranked_candidates"] = len(backfilled)
-            return backfilled
+        try:
+            reranked = self._dashscope_rerank(query, candidates)
+        except Exception:
+            diagnostics.setdefault("fallbacks", []).append(f"reranker_failed:{self.settings.primary_reranker}")
+            return self._fallback_rerank(query, candidates, diagnostics)
 
-        return self._fallback_rerank(query, candidates, diagnostics)
+        diagnostics["reranker"] = self.settings.primary_reranker
+        backfilled = self._backfill(query, reranked, candidates)
+        diagnostics["reranked_candidates"] = len(backfilled)
+        return backfilled
 
-    def _cohere_rerank(self, query: str, documents: list[Document], model_name: str) -> list[Document]:
-        from langchain_cohere import CohereRerank
-
-        compressor = CohereRerank(model=model_name, top_n=self.settings.rerank_top_n)
+    def _dashscope_rerank(self, query: str, documents: list[Document]) -> list[Document]:
+        compressor = create_reranker(top_n=self.settings.rerank_top_n)
         return list(compressor.compress_documents(documents=documents, query=query))
 
     def _fallback_rerank(self, query: str, documents: list[Document], diagnostics: dict[str, Any]) -> list[Document]:
-        diagnostics["reranker"] = "fallback:deterministic"
+        diagnostics["reranker"] = self.settings.fallback_reranker
         reranked = self._fallback.rank(query, documents, top_n=self.settings.rerank_top_n)
         backfilled = self._backfill(query, reranked, documents)
         diagnostics["reranked_candidates"] = len(backfilled)
