@@ -4,12 +4,14 @@ version = "0.1.0"
 description = "Local/private RAG system for the Imperial document corpus"
 requires-python = ">=3.12"
 dependencies = [
+  "dashscope",
   "langchain",
   "langchain-community",
   "langchain-core",
   "langchain-openai",
   "langchain-qdrant",
   "langchain-cohere",
+  "langchain-qwq",
   "langchain-text-splitters",
   "langgraph",
   "arize-phoenix-client",

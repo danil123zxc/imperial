@@ -29,3 +29,21 @@ def test_project_includes_cohere_reranking_dependency():
     dependencies = {_normalize_dependency_name(dependency) for dependency in pyproject["project"]["dependencies"]}
 
     assert "langchain-cohere" in dependencies
+
+
+def test_project_includes_dashscope_qwen_dependencies():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = {_normalize_dependency_name(dependency) for dependency in pyproject["project"]["dependencies"]}
+
+    assert "dashscope" in dependencies
+    assert "langchain-qwq" in dependencies
+
+
+def test_dashscope_qwen_imports_are_available_after_sync():
+    import dashscope
+    from langchain_qwq import ChatQwen
+
+    assert hasattr(dashscope, "TextEmbedding")
+    assert hasattr(dashscope, "TextReRank")
+    assert hasattr(dashscope, "MultiModalConversation")
+    assert ChatQwen is not None
