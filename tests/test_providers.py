@@ -267,6 +267,27 @@ def test_dashscope_text_embeddings_raise_clean_error_without_secret():
     assert "InvalidApiKey" in str(exc.value)
 
 
+def test_dashscope_text_embeddings_wrap_sdk_exception_without_secret():
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            raise RuntimeError("network failed for sk-secret")
+
+    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+
+    embeddings = DashScopeTextEmbeddings(
+        settings=QwenProviderSettings(api_key="sk-secret"),
+        client=FakeTextEmbedding,
+    )
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        embeddings.embed_query("question")
+
+    message = str(exc.value)
+    assert "network failed" in message
+    assert "sk-secret" not in message
+
+
 def test_build_qwen_ocr_message_includes_base64_and_options(tmp_path, monkeypatch):
     clear_provider_env(monkeypatch)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")

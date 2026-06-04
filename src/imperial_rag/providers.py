@@ -247,7 +247,17 @@ class DashScopeTextEmbeddings(Embeddings):
         }
         if self.dimensions is not None:
             kwargs["dimension"] = self.dimensions
-        response = self.client.call(**kwargs)
+        try:
+            response = self.client.call(**kwargs)
+        except Exception as exc:
+            message = _sanitize_provider_message(str(exc), self.api_key)
+            provider_error = DashScopeProviderError(
+                f"DashScope embedding failed: exception={exc.__class__.__name__} message={message}"
+            )
+        else:
+            provider_error = None
+        if provider_error is not None:
+            raise provider_error
         status_code = _response_get(response, "status_code")
         if status_code != 200:
             code = _response_get(response, "code") or "dashscope_error"
