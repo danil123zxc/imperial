@@ -462,6 +462,38 @@ def test_build_qwen_ocr_message_includes_base64_and_options(tmp_path, monkeypatc
     assert content["enable_rotate"] is False
 
 
+def test_qwen_ocr_client_calls_multimodal_conversation(tmp_path, monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    image_path = tmp_path / "scan.png"
+    image_path.write_bytes(b"fake-image")
+    calls = []
+
+    class FakeConversation:
+        @staticmethod
+        def call(**kwargs):
+            calls.append(kwargs)
+            return {
+                "output": {
+                    "choices": [
+                        {"message": SimpleNamespace(content=[{"text": "OCR text"}])}
+                    ]
+                }
+            }
+
+    from imperial_rag.ocr import OcrResult, QwenOcrClient
+    from imperial_rag.providers import QwenProviderSettings
+
+    client = QwenOcrClient(settings=QwenProviderSettings.from_env(), conversation_client=FakeConversation)
+    result = client.extract_image_text(image_path)
+
+    assert result == OcrResult(text="OCR text", method="dashscope:qwen-vl-ocr-2025-11-20")
+    assert calls[0]["model"] == "qwen-vl-ocr-2025-11-20"
+    assert calls[0]["api_key"] == "dashscope-test-key"
+    assert calls[0]["ocr_options"] == {"task": "multi_lan"}
+    assert calls[0]["messages"][0]["role"] == "user"
+
+
 def test_parse_qwen_ocr_response_extracts_text():
     from imperial_rag.providers import parse_qwen_ocr_response
 

@@ -15,7 +15,34 @@ class OcrResult:
     cached: bool = False
 
 
-class OcrClient:
+class QwenOcrClient:
+    def __init__(self, settings=None, conversation_client=None) -> None:
+        from imperial_rag.providers import QwenProviderSettings
+
+        self.settings = settings or QwenProviderSettings.from_env()
+        self.api_key = self.settings.require_api_key()
+        if conversation_client is None:
+            import dashscope
+
+            conversation_client = dashscope.MultiModalConversation
+        self.conversation_client = conversation_client
+
+    def extract_image_text(self, image_path: Path) -> OcrResult:
+        from imperial_rag.providers import build_qwen_ocr_message, parse_qwen_ocr_response
+
+        response = self.conversation_client.call(
+            api_key=self.api_key,
+            model=self.settings.vision_model,
+            messages=[build_qwen_ocr_message(image_path, self.settings)],
+            ocr_options={"task": self.settings.ocr_task},
+        )
+        return OcrResult(
+            text=parse_qwen_ocr_response(response),
+            method=f"dashscope:{self.settings.vision_model}",
+        )
+
+
+class LegacyOpenAIOcrClient:
     def __init__(self, model: str = "gpt-4.1-mini") -> None:
         self._model_name = model
         self._model = None
@@ -47,7 +74,10 @@ class OcrClient:
                 }
             ]
         )
-        return OcrResult(text=str(response.content).strip(), method="langchain_openai_vision")
+        return OcrResult(text=str(response.content).strip(), method="legacy_openai_vision")
+
+
+OcrClient = QwenOcrClient
 
 
 class OcrCache:

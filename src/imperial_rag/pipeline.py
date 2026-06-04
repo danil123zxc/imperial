@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -195,10 +194,8 @@ def _load_dependencies() -> dict[str, Any]:
 def _build_ocr_client(enable_ocr: bool) -> Any | None:
     if not enable_ocr or not _ocr_appears_configured():
         return None
-    try:
-        from imperial_rag.ocr import OcrClient
-    except ImportError:
-        return None
+    from imperial_rag.ocr import OcrClient
+
     return OcrClient()
 
 
@@ -219,14 +216,9 @@ def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
 
 
 def _ocr_appears_configured() -> bool:
-    return any(
-        os.environ.get(name)
-        for name in (
-            "OPENAI_API_KEY",
-            "AZURE_OPENAI_API_KEY",
-            "IMPERIAL_RAG_OCR_API_KEY",
-        )
-    )
+    from imperial_rag.providers import dashscope_configured
+
+    return dashscope_configured()
 
 
 def _extract_record(

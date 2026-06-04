@@ -94,14 +94,9 @@ def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
 
 
 def _ocr_appears_configured() -> bool:
-    return any(
-        os.environ.get(name)
-        for name in (
-            "OPENAI_API_KEY",
-            "AZURE_OPENAI_API_KEY",
-            "IMPERIAL_RAG_OCR_API_KEY",
-        )
-    )
+    from imperial_rag.providers import dashscope_configured
+
+    return dashscope_configured()
 
 
 def _build_settings(workspace_root: Path | None) -> Any:

@@ -29,6 +29,17 @@ def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")
 
 
+def test_ingest_ocr_gate_uses_dashscope_key(monkeypatch):
+    module = _load_script("scripts/ingest.py", "ingest_script_ocr_gate")
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-legacy-key")
+
+    assert module._ocr_appears_configured() is False
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    assert module._ocr_appears_configured() is True
+
+
 def _load_script(path: str, name: str):
     spec = importlib.util.spec_from_file_location(name, Path(path))
     assert spec is not None
