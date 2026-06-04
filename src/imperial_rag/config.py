@@ -14,7 +14,7 @@ class Settings:
         default_factory=lambda: Path(os.environ.get("IMPERIAL_RAG_WORKSPACE_ROOT", DEFAULT_WORKSPACE_ROOT))
     )
     qdrant_url: str = field(default_factory=lambda: os.environ.get("QDRANT_URL", "http://localhost:6333"))
-    qdrant_collection: str = field(default_factory=lambda: os.environ.get("QDRANT_COLLECTION", "imperial_chunks"))
+    qdrant_collection: str = field(default_factory=lambda: os.environ.get("QDRANT_COLLECTION", "imperial_chunks_qwen"))
     phoenix_project_name: str = field(default_factory=lambda: os.environ.get("PHOENIX_PROJECT_NAME", "imperial-rag"))
     phoenix_collector_endpoint: str = field(
         default_factory=lambda: os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces")

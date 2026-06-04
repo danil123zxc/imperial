@@ -10,7 +10,7 @@ def test_settings_defaults_to_workspace_documents():
     assert settings.documents_root == Path("/Users/danil/Public/imperial/documents")
     assert settings.processed_root == Path("/Users/danil/Public/imperial/.imperial_rag")
     assert settings.qdrant_url == "http://localhost:6333"
-    assert settings.qdrant_collection == "imperial_chunks"
+    assert settings.qdrant_collection == "imperial_chunks_qwen"
     assert settings.phoenix_project_name == "imperial-rag"
     assert settings.phoenix_collector_endpoint == "http://localhost:6006/v1/traces"
     assert settings.phoenix_client_endpoint == "http://localhost:6006"
@@ -19,7 +19,7 @@ def test_settings_defaults_to_workspace_documents():
     assert settings.extraction_root == Path("/Users/danil/Public/imperial/.imperial_rag/extracted")
 
 
-def test_settings_reads_environment_overrides(monkeypatch, tmp_path):
+def test_settings_reads_environment_overrides_including_qdrant_collection(monkeypatch, tmp_path):
     monkeypatch.setenv("IMPERIAL_RAG_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("QDRANT_URL", "http://127.0.0.1:6333")
     monkeypatch.setenv("QDRANT_COLLECTION", "test_chunks")
