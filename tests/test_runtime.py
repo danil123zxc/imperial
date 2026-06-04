@@ -118,8 +118,39 @@ def test_semantic_search_enabled_uses_dashscope_key(monkeypatch):
 
     assert _semantic_search_enabled() is False
 
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-openai-key")
+    assert _semantic_search_enabled() is False
+
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     assert _semantic_search_enabled() is True
+
+
+def test_build_query_dependencies_defers_chat_model_without_dashscope(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("imperial_rag.runtime.KeywordIndex", lambda db_path: object())
+
+    def fake_create_chat_model():
+        calls.append("factory")
+        raise RuntimeError("missing dashscope")
+
+    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", fake_create_chat_model)
+
+    deps = build_query_dependencies(Settings(workspace_root=tmp_path))
+
+    assert calls == []
+
+    try:
+        deps.chat_model.invoke(["message"])
+    except RuntimeError as exc:
+        assert str(exc) == "missing dashscope"
+    else:
+        raise AssertionError("expected lazy chat invocation to raise provider error")
+    assert calls == ["factory"]
 
 
 def test_build_query_dependencies_skips_vector_search_on_metadata_mismatch(monkeypatch, tmp_path):
@@ -142,12 +173,27 @@ def test_build_query_dependencies_skips_vector_search_on_metadata_mismatch(monke
 
 
 def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):
-    fake_chat_model = object()
+    calls = []
+
+    class FakeChatModel:
+        def invoke(self, messages):
+            calls.append({"messages": messages})
+            return "answer"
+
+    fake_chat_model = FakeChatModel()
+
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
-    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
+    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: calls.append("factory") or fake_chat_model)
     monkeypatch.setattr("imperial_rag.runtime.KeywordIndex", lambda db_path: object())
     monkeypatch.setattr("imperial_rag.runtime._semantic_search_enabled", lambda: False)
 
     deps = build_query_dependencies(Settings(workspace_root=tmp_path))
 
-    assert deps.chat_model is fake_chat_model
+    assert calls == []
+    assert deps.chat_model.invoke(["message"]) == "answer"
+    assert deps.chat_model.invoke(["again"]) == "answer"
+    assert calls == [
+        "factory",
+        {"messages": ["message"]},
+        {"messages": ["again"]},
+    ]

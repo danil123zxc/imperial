@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
@@ -20,6 +21,16 @@ class QueryDependencies:
 class _NoopVectorSearch:
     def similarity_search(self, query: str, k: int):
         return []
+
+
+class _DeferredProviderChatModel:
+    def __init__(self) -> None:
+        self._model: Any | None = None
+
+    def invoke(self, messages):
+        if self._model is None:
+            self._model = create_chat_model()
+        return self._model.invoke(messages)
 
 
 class _ProviderMismatchVectorSearch:
@@ -47,7 +58,7 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
     return QueryDependencies(
         vector_search=vector_search,
         keyword_search=KeywordIndex(settings.keyword_db_path),
-        chat_model=create_chat_model(),
+        chat_model=_DeferredProviderChatModel(),
     )
 
 
