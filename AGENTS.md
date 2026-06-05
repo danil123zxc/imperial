@@ -14,6 +14,8 @@ This is a Python 3.12+ local RAG project for the Imperial document corpus. Core 
 - `uv run python scripts/query.py "question text"` queries the processed RAG state.
 - `uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.0.0.1 --server.port 8501` runs the local UI.
 
+To run the server locally, use the Streamlit command above from the repository root, then open `http://127.0.0.1:8501`. If port `8501` is already in use, choose another local port with `--server.port <port>` and report the final URL. Verify startup with `curl -fsS -I http://127.0.0.1:<port>/` or a browser smoke check before telling the user it is running.
+
 ## Coding Style & Naming Conventions
 
 Use Python type hints, `from __future__ import annotations`, `pathlib.Path`, and dataclasses where they match existing code. Keep four-space indentation, `snake_case` for modules/functions, `PascalCase` for classes/dataclasses, and uppercase constants. No formatter or linter is configured, so match the existing concise style and run pytest before handing off.
