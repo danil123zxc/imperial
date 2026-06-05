@@ -165,6 +165,32 @@ Run the full test suite:
 uv run python -m pytest -q
 ```
 
+Live tests are opt-in so the default suite stays offline and free of paid network calls. The live API and live corpus consent flags must be set in the process environment; `.env` is used only for secrets after those flags are present.
+
+Run live DashScope/Qwen provider smoke and fixture integration tests only when real credentials are available:
+
+```bash
+IMPERIAL_RAG_LIVE_API=1 uv run python -m pytest tests/test_live_provider_smoke.py tests/test_live_rag_integration.py -q
+```
+
+When running from an isolated worktree, point live tests at the trusted env file instead of copying secrets:
+
+```bash
+IMPERIAL_RAG_LIVE_API=1 IMPERIAL_RAG_LIVE_ENV_PATH=/Users/danil/Public/imperial/.env uv run python -m pytest tests/test_live_provider_smoke.py tests/test_live_rag_integration.py -q
+```
+
+Run the real generated Imperial corpus health check only when `.imperial_rag` is present and you intentionally want to test it:
+
+```bash
+IMPERIAL_RAG_LIVE_API=1 IMPERIAL_RAG_LIVE_CORPUS=1 uv run python -m pytest tests/test_live_real_corpus.py -q
+```
+
+From an isolated worktree, point the test back at the main checkout env file so it can use the main checkout's generated state:
+
+```bash
+IMPERIAL_RAG_LIVE_API=1 IMPERIAL_RAG_LIVE_CORPUS=1 IMPERIAL_RAG_LIVE_ENV_PATH=/Users/danil/Public/imperial/.env uv run python -m pytest tests/test_live_real_corpus.py -q
+```
+
 Run the live Qdrant health test only when local Qdrant is intentionally running:
 
 ```bash
