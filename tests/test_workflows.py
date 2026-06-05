@@ -34,14 +34,16 @@ def test_query_workflow_with_injected_retrieval_and_generator_happy_path():
     def generate(question, retrieved_docs):
         assert question == "Как оформить возврат брака?"
         assert retrieved_docs == docs
-        return "Возврат брака оформляется актом. [return-policy]"
+        return "Возврат брака оформляется актом. [S1]"
 
     workflow = build_query_workflow(retrieve=retrieve, generate=generate)
 
     result = workflow.invoke({"question": "Как оформить возврат брака?"})
 
     assert result["retrieved_documents"] == docs
-    assert result["answer"] == "Возврат брака оформляется актом. [return-policy]"
+    assert result["answer"] == "Возврат брака оформляется актом. [S1]"
+    assert result["citations"] == ["[S1] unknown"]
+    assert result["sources"] == ["[S1] unknown"]
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
 
@@ -67,7 +69,7 @@ def test_query_workflow_preserves_retrieval_diagnostics():
 
     workflow = build_query_workflow(
         retrieve=retrieve,
-        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [return]",
+        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [S1]",
     )
 
     result = workflow.invoke({"question": "Как оформить возврат брака?"})
@@ -81,14 +83,14 @@ def test_query_workflow_accepts_evidence_from_custom_retrieval_mapping():
 
     workflow = build_query_workflow(
         retrieve=lambda question: {"evidence": docs},
-        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [return]",
+        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [S1]",
     )
 
     result = workflow.invoke({"question": "Как оформить возврат брака?"})
 
     assert result["evidence"] == docs
     assert result["retrieved_documents"] == docs
-    assert result["answer"] == "Возврат брака оформляется актом. [return]"
+    assert result["answer"] == "Возврат брака оформляется актом. [S1]"
     assert result["citations_valid"] is True
 
 
@@ -133,7 +135,7 @@ def test_query_workflow_accepts_documents_docs_and_evidence_aliases():
             return {alias: docs}
 
         def generate(question, retrieved_docs, *, alias=alias):
-            return f"Документ из {alias}. [{alias}]"
+            return "Документ из {alias}. [S1]".format(alias=alias)
 
         workflow = build_query_workflow(
             retrieve=retrieve,
@@ -144,7 +146,7 @@ def test_query_workflow_accepts_documents_docs_and_evidence_aliases():
 
         assert result["evidence"] == docs
         assert result["retrieved_documents"] == docs
-        assert result["answer"] == f"Документ из {alias}. [{alias}]"
+        assert result["answer"] == f"Документ из {alias}. [S1]"
 
 
 def test_query_workflow_preserves_custom_retrieval_candidate_aliases():
@@ -157,7 +159,7 @@ def test_query_workflow_preserves_custom_retrieval_candidate_aliases():
             "vector_candidates": vector_docs,
             "keyword_candidates": keyword_docs,
         },
-        generate=lambda question, retrieved_docs: "Ключевой кандидат. [keyword]",
+        generate=lambda question, retrieved_docs: "Ключевой кандидат. [S1]",
     )
 
     result = workflow.invoke({"question": "Что найдено?"})
@@ -172,7 +174,7 @@ def test_query_workflow_preserves_explicit_empty_vector_candidates():
 
     workflow = build_query_workflow(
         retrieve=lambda question: {"evidence": docs, "vector_docs": []},
-        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [return]",
+        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [S1]",
     )
 
     result = workflow.invoke({"question": "Как оформить возврат брака?"})
@@ -186,7 +188,7 @@ def test_query_workflow_preserves_explicit_empty_keyword_candidates():
 
     workflow = build_query_workflow(
         retrieve=lambda question: {"evidence": docs, "keyword_candidates": []},
-        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [return]",
+        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [S1]",
     )
 
     result = workflow.invoke({"question": "Как оформить возврат брака?"})
@@ -215,7 +217,7 @@ def test_query_workflow_default_generation_requires_legacy_openai_flag(monkeypat
 
     class FakeModel:
         def invoke(self, messages):
-            return type("Response", (), {"content": "Возврат брака оформляется актом. [return]"})()
+            return type("Response", (), {"content": "Возврат брака оформляется актом. [S1]"})()
 
     monkeypatch.delenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", raising=False)
     monkeypatch.setattr("imperial_rag.workflows.ChatOpenAI", lambda **kwargs: FakeModel(), raising=False)

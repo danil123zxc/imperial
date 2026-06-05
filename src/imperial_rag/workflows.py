@@ -9,9 +9,9 @@ from langgraph.graph import END, START, StateGraph
 
 from imperial_rag.answering import (
     REFUSAL_TEXT,
-    answer_has_required_citations,
     build_strict_messages,
     format_citations,
+    format_sources,
     validate_citations,
 )
 
@@ -40,6 +40,7 @@ class QueryState(TypedDict, total=False):
     retrieved_documents: list[Document]
     answer: str
     citations: list[str]
+    sources: list[str]
     citations_valid: bool
     invalid_citations: list[str]
     retrieval: dict[str, Any]
@@ -233,8 +234,15 @@ def build_query_workflow(
     def call_model(state: QueryState) -> QueryState:
         evidence = state.get("evidence", [])
         citations = format_citations(evidence)
+        sources = format_sources(evidence)
         if not evidence:
-            return {"answer": REFUSAL_TEXT, "citations": [], "citations_valid": True, "invalid_citations": []}
+            return {
+                "answer": REFUSAL_TEXT,
+                "citations": [],
+                "sources": [],
+                "citations_valid": True,
+                "invalid_citations": [],
+            }
         if generate is not None:
             answer = _coerce_answer(_call_with_supported_args(generate, state["question"], evidence, build_strict_messages(state["question"], evidence), state))
         else:
@@ -242,14 +250,21 @@ def build_query_workflow(
             response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
             answer = str(response.content)
         valid, invalid = validate_citations(answer, evidence)
-        if not valid or not answer_has_required_citations(answer, citations):
+        if not valid:
             return {
                 "answer": REFUSAL_TEXT,
                 "citations": citations,
+                "sources": sources,
                 "citations_valid": False,
                 "invalid_citations": invalid,
             }
-        return {"answer": answer, "citations": citations, "citations_valid": True, "invalid_citations": []}
+        return {
+            "answer": answer,
+            "citations": citations,
+            "sources": sources,
+            "citations_valid": True,
+            "invalid_citations": [],
+        }
 
     graph = StateGraph(QueryState)
     graph.add_node("normalize_query", normalize_query)

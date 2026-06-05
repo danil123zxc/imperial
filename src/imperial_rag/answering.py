@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from langchain_core.documents import Document
 
 
 REFUSAL_TEXT = "I could not find this clearly in the indexed documents."
+
+
+def _short_citation_marker(index: int) -> str:
+    return f"[S{index + 1}]"
 
 
 def _doc_citation_marker(document: Document) -> str:
@@ -16,7 +21,7 @@ def _doc_citation_marker(document: Document) -> str:
     return f"{file_path}#{chunk_id}"
 
 
-def format_citations(documents: list[Document]) -> list[str]:
+def _legacy_citations(documents: list[Document]) -> list[str]:
     citations: list[str] = []
     for document in documents:
         marker = _doc_citation_marker(document)
@@ -25,10 +30,23 @@ def format_citations(documents: list[Document]) -> list[str]:
     return citations
 
 
+def _validation_citations(documents: list[Document]) -> list[str]:
+    return [*format_citations(documents), *_legacy_citations(documents)]
+
+
+def format_citations(documents: list[Document]) -> list[str]:
+    citations: list[str] = []
+    for index, document in enumerate(documents):
+        marker = _short_citation_marker(index)
+        source_type = document.metadata.get("source_type", "unknown")
+        citations.append(f"{marker} {source_type}")
+    return citations
+
+
 def format_sources(documents: list[Document]) -> list[str]:
     sources: list[str] = []
-    for document in documents:
-        marker = _doc_citation_marker(document)
+    for index, document in enumerate(documents):
+        marker = _short_citation_marker(index)
         source = (
             document.metadata.get("file_path")
             or document.metadata.get("relative_path")
@@ -52,7 +70,7 @@ def format_sources(documents: list[Document]) -> list[str]:
             if document.metadata.get(field)
         )
         suffix = f" {' '.join(details)}" if details else ""
-        sources.append(f"[{marker}] {source}{suffix}")
+        sources.append(f"{marker} {source}{suffix}")
     return sources
 
 
@@ -68,6 +86,8 @@ def build_evidence_prompt(question: str, documents: list[Document]) -> str:
 Use only the evidence below.
 Do not use general model knowledge.
 Every meaningful factual claim must cite a source from the evidence.
+Use the short source labels exactly as shown, for example [S1].
+Do not include uncited introductions or summaries.
 If the evidence is insufficient, answer exactly: {REFUSAL_TEXT}
 
 Question:
@@ -85,7 +105,9 @@ def build_strict_messages(question: str, documents: list[Document]) -> list[dict
             "content": (
                 "You are a strict-citation RAG assistant. Use only the provided context. "
                 "Do not use general model knowledge. Answer only from context and "
-                "cite every factual claim. Refuse when the documents do not support the answer."
+                "cite every factual claim. Use concise bullets or short paragraphs. "
+                "Do not include uncited introductions or summaries. "
+                "Refuse when the documents do not support the answer."
             ),
         },
         {"role": "user", "content": build_evidence_prompt(question, documents)},
@@ -94,6 +116,10 @@ def build_strict_messages(question: str, documents: list[Document]) -> list[dict
 
 def citation_marker(citation: str) -> str:
     return citation.split("]", maxsplit=1)[0] + "]" if "]" in citation else citation
+
+
+def _normalize_marker(marker: str) -> str:
+    return unicodedata.normalize("NFC", marker)
 
 
 def _markers_in_text(text: str) -> list[str]:
@@ -106,12 +132,12 @@ def answer_has_required_citations(answer: str, citations: list[str]) -> bool:
         return stripped == REFUSAL_TEXT
     if stripped == REFUSAL_TEXT:
         return True
-    known_markers = {citation_marker(citation) for citation in citations}
+    known_markers = {_normalize_marker(citation_marker(citation)) for citation in citations}
     paragraphs = [paragraph.strip() for paragraph in answer.splitlines() if paragraph.strip()]
     if not paragraphs:
         return False
     for paragraph in paragraphs:
-        markers = set(_markers_in_text(paragraph))
+        markers = {_normalize_marker(marker) for marker in _markers_in_text(paragraph)}
         if not markers:
             return False
         if not markers.issubset(known_markers):
@@ -120,14 +146,15 @@ def answer_has_required_citations(answer: str, citations: list[str]) -> bool:
 
 
 def validate_citations(answer: str, documents: list[Document]) -> tuple[bool, list[str]]:
-    known = {citation_marker(citation) for citation in format_citations(documents)}
+    citations = _validation_citations(documents)
+    known = {_normalize_marker(citation_marker(citation)) for citation in citations}
     stripped = answer.strip()
     if stripped in {REFUSAL_TEXT, "No indexed evidence was enough to answer."}:
         return True, []
-    invalid = [marker.strip("[]") for marker in _markers_in_text(answer) if marker not in known]
+    invalid = [marker.strip("[]") for marker in _markers_in_text(answer) if _normalize_marker(marker) not in known]
     if invalid:
         return False, invalid
-    return answer_has_required_citations(answer, format_citations(documents)), invalid
+    return answer_has_required_citations(answer, citations), invalid
 
 
 def refuse_message(question: str | None = None) -> str:
