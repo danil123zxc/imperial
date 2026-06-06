@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
     args = parser.parse_args(argv)
 
+    _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     _configure_tracing(settings, args.trace_phoenix)
     result = _query(settings=settings, question=args.question)
@@ -63,6 +64,12 @@ def _build_settings(workspace_root: Path | None) -> Any:
     except TypeError:
         os.environ["IMPERIAL_RAG_WORKSPACE_ROOT"] = str(workspace_root)
         return Settings()
+
+
+def _load_project_env(workspace_root: Path | None) -> None:
+    from imperial_rag.env import load_project_env
+
+    load_project_env(workspace_root)
 
 
 def _coerce_result(result: Any) -> dict[str, Any]:

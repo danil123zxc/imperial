@@ -19,6 +19,7 @@ dependencies = [
   "openinference-instrumentation-langchain",
   "openinference-instrumentation-openai",
   "qdrant-client",
+  "python-dotenv",
   "python-docx",
   "openpyxl",
   "pypdf",

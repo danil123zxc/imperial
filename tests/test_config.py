@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from imperial_rag.config import Settings
@@ -37,3 +38,24 @@ def test_settings_reads_environment_overrides_including_qdrant_collection(monkey
     assert settings.phoenix_project_name == "test-project"
     assert settings.phoenix_collector_endpoint == "http://phoenix.internal:6006/v1/traces"
     assert settings.phoenix_client_endpoint == "http://phoenix.internal:6006"
+
+
+def test_load_project_env_reads_workspace_dotenv_without_overriding_exported_values(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "DASHSCOPE_API_KEY=dotenv-dashscope-key",
+                "QDRANT_COLLECTION=dotenv_chunks",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setenv("QDRANT_COLLECTION", "exported_chunks")
+
+    from imperial_rag.env import load_project_env
+
+    assert load_project_env(tmp_path) is True
+    assert os.environ["DASHSCOPE_API_KEY"] == "dotenv-dashscope-key"
+    assert os.environ["QDRANT_COLLECTION"] == "exported_chunks"

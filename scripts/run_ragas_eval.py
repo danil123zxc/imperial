@@ -182,6 +182,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-path", type=Path)
     args = parser.parse_args(argv)
 
+    _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     examples = load_questions(args.questions_path)
     metric_names = parse_metric_names(args.metrics)
@@ -224,6 +225,12 @@ def _build_settings(workspace_root: Path | None) -> Any:
     if workspace_root is None:
         return Settings()
     return Settings(workspace_root=workspace_root)
+
+
+def _load_project_env(workspace_root: Path | None) -> None:
+    from imperial_rag.env import load_project_env
+
+    load_project_env(workspace_root)
 
 
 def _import_ragas_evaluate() -> Callable[..., Any]:

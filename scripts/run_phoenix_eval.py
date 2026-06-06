@@ -184,6 +184,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     if args.trace_phoenix or args.use_phoenix:
         _configure_tracing(settings, enabled=True)
@@ -336,6 +337,12 @@ def _build_settings(workspace_root: Path | None) -> Any:
     except TypeError:
         os.environ["IMPERIAL_RAG_WORKSPACE_ROOT"] = str(workspace_root)
         return Settings()
+
+
+def _load_project_env(workspace_root: Path | None) -> None:
+    from imperial_rag.env import load_project_env
+
+    load_project_env(workspace_root)
 
 
 def _looks_like_refusal(answer: str) -> bool:

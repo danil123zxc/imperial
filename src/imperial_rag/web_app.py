@@ -61,6 +61,10 @@ def query_runtime(settings: Any, question: str) -> dict[str, Any]:
 def main() -> None:
     _ensure_src_on_path()
 
+    from imperial_rag.env import load_project_env
+
+    load_project_env()
+
     import streamlit as st
 
     from imperial_rag.config import Settings
