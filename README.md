@@ -125,25 +125,43 @@ uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --
 
 Gold questions live in `evals/questions.jsonl`.
 
+Run all currently runnable evals and create one Phoenix experiment:
+
+```bash
+uv run python scripts/run_all_evals.py
+```
+
+Phoenix must already be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults to `http://localhost:6006`. If it is not running, start it separately:
+
+```bash
+docker compose up -d phoenix
+```
+
+By default, the all-evals command stores deterministic citation/refusal/source-hint checks plus Ragas faithfulness in the same Phoenix experiment. To create a deterministic-only Phoenix experiment for troubleshooting:
+
+```bash
+uv run python scripts/run_all_evals.py --ragas-metrics none
+```
+
 Run deterministic local citation/refusal/source-hint checks:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py
 ```
 
-Store the dataset and experiment in local Phoenix:
+Store only the legacy Phoenix eval runner output in local Phoenix:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py --use-phoenix
 ```
 
-Phoenix mode requires the Phoenix service to be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults to `http://localhost:6006`. By default, Phoenix experiments include deterministic citation/refusal/source-hint checks plus Ragas faithfulness. To store only deterministic scores:
+By default, Phoenix experiments from `run_phoenix_eval.py` include deterministic citation/refusal/source-hint checks plus Ragas faithfulness. To store only deterministic scores:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py --use-phoenix --ragas-metrics none
 ```
 
-Run Ragas quality checks over the same gold questions:
+Run standalone Ragas quality checks over the same gold questions without creating a Phoenix experiment:
 
 ```bash
 uv run python scripts/run_ragas_eval.py

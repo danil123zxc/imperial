@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     examples = load_questions(args.questions_path)
 
     if args.use_phoenix:
-        _run_phoenix_experiment(
+        run_phoenix_experiment(
             examples=examples,
             settings=settings,
             dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"local_eval_passed={passed}")
 
 
-def _run_phoenix_experiment(
+def run_phoenix_experiment(
     examples: list[dict[str, Any]],
     settings: Any,
     dataset_name: str,
@@ -248,6 +248,22 @@ def _run_phoenix_experiment(
     print(f"phoenix_dataset={dataset_name}")
     print(f"phoenix_examples={len(examples)}")
     print(f"phoenix_experiment={_experiment_identifier(experiment)}")
+
+
+def _run_phoenix_experiment(
+    examples: list[dict[str, Any]],
+    settings: Any,
+    dataset_name: str,
+    experiment_name: str,
+    ragas_metric_names: list[str] | None = None,
+) -> None:
+    return run_phoenix_experiment(
+        examples=examples,
+        settings=settings,
+        dataset_name=dataset_name,
+        experiment_name=experiment_name,
+        ragas_metric_names=ragas_metric_names,
+    )
 
 
 def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:
