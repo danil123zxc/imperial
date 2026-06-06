@@ -21,6 +21,7 @@ DEFAULT_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
 DEFAULT_QWEN_EMBEDDING_DIMENSIONS = 2048
 DEFAULT_QWEN_RERANK_MODEL = "qwen3-rerank"
 VECTOR_PROVIDER = "dashscope"
+DASHSCOPE_EMBEDDING_BATCH_SIZE = 10
 
 
 class MissingDashScopeKeyError(RuntimeError):
@@ -249,6 +250,13 @@ class DashScopeTextEmbeddings(Embeddings):
         return self._embed([text], text_type="query")[0]
 
     def _embed(self, texts: list[str], text_type: str) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), DASHSCOPE_EMBEDDING_BATCH_SIZE):
+            batch = texts[start : start + DASHSCOPE_EMBEDDING_BATCH_SIZE]
+            vectors.extend(self._embed_batch(batch, text_type=text_type, offset=start))
+        return vectors
+
+    def _embed_batch(self, texts: list[str], text_type: str, offset: int = 0) -> list[list[float]]:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "input": texts,
@@ -283,7 +291,7 @@ class DashScopeTextEmbeddings(Embeddings):
         for index, item in enumerate(embeddings):
             embedding = _response_get(item, "embedding")
             if not embedding:
-                raise DashScopeProviderError(f"DashScope embedding failed: missing embedding at index {index}")
+                raise DashScopeProviderError(f"DashScope embedding failed: missing embedding at index {offset + index}")
             vectors.append(list(embedding))
         return vectors
 

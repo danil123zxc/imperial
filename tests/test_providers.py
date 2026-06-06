@@ -361,6 +361,32 @@ def test_dashscope_text_embeddings_call_sdk_with_dimensions(monkeypatch):
     ]
 
 
+def test_dashscope_text_embeddings_batches_documents_at_dashscope_limit():
+    calls = []
+
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            batch = list(kwargs["input"])
+            calls.append(batch)
+            return SimpleNamespace(
+                status_code=200,
+                output={"embeddings": [{"embedding": [float(index)]} for index, _ in enumerate(batch)]},
+            )
+
+    from imperial_rag.providers import DashScopeTextEmbeddings, QwenProviderSettings
+
+    settings = QwenProviderSettings(api_key="key", embedding_dimensions=2048)
+    embeddings = DashScopeTextEmbeddings(settings=settings, client=FakeTextEmbedding)
+    texts = [f"text-{index}" for index in range(11)]
+
+    vectors = embeddings.embed_documents(texts)
+
+    assert [len(call) for call in calls] == [10, 1]
+    assert calls == [texts[:10], texts[10:]]
+    assert vectors == [[float(index)] for index in range(10)] + [[0.0]]
+
+
 def test_dashscope_text_embeddings_configures_sdk(monkeypatch):
     class FakeTextEmbedding:
         @staticmethod
