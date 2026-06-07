@@ -212,6 +212,26 @@ def test_query_workflow_replaces_unsupported_generated_answer_with_refusal():
     assert result["invalid_citations"] == ["missing"]
 
 
+def test_query_workflow_preserves_cited_answer_with_uncited_structural_headings():
+    docs = [Document(page_content="Known fact.", metadata={"citation_id": "known", "source_type": "body"})]
+    answer = """**Обязанности:**
+* Осуществляет погрузку товара. [S1]
+
+### Ответственность
+* Несет ответственность за сохранность товара. [S1]"""
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: answer,
+    )
+
+    result = workflow.invoke({"question": "Какие обязанности указаны?"})
+
+    assert result["answer"] == answer
+    assert result["citations_valid"] is True
+    assert result["invalid_citations"] == []
+
+
 def test_query_workflow_default_generation_requires_legacy_openai_flag(monkeypatch):
     docs = [Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "return"})]
 

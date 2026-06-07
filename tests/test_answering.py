@@ -68,6 +68,25 @@ def test_validate_citations_rejects_unknown_ids_and_allows_refusal():
     assert validate_citations("Fact. [missing]", docs) == (False, ["missing"])
 
 
+def test_validate_citations_allows_uncited_structural_headings_with_cited_facts():
+    docs = [Document(page_content="Known", metadata={"citation_id": "known", "source_type": "body"})]
+    answer = """**Обязанности в качестве грузчика:**
+* Осуществляет погрузку товара. [S1]
+
+### Ответственность
+* Несет ответственность за сохранность товара. [S1]"""
+
+    assert validate_citations(answer, docs) == (True, [])
+
+
+def test_validate_citations_rejects_uncited_factual_bullets_under_headings():
+    docs = [Document(page_content="Known", metadata={"citation_id": "known", "source_type": "body"})]
+    answer = """**Обязанности:**
+* Осуществляет погрузку товара."""
+
+    assert validate_citations(answer, docs) == (False, [])
+
+
 def test_validate_citations_accepts_unicode_normalized_legacy_paths():
     decomposed = "РЕГАМЕНТ Возвраты НОВЫЙ.docx#body:chunk-17"
     composed = "РЕГАМЕНТ Возвраты НОВЫЙ.docx#body:chunk-17"

@@ -126,6 +126,14 @@ def _markers_in_text(text: str) -> list[str]:
     return re.findall(r"\[[^\]]+\]", text)
 
 
+def _is_structural_heading(text: str) -> bool:
+    stripped = text.strip()
+    if re.fullmatch(r"#{1,6}\s+\S.*", stripped):
+        return True
+    bold_label = re.fullmatch(r"(\*\*|__)(.+)\1", stripped)
+    return bool(bold_label and bold_label.group(2).strip().endswith(":"))
+
+
 def answer_has_required_citations(answer: str, citations: list[str]) -> bool:
     stripped = answer.strip()
     if not citations:
@@ -136,13 +144,17 @@ def answer_has_required_citations(answer: str, citations: list[str]) -> bool:
     paragraphs = [paragraph.strip() for paragraph in answer.splitlines() if paragraph.strip()]
     if not paragraphs:
         return False
+    checked_factual_line = False
     for paragraph in paragraphs:
+        if _is_structural_heading(paragraph):
+            continue
+        checked_factual_line = True
         markers = {_normalize_marker(marker) for marker in _markers_in_text(paragraph)}
         if not markers:
             return False
         if not markers.issubset(known_markers):
             return False
-    return True
+    return checked_factual_line
 
 
 def validate_citations(answer: str, documents: list[Document]) -> tuple[bool, list[str]]:
