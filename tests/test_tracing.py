@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from imperial_rag.config import Settings
+import imperial_rag.tracing as tracing_module
 from imperial_rag.tracing import _reset_phoenix_tracing_for_tests, configure_phoenix_tracing
 
 
@@ -128,3 +129,82 @@ def test_configure_phoenix_tracing_errors_clearly_when_dependency_missing(monkey
 
     with pytest.raises(RuntimeError, match="Phoenix tracing dependencies are missing"):
         configure_phoenix_tracing(settings, enabled=True)
+
+
+def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step(
+        "retrieve.vector_search",
+        "возврат брака",
+        attributes={"retrieval.k": 8, "retrieval.options": {"fetch_k": 80}},
+    ) as span:
+        span.set_attribute("retrieval.status", "ok")
+        span.set_output({"count": 1, "top_documents": [{"citation_id": "S1"}]})
+
+    assert records[0]["name"] == "retrieve.vector_search"
+    assert records[0]["attributes"]["openinference.span.kind"] == "RETRIEVER"
+    assert records[0]["attributes"]["input.value"] == "возврат брака"
+    assert records[0]["attributes"]["retrieval.k"] == 8
+    assert records[0]["attributes"]["retrieval.options"] == '{"fetch_k": 80}'
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["retrieval.status"] == "ok"
+    assert recorded_span.attributes["output.value"] == '{"count": 1, "top_documents": [{"citation_id": "S1"}]}'
+
+
+def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:
+    document = type(
+        "Document",
+        (),
+        {
+            "page_content": "  Очень длинный   текст документа " * 20,
+            "metadata": {
+                "citation_id": "S1",
+                "chunk_id": "chunk-1",
+                "file_name": "policy.docx",
+                "source_type": "body",
+            },
+        },
+    )()
+
+    preview = tracing_module.retrieval_documents_preview([document], content_chars=40)
+
+    assert preview == [
+        {
+            "rank": 0,
+            "citation_id": "S1",
+            "chunk_id": "chunk-1",
+            "file_name": "policy.docx",
+            "source_type": "body",
+            "preview": "Очень длинный текст документа Очень длин...",
+        }
+    ]

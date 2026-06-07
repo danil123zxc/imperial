@@ -9,6 +9,7 @@ from typing import Any
 from langchain_core.documents import Document
 
 from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
+from imperial_rag.tracing import retrieval_documents_preview, trace_retrieval_step
 
 
 def _env_int(name: str, default: int) -> int:
@@ -100,28 +101,53 @@ class HybridRetriever:
         vector_docs: list[Document] = []
         keyword_docs: list[Document] = []
 
-        if getattr(self.vector_search, "provider_mismatch", False):
-            vector_status = "provider_mismatch"
-            fallbacks.append("vector_provider_mismatch")
-        else:
+        with trace_retrieval_step(
+            "retrieve.vector_search",
+            query,
+            attributes={
+                "retrieval.vector_k": self.settings.vector_k,
+                "retrieval.vector_fetch_k": self.settings.vector_fetch_k,
+                "retrieval.mmr_lambda_mult": self.settings.mmr_lambda_mult,
+            },
+        ) as span:
+            if getattr(self.vector_search, "provider_mismatch", False):
+                vector_status = "provider_mismatch"
+                fallbacks.append("vector_provider_mismatch")
+            else:
+                try:
+                    vector_docs = self._vector_docs(query)
+                except Exception:
+                    vector_status = "unavailable"
+                    fallbacks.append("vector_search_failed")
+                    vector_docs = []
+            if not vector_docs and vector_status == "ok":
+                vector_status = "empty"
+            _set_documents_span_output(
+                span,
+                vector_docs,
+                status=vector_status,
+                fallbacks=fallbacks,
+            )
+
+        with trace_retrieval_step(
+            "retrieve.keyword_search",
+            query,
+            attributes={"retrieval.keyword_limit": self.settings.keyword_limit},
+        ) as span:
             try:
-                vector_docs = self._vector_docs(query)
+                keyword_docs = self._keyword_docs(query)
             except Exception:
-                vector_status = "unavailable"
-                fallbacks.append("vector_search_failed")
-                vector_docs = []
-
-        try:
-            keyword_docs = self._keyword_docs(query)
-        except Exception:
-            keyword_status = "unavailable"
-            fallbacks.append("keyword_search_failed")
-            keyword_docs = []
-
-        if not vector_docs and vector_status == "ok":
-            vector_status = "empty"
-        if not keyword_docs and keyword_status == "ok":
-            keyword_status = "empty"
+                keyword_status = "unavailable"
+                fallbacks.append("keyword_search_failed")
+                keyword_docs = []
+            if not keyword_docs and keyword_status == "ok":
+                keyword_status = "empty"
+            _set_documents_span_output(
+                span,
+                keyword_docs,
+                status=keyword_status,
+                fallbacks=fallbacks,
+            )
 
         return RetrievalCandidateResult(
             vector_docs=vector_docs,
@@ -503,15 +529,102 @@ class RetrievalService:
     def retrieve(self, query: str) -> RetrievalResult:
         candidates = self.hybrid.retrieve(query)
         diagnostics = dict(candidates.diagnostics)
-        merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
-        diagnostics["merged_candidates"] = len(merged)
-        reranked = self.reranker.rerank(query, merged, diagnostics)
-        expanded = self.expander.expand(reranked)
-        evidence = self.selector.select(expanded)
-        diagnostics["final_evidence"] = len(evidence)
+        with trace_retrieval_step(
+            "retrieve.merge_candidates",
+            query,
+            kind="CHAIN",
+            attributes={
+                "retrieval.vector_candidates": len(candidates.vector_docs),
+                "retrieval.keyword_candidates": len(candidates.keyword_docs),
+            },
+        ) as span:
+            merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
+            diagnostics["merged_candidates"] = len(merged)
+            _set_documents_span_output(
+                span,
+                merged,
+                vector_candidates=len(candidates.vector_docs),
+                keyword_candidates=len(candidates.keyword_docs),
+            )
+
+        with trace_retrieval_step(
+            "retrieve.rerank",
+            query,
+            kind="RERANKER",
+            attributes={
+                "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
+                "retrieval.rerank_top_n": self.settings.rerank_top_n,
+                "retrieval.primary_reranker": self.settings.primary_reranker,
+            },
+        ) as span:
+            reranked = self.reranker.rerank(query, merged, diagnostics)
+            _set_documents_span_output(
+                span,
+                reranked,
+                reranker=diagnostics.get("reranker"),
+                rerank_input=diagnostics.get("rerank_input"),
+                reranked_candidates=diagnostics.get("reranked_candidates"),
+                fallbacks=diagnostics.get("fallbacks", []),
+            )
+
+        with trace_retrieval_step(
+            "retrieve.expand_neighbors",
+            query,
+            kind="CHAIN",
+            attributes={
+                "retrieval.neighbor_window": self.settings.neighbor_window,
+                "retrieval.input_count": len(reranked),
+            },
+        ) as span:
+            expanded = self.expander.expand(reranked)
+            _set_documents_span_output(
+                span,
+                expanded,
+                input_count=len(reranked),
+                added_neighbors=max(0, len(expanded) - len(reranked)),
+            )
+
+        with trace_retrieval_step(
+            "retrieve.select_evidence",
+            query,
+            kind="CHAIN",
+            attributes={
+                "retrieval.final_evidence_min": self.settings.final_evidence_min,
+                "retrieval.final_evidence_max": self.settings.final_evidence_max,
+                "retrieval.input_count": len(expanded),
+            },
+        ) as span:
+            evidence = self.selector.select(expanded)
+            diagnostics["final_evidence"] = len(evidence)
+            _set_documents_span_output(
+                span,
+                evidence,
+                input_count=len(expanded),
+                final_evidence_min=self.settings.final_evidence_min,
+                final_evidence_max=self.settings.final_evidence_max,
+            )
         return RetrievalResult(
             evidence=evidence,
             vector_docs=candidates.vector_docs,
             keyword_docs=candidates.keyword_docs,
             diagnostics=diagnostics,
         )
+
+
+def _set_documents_span_output(span: Any, documents: list[Document], **metadata: Any) -> None:
+    output = {"count": len(documents)}
+    for key, value in metadata.items():
+        if value is not None:
+            output[key] = _trace_output_value(value)
+    previews = retrieval_documents_preview(documents)
+    if previews:
+        output["top_documents"] = previews
+    span.set_output(output)
+
+
+def _trace_output_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value

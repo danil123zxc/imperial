@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 from langchain_core.documents import Document
 
@@ -42,6 +44,34 @@ def chunk(index):
         page_content=f"chunk {index}",
         metadata={"citation_id": f"c{index}", "file_id": "f", "source_type": "body", "chunk_index": index},
     )
+
+
+def capture_retrieval_spans(monkeypatch):
+    records = []
+
+    @contextmanager
+    def fake_trace_retrieval_step(name, query, *, kind="RETRIEVER", attributes=None):
+        record = {
+            "name": name,
+            "query": query,
+            "kind": kind,
+            "attributes": dict(attributes or {}),
+            "output": None,
+            "set_attributes": {},
+        }
+
+        class FakeSpan:
+            def set_attribute(self, key, value):
+                record["set_attributes"][key] = value
+
+            def set_output(self, output):
+                record["output"] = output
+
+        records.append(record)
+        yield FakeSpan()
+
+    monkeypatch.setattr(retrieval_module, "trace_retrieval_step", fake_trace_retrieval_step, raising=False)
+    return records
 
 
 def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
@@ -232,6 +262,122 @@ def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
     assert result.diagnostics["merged_candidates"] == 2
     assert result.diagnostics["final_evidence"] == 3
     assert result.diagnostics["reranker"] == "fallback:deterministic"
+
+
+def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    records = capture_retrieval_spans(monkeypatch)
+    vector_docs = [
+        Document(page_content="vector return", metadata={"citation_id": "v", "file_id": "f", "source_type": "body", "chunk_index": 0})
+    ]
+    keyword_docs = [
+        Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 1, "_keyword_rank": 0})
+    ]
+    all_chunks = [
+        vector_docs[0],
+        keyword_docs[0],
+        Document(page_content="neighbor", metadata={"citation_id": "n", "file_id": "f", "source_type": "body", "chunk_index": 2}),
+    ]
+    service = RetrievalService(
+        vector_search=FakeVectorSearch(vector_docs),
+        keyword_search=FakeKeywordSearch(keyword_docs),
+        neighbor_store=ChunkNeighborStore(all_chunks),
+        settings=RetrievalSettings(rerank_top_n=1, final_evidence_max=3),
+    )
+
+    result = service.retrieve("возврат брака")
+
+    assert [record["name"] for record in records] == [
+        "retrieve.vector_search",
+        "retrieve.keyword_search",
+        "retrieve.merge_candidates",
+        "retrieve.rerank",
+        "retrieve.expand_neighbors",
+        "retrieve.select_evidence",
+    ]
+    assert [record["query"] for record in records] == ["возврат брака"] * 6
+    assert records[0]["output"]["status"] == "ok"
+    assert records[0]["output"]["count"] == 1
+    assert records[0]["output"]["top_documents"][0]["citation_id"] == "v"
+    assert records[1]["output"]["status"] == "ok"
+    assert records[1]["output"]["count"] == 1
+    assert records[2]["kind"] == "CHAIN"
+    assert records[2]["output"]["count"] == 2
+    assert records[3]["kind"] == "RERANKER"
+    assert records[3]["output"]["reranker"] == "fallback:deterministic"
+    assert "reranker_missing_dashscope_api_key" in records[3]["output"]["fallbacks"]
+    assert records[4]["output"]["count"] == 3
+    assert records[4]["output"]["added_neighbors"] == 2
+    assert records[5]["output"]["count"] == 3
+    assert records[5]["output"]["final_evidence_max"] == 3
+    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k", "v", "n"]
+
+
+def test_retrieval_service_traces_search_fallbacks(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    records = capture_retrieval_spans(monkeypatch)
+
+    class BrokenVector:
+        def max_marginal_relevance_search(self, query, k, fetch_k, lambda_mult):
+            raise RuntimeError("qdrant unavailable")
+
+    class BrokenKeyword:
+        def search_with_scores(self, query, limit):
+            raise RuntimeError("keyword unavailable")
+
+    service = RetrievalService(
+        vector_search=BrokenVector(),
+        keyword_search=BrokenKeyword(),
+        neighbor_store=ChunkNeighborStore([]),
+        settings=RetrievalSettings(),
+    )
+
+    result = service.retrieve("возврат")
+
+    assert [record["name"] for record in records] == [
+        "retrieve.vector_search",
+        "retrieve.keyword_search",
+        "retrieve.merge_candidates",
+        "retrieve.rerank",
+        "retrieve.expand_neighbors",
+        "retrieve.select_evidence",
+    ]
+    assert records[0]["output"]["status"] == "unavailable"
+    assert records[0]["output"]["fallbacks"] == ["vector_search_failed"]
+    assert records[1]["output"]["status"] == "unavailable"
+    assert records[1]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
+    assert records[3]["output"]["reranker"] == "none"
+    assert records[5]["output"]["count"] == 0
+    assert result.evidence == []
+
+
+def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    records = capture_retrieval_spans(monkeypatch)
+    docs = [
+        Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 0})
+    ]
+
+    class BrokenCompressor:
+        def compress_documents(self, documents, query):
+            raise RuntimeError("reranker down")
+
+    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n, settings: BrokenCompressor(), raising=False)
+    service = RetrievalService(
+        vector_search=FakeVectorSearch([]),
+        keyword_search=FakeKeywordSearch(docs),
+        neighbor_store=ChunkNeighborStore([]),
+        settings=RetrievalSettings(primary_reranker="dashscope:qwen3-rerank-test", rerank_top_n=1),
+    )
+
+    result = service.retrieve("возврат")
+
+    assert records[3]["name"] == "retrieve.rerank"
+    assert records[3]["output"]["reranker"] == "fallback:deterministic"
+    assert "reranker_failed:dashscope:qwen3-rerank-test" in records[3]["output"]["fallbacks"]
+    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
 
 
 def test_neighbor_expander_adds_previous_and_next_chunks():
