@@ -39,7 +39,7 @@ def test_qwen_provider_settings_defaults(monkeypatch):
     assert settings.region == "beijing"
     assert settings.base_url == "https://dashscope.aliyuncs.com/api/v1"
     assert settings.compat_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert settings.chat_model == "qwen3.7-max"
+    assert settings.chat_model == "qwen3.7-plus"
     assert settings.vision_model == "qwen-vl-ocr-2025-11-20"
     assert settings.ocr_task == "multi_lan"
     assert settings.ocr_min_pixels is None
@@ -204,7 +204,7 @@ def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
 
     assert isinstance(model, FakeChatQwen)
     assert created == {
-        "model": "qwen3.7-max",
+        "model": "qwen3.7-plus",
         "temperature": 0,
         "api_key": "dashscope-test-key",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -234,7 +234,7 @@ def test_qwen_chat_factory_uses_explicit_key_and_compat_base_url(monkeypatch):
 
     assert isinstance(model, FakeChatQwen)
     assert created == {
-        "model": "qwen3.7-max",
+        "model": "qwen3.7-plus",
         "temperature": 0,
         "api_key": "explicit-key",
         "base_url": "https://example.com/compatible-mode/v1",

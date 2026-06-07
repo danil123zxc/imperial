@@ -14,7 +14,7 @@ from langchain_core.embeddings import Embeddings
 
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 DEFAULT_DASHSCOPE_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_QWEN_CHAT_MODEL = "qwen3.7-max"
+DEFAULT_QWEN_CHAT_MODEL = "qwen3.7-plus"
 DEFAULT_QWEN_VISION_MODEL = "qwen-vl-ocr-2025-11-20"
 DEFAULT_QWEN_OCR_TASK = "multi_lan"
 DEFAULT_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
