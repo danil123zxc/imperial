@@ -67,6 +67,23 @@ def capture_retrieval_spans(monkeypatch):
             def set_output(self, output):
                 record["output"] = output
 
+            def set_retrieval_documents(self, documents):
+                self._set_documents("retrieval.documents", documents)
+
+            def set_reranker_input_documents(self, documents):
+                self._set_documents("reranker.input_documents", documents)
+
+            def set_reranker_output_documents(self, documents):
+                self._set_documents("reranker.output_documents", documents)
+
+            def _set_documents(self, prefix, documents):
+                for index, document in enumerate(documents):
+                    metadata = dict(document.metadata or {})
+                    document_id = metadata.get("chunk_id") or metadata.get("citation_id")
+                    record["set_attributes"][f"{prefix}.{index}.document.content"] = document.page_content
+                    if document_id is not None:
+                        record["set_attributes"][f"{prefix}.{index}.document.id"] = document_id
+
         records.append(record)
         yield FakeSpan()
 
@@ -300,13 +317,20 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[0]["output"]["status"] == "ok"
     assert records[0]["output"]["count"] == 1
     assert records[0]["output"]["top_documents"][0]["citation_id"] == "v"
+    assert records[0]["set_attributes"]["retrieval.documents.0.document.id"] == "v"
+    assert records[0]["set_attributes"]["retrieval.documents.0.document.content"] == "vector return"
     assert records[1]["output"]["status"] == "ok"
     assert records[1]["output"]["count"] == 1
+    assert records[1]["set_attributes"]["retrieval.documents.0.document.id"] == "k"
+    assert records[1]["set_attributes"]["retrieval.documents.0.document.content"] == "Порядок возврата брака"
     assert records[2]["kind"] == "CHAIN"
     assert records[2]["output"]["count"] == 2
     assert records[3]["kind"] == "RERANKER"
     assert records[3]["output"]["reranker"] == "fallback:deterministic"
     assert "reranker_missing_dashscope_api_key" in records[3]["output"]["fallbacks"]
+    assert records[3]["set_attributes"]["reranker.input_documents.0.document.id"] == "v"
+    assert records[3]["set_attributes"]["reranker.input_documents.1.document.id"] == "k"
+    assert records[3]["set_attributes"]["reranker.output_documents.0.document.id"] == "k"
     assert records[4]["output"]["count"] == 3
     assert records[4]["output"]["added_neighbors"] == 2
     assert records[5]["output"]["count"] == 3

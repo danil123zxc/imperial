@@ -128,6 +128,7 @@ class HybridRetriever:
                 status=vector_status,
                 fallbacks=fallbacks,
             )
+            span.set_retrieval_documents(vector_docs)
 
         with trace_retrieval_step(
             "retrieve.keyword_search",
@@ -148,6 +149,7 @@ class HybridRetriever:
                 status=keyword_status,
                 fallbacks=fallbacks,
             )
+            span.set_retrieval_documents(keyword_docs)
 
         return RetrievalCandidateResult(
             vector_docs=vector_docs,
@@ -557,6 +559,7 @@ class RetrievalService:
                 "retrieval.primary_reranker": self.settings.primary_reranker,
             },
         ) as span:
+            span.set_reranker_input_documents(merged)
             reranked = self.reranker.rerank(query, merged, diagnostics)
             _set_documents_span_output(
                 span,
@@ -566,6 +569,7 @@ class RetrievalService:
                 reranked_candidates=diagnostics.get("reranked_candidates"),
                 fallbacks=diagnostics.get("fallbacks", []),
             )
+            span.set_reranker_output_documents(reranked)
 
         with trace_retrieval_step(
             "retrieve.expand_neighbors",

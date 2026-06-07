@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -179,6 +180,103 @@ def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypat
     recorded_span = records[0]["span"]
     assert recorded_span.attributes["retrieval.status"] == "ok"
     assert recorded_span.attributes["output.value"] == '{"count": 1, "top_documents": [{"citation_id": "S1"}]}'
+
+
+def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __enter__(self):
+            span = FakeSpan()
+            records.append({"span": span})
+            return span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpanContext()
+
+    document = type(
+        "Document",
+        (),
+        {
+            "page_content": "Порядок возврата брака",
+            "metadata": {
+                "citation_id": "docs/return.docx#body:chunk-0",
+                "chunk_id": "chunk-0",
+                "file_name": "return.docx",
+                "_keyword_score": -2.5,
+            },
+        },
+    )()
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieve.keyword_search", "возврат") as span:
+        span.set_retrieval_documents([document])
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["retrieval.documents.0.document.content"] == "Порядок возврата брака"
+    assert recorded_span.attributes["retrieval.documents.0.document.id"] == "chunk-0"
+    assert json.loads(recorded_span.attributes["retrieval.documents.0.document.metadata"]) == {
+        "citation_id": "docs/return.docx#body:chunk-0",
+        "chunk_id": "chunk-0",
+        "file_name": "return.docx",
+        "_keyword_score": -2.5,
+    }
+    assert recorded_span.attributes["retrieval.documents.0.document.score"] == -2.5
+
+
+def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __enter__(self):
+            span = FakeSpan()
+            records.append({"span": span})
+            return span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpanContext()
+
+    input_document = type("Document", (), {"page_content": "candidate", "metadata": {"chunk_id": "in"}})()
+    output_document = type("Document", (), {"page_content": "reranked", "metadata": {"chunk_id": "out"}})()
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieve.rerank", "возврат", kind="RERANKER") as span:
+        span.set_reranker_input_documents([input_document])
+        span.set_reranker_output_documents([output_document])
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["reranker.input_documents.0.document.content"] == "candidate"
+    assert recorded_span.attributes["reranker.input_documents.0.document.id"] == "in"
+    assert recorded_span.attributes["reranker.output_documents.0.document.content"] == "reranked"
+    assert recorded_span.attributes["reranker.output_documents.0.document.id"] == "out"
 
 
 def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:

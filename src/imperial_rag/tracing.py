@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
+from openinference.semconv.trace import DocumentAttributes, RerankerAttributes, SpanAttributes
 
 from imperial_rag.config import Settings
 
@@ -17,9 +18,16 @@ from imperial_rag.config import Settings
 _CONFIGURED_PROVIDER: object | None = None
 _CONFIGURED_KEY: tuple[str, str] | None = None
 _TRACER_NAME = "imperial_rag.retrieval"
-_SPAN_KIND = "openinference.span.kind"
-_INPUT_VALUE = "input.value"
-_OUTPUT_VALUE = "output.value"
+_SPAN_KIND = SpanAttributes.OPENINFERENCE_SPAN_KIND
+_INPUT_VALUE = SpanAttributes.INPUT_VALUE
+_OUTPUT_VALUE = SpanAttributes.OUTPUT_VALUE
+_RETRIEVAL_DOCUMENTS = SpanAttributes.RETRIEVAL_DOCUMENTS
+_RERANKER_INPUT_DOCUMENTS = RerankerAttributes.RERANKER_INPUT_DOCUMENTS
+_RERANKER_OUTPUT_DOCUMENTS = RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS
+_DOCUMENT_CONTENT = DocumentAttributes.DOCUMENT_CONTENT
+_DOCUMENT_ID = DocumentAttributes.DOCUMENT_ID
+_DOCUMENT_METADATA = DocumentAttributes.DOCUMENT_METADATA
+_DOCUMENT_SCORE = DocumentAttributes.DOCUMENT_SCORE
 _RETRIEVAL_PREVIEW_LIMIT = 3
 
 
@@ -34,6 +42,19 @@ class RetrievalTraceSpan:
 
     def set_output(self, value: Any) -> None:
         self._span.set_attribute(_OUTPUT_VALUE, _json_value(value))
+
+    def set_retrieval_documents(self, documents: Sequence[Any]) -> None:
+        self._set_documents(_RETRIEVAL_DOCUMENTS, documents)
+
+    def set_reranker_input_documents(self, documents: Sequence[Any]) -> None:
+        self._set_documents(_RERANKER_INPUT_DOCUMENTS, documents)
+
+    def set_reranker_output_documents(self, documents: Sequence[Any]) -> None:
+        self._set_documents(_RERANKER_OUTPUT_DOCUMENTS, documents)
+
+    def _set_documents(self, key_prefix: str, documents: Sequence[Any]) -> None:
+        for key, value in openinference_document_attributes(key_prefix, documents).items():
+            self._span.set_attribute(key, value)
 
 
 @contextmanager
@@ -88,6 +109,43 @@ def retrieval_documents_preview(
             }
         )
     return previews
+
+
+def openinference_document_attributes(key_prefix: str, documents: Sequence[Any]) -> dict[str, Any]:
+    attributes: dict[str, Any] = {}
+    for index, document in enumerate(list(documents)):
+        content = str(getattr(document, "page_content", ""))
+        metadata = dict(getattr(document, "metadata", {}) or {})
+        document_id = _document_id(metadata)
+        score = _document_score(metadata)
+        prefix = f"{key_prefix}.{index}"
+
+        attributes[f"{prefix}.{_DOCUMENT_CONTENT}"] = content
+        if document_id is not None:
+            attributes[f"{prefix}.{_DOCUMENT_ID}"] = document_id
+        if metadata:
+            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = _json_value(metadata)
+        if score is not None:
+            attributes[f"{prefix}.{_DOCUMENT_SCORE}"] = score
+    return attributes
+
+
+def _document_id(metadata: Mapping[str, Any]) -> str | None:
+    for key in ("chunk_id", "citation_id", "_id", "file_id"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _document_score(metadata: Mapping[str, Any]) -> float | None:
+    for key in ("relevance_score", "_keyword_score", "_fallback_score"):
+        value = metadata.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
 def _compact_text(value: str, limit: int) -> str:
