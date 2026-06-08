@@ -1076,7 +1076,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "arize-phoenix-client" },
-    { name = "arize-phoenix-otel" },
+    { name = "arize-phoenix-otel", specifier = ">=0.16.0" },
     { name = "dashscope" },
     { name = "langchain" },
     { name = "langchain-cohere" },

@@ -14,6 +14,7 @@ from imperial_rag.answering import (
     format_sources,
     validate_citations,
 )
+from imperial_rag.tracing import trace_answer_step
 
 
 class VectorSearch(Protocol):
@@ -235,36 +236,47 @@ def build_query_workflow(
         evidence = state.get("evidence", [])
         citations = format_citations(evidence)
         sources = format_sources(evidence)
-        if not evidence:
-            return {
-                "answer": REFUSAL_TEXT,
-                "citations": [],
-                "sources": [],
+        with trace_answer_step(
+            "answer.generate",
+            state["question"],
+            attributes={"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+        ) as span:
+            if not evidence:
+                update: QueryState = {
+                    "answer": REFUSAL_TEXT,
+                    "citations": [],
+                    "sources": [],
+                    "citations_valid": True,
+                    "invalid_citations": [],
+                }
+                _set_answer_trace_output(span, update, evidence_count=0, citation_count=0)
+                return update
+            if generate is not None:
+                answer = _coerce_answer(_call_with_supported_args(generate, state["question"], evidence, build_strict_messages(state["question"], evidence), state))
+            else:
+                resolved_model = model or _legacy_openai_chat_model()
+                response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
+                answer = str(response.content)
+            valid, invalid = validate_citations(answer, evidence)
+            if not valid:
+                update = {
+                    "answer": REFUSAL_TEXT,
+                    "citations": citations,
+                    "sources": sources,
+                    "citations_valid": False,
+                    "invalid_citations": invalid,
+                }
+                _set_answer_trace_output(span, update, evidence_count=len(evidence), citation_count=len(citations))
+                return update
+            update = {
+                "answer": answer,
+                "citations": citations,
+                "sources": sources,
                 "citations_valid": True,
                 "invalid_citations": [],
             }
-        if generate is not None:
-            answer = _coerce_answer(_call_with_supported_args(generate, state["question"], evidence, build_strict_messages(state["question"], evidence), state))
-        else:
-            resolved_model = model or _legacy_openai_chat_model()
-            response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
-            answer = str(response.content)
-        valid, invalid = validate_citations(answer, evidence)
-        if not valid:
-            return {
-                "answer": REFUSAL_TEXT,
-                "citations": citations,
-                "sources": sources,
-                "citations_valid": False,
-                "invalid_citations": invalid,
-            }
-        return {
-            "answer": answer,
-            "citations": citations,
-            "sources": sources,
-            "citations_valid": True,
-            "invalid_citations": [],
-        }
+            _set_answer_trace_output(span, update, evidence_count=len(evidence), citation_count=len(citations))
+            return update
 
     graph = StateGraph(QueryState)
     graph.add_node("normalize_query", normalize_query)
@@ -275,6 +287,19 @@ def build_query_workflow(
     graph.add_edge("retrieve", "call_model")
     graph.add_edge("call_model", END)
     return graph.compile()
+
+
+def _set_answer_trace_output(span: Any, update: Mapping[str, Any], *, evidence_count: int, citation_count: int) -> None:
+    span.set_output(
+        {
+            "answer": update.get("answer", ""),
+            "citations_valid": update.get("citations_valid"),
+            "invalid_citations": update.get("invalid_citations", []),
+            "refused": update.get("answer") == REFUSAL_TEXT,
+            "evidence_count": evidence_count,
+            "citation_count": citation_count,
+        }
+    )
 
 
 class IngestionState(TypedDict, total=False):

@@ -10,14 +10,15 @@ from urllib.parse import urlparse
 
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from openinference.semconv.trace import DocumentAttributes, RerankerAttributes, SpanAttributes
+from openinference.semconv.trace import DocumentAttributes, RerankerAttributes
+from phoenix.otel import SpanAttributes
 
 from imperial_rag.config import Settings
 
 
 _CONFIGURED_PROVIDER: object | None = None
 _CONFIGURED_KEY: tuple[str, str] | None = None
-_TRACER_NAME = "imperial_rag.retrieval"
+_TRACER_NAME = "imperial_rag.tracing"
 _SPAN_KIND = SpanAttributes.OPENINFERENCE_SPAN_KIND
 _INPUT_VALUE = SpanAttributes.INPUT_VALUE
 _OUTPUT_VALUE = SpanAttributes.OUTPUT_VALUE
@@ -31,7 +32,7 @@ _DOCUMENT_SCORE = DocumentAttributes.DOCUMENT_SCORE
 _RETRIEVAL_PREVIEW_LIMIT = 3
 
 
-class RetrievalTraceSpan:
+class OpenInferenceTraceSpan:
     def __init__(self, span: Any) -> None:
         self._span = span
 
@@ -57,6 +58,62 @@ class RetrievalTraceSpan:
             self._span.set_attribute(key, value)
 
 
+RetrievalTraceSpan = OpenInferenceTraceSpan
+
+
+@contextmanager
+def trace_openinference_step(
+    name: str,
+    input_value: str,
+    *,
+    kind: str,
+    attributes: Mapping[str, Any] | None = None,
+) -> Iterator[OpenInferenceTraceSpan]:
+    """Create a compact OpenInference span for a local RAG pipeline step."""
+
+    tracer = trace.get_tracer(_TRACER_NAME)
+    span_attributes: dict[str, Any] = {
+        _SPAN_KIND: kind,
+        _INPUT_VALUE: input_value,
+    }
+    for key, value in (attributes or {}).items():
+        if value is not None:
+            span_attributes[key] = _attribute_value(value)
+
+    with tracer.start_as_current_span(name, attributes=span_attributes) as span:
+        trace_span = OpenInferenceTraceSpan(span)
+        try:
+            yield trace_span
+        except Exception as exc:
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            trace_span.set_attribute("error.type", type(exc).__name__)
+            raise
+        else:
+            span.set_status(Status(StatusCode.OK))
+
+
+@contextmanager
+def trace_agent_step(
+    name: str,
+    input_value: str,
+    *,
+    attributes: Mapping[str, Any] | None = None,
+) -> Iterator[OpenInferenceTraceSpan]:
+    with trace_openinference_step(name, input_value, kind="AGENT", attributes=attributes) as span:
+        yield span
+
+
+@contextmanager
+def trace_answer_step(
+    name: str,
+    question: str,
+    *,
+    attributes: Mapping[str, Any] | None = None,
+) -> Iterator[OpenInferenceTraceSpan]:
+    with trace_openinference_step(name, question, kind="CHAIN", attributes=attributes) as span:
+        yield span
+
+
 @contextmanager
 def trace_retrieval_step(
     name: str,
@@ -67,25 +124,8 @@ def trace_retrieval_step(
 ) -> Iterator[RetrievalTraceSpan]:
     """Create a compact OpenInference span for one retrieval pipeline step."""
 
-    tracer = trace.get_tracer(_TRACER_NAME)
-    span_attributes: dict[str, Any] = {
-        _SPAN_KIND: kind,
-        _INPUT_VALUE: query,
-    }
-    for key, value in (attributes or {}).items():
-        if value is not None:
-            span_attributes[key] = _attribute_value(value)
-
-    with tracer.start_as_current_span(name, attributes=span_attributes) as span:
-        trace_span = RetrievalTraceSpan(span)
-        try:
-            yield trace_span
-        except Exception as exc:
-            span.set_status(Status(StatusCode.ERROR, str(exc)))
-            trace_span.set_attribute("error.type", type(exc).__name__)
-            raise
-        else:
-            span.set_status(Status(StatusCode.OK))
+    with trace_openinference_step(name, query, kind=kind, attributes=attributes) as span:
+        yield span
 
 
 def retrieval_documents_preview(

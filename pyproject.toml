@@ -15,7 +15,7 @@ dependencies = [
   "langchain-text-splitters",
   "langgraph",
   "arize-phoenix-client",
-  "arize-phoenix-otel",
+  "arize-phoenix-otel>=0.16.0",
   "openinference-instrumentation-langchain",
   "openinference-instrumentation-openai",
   "qdrant-client",

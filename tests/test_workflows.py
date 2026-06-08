@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import pytest
 from langchain_core.documents import Document
 
@@ -46,6 +48,94 @@ def test_query_workflow_with_injected_retrieval_and_generator_happy_path():
     assert result["sources"] == ["[S1] unknown"]
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
+
+
+def test_query_workflow_traces_answer_generation(monkeypatch):
+    from imperial_rag import workflows as workflows_module
+
+    docs = [
+        Document(
+            page_content="Возврат брака оформляется актом.",
+            metadata={"citation_id": "return-policy"},
+        )
+    ]
+    trace_calls = []
+
+    class FakeTraceSpan:
+        def set_output(self, value):
+            trace_calls.append({"output": value})
+
+    @contextmanager
+    def fake_trace_answer_step(name, question, *, attributes=None):
+        trace_calls.append({"name": name, "question": question, "attributes": attributes})
+        yield FakeTraceSpan()
+
+    monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: "Возврат брака оформляется актом. [S1]",
+    )
+
+    result = workflow.invoke({"question": "Как оформить возврат брака?"})
+
+    assert result["answer"] == "Возврат брака оформляется актом. [S1]"
+    assert trace_calls == [
+        {
+            "name": "answer.generate",
+            "question": "Как оформить возврат брака?",
+            "attributes": {"answer.evidence_count": 1, "answer.citation_count": 1},
+        },
+        {
+            "output": {
+                "answer": "Возврат брака оформляется актом. [S1]",
+                "citations_valid": True,
+                "invalid_citations": [],
+                "refused": False,
+                "evidence_count": 1,
+                "citation_count": 1,
+            }
+        },
+    ]
+
+
+def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
+    from imperial_rag import workflows as workflows_module
+
+    trace_calls = []
+
+    class FakeTraceSpan:
+        def set_output(self, value):
+            trace_calls.append({"output": value})
+
+    @contextmanager
+    def fake_trace_answer_step(name, question, *, attributes=None):
+        trace_calls.append({"name": name, "question": question, "attributes": attributes})
+        yield FakeTraceSpan()
+
+    monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+
+    workflow = build_query_workflow()
+    result = workflow.invoke({"question": "Что не найдено?"})
+
+    assert result["answer"] == REFUSAL_TEXT
+    assert trace_calls == [
+        {
+            "name": "answer.generate",
+            "question": "Что не найдено?",
+            "attributes": {"answer.evidence_count": 0, "answer.citation_count": 0},
+        },
+        {
+            "output": {
+                "answer": REFUSAL_TEXT,
+                "citations_valid": True,
+                "invalid_citations": [],
+                "refused": True,
+                "evidence_count": 0,
+                "citation_count": 0,
+            }
+        },
+    ]
 
 
 def test_query_workflow_preserves_retrieval_diagnostics():

@@ -182,6 +182,159 @@ def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypat
     assert recorded_span.attributes["output.value"] == '{"count": 1, "top_documents": [{"citation_id": "S1"}]}'
 
 
+def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_agent_step(
+        "imperial_rag.query",
+        "Что делать с браком?",
+        attributes={"runtime.workspace_root": "/tmp/imperial"},
+    ) as span:
+        span.set_output(
+            {
+                "answer": "Оформить акт. [S1]",
+                "citations_valid": True,
+                "evidence_count": 1,
+                "retrieval": {"final_evidence": 1, "reranker": "fallback:deterministic"},
+            }
+        )
+
+    assert records[0]["name"] == "imperial_rag.query"
+    assert records[0]["attributes"]["openinference.span.kind"] == "AGENT"
+    assert records[0]["attributes"]["input.value"] == "Что делать с браком?"
+    assert records[0]["attributes"]["runtime.workspace_root"] == "/tmp/imperial"
+    recorded_span = records[0]["span"]
+    assert json.loads(recorded_span.attributes["output.value"]) == {
+        "answer": "Оформить акт. [S1]",
+        "citations_valid": True,
+        "evidence_count": 1,
+        "retrieval": {"final_evidence": 1, "reranker": "fallback:deterministic"},
+    }
+    assert recorded_span.status.status_code is tracing_module.StatusCode.OK
+
+
+def test_trace_agent_step_records_errors(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with tracing_module.trace_agent_step("imperial_rag.query", "Что делать?"):
+            raise RuntimeError("boom")
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["error.type"] == "RuntimeError"
+    assert recorded_span.status.status_code is tracing_module.StatusCode.ERROR
+
+
+def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_answer_step(
+        "answer.generate",
+        "Что делать с браком?",
+        attributes={"answer.evidence_count": 1},
+    ) as span:
+        span.set_output({"answer": "Оформить акт. [S1]", "citations_valid": True, "refused": False})
+
+    assert records[0]["name"] == "answer.generate"
+    assert records[0]["attributes"]["openinference.span.kind"] == "CHAIN"
+    assert records[0]["attributes"]["input.value"] == "Что делать с браком?"
+    assert records[0]["attributes"]["answer.evidence_count"] == 1
+    recorded_span = records[0]["span"]
+    assert json.loads(recorded_span.attributes["output.value"]) == {
+        "answer": "Оформить акт. [S1]",
+        "citations_valid": True,
+        "refused": False,
+    }
+    assert recorded_span.status.status_code is tracing_module.StatusCode.OK
+
+
 def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 

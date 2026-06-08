@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from contextlib import contextmanager
 
 from imperial_rag.config import Settings
 from imperial_rag.runtime import Runtime, build_query_dependencies, create_runtime
@@ -19,6 +20,56 @@ def test_create_runtime_constructs_without_live_services(monkeypatch):
     assert isinstance(runtime, Runtime)
     assert runtime.query("Что делать?") == {"answer": "ok"}
     assert created["state"] == {"question": "Что делать?"}
+
+
+def test_runtime_query_wraps_workflow_in_agent_span(monkeypatch):
+    trace_calls = []
+
+    class FakeTraceSpan:
+        def set_output(self, value):
+            trace_calls.append({"output": value})
+
+    @contextmanager
+    def fake_trace_agent_step(name, input_value, *, attributes=None):
+        trace_calls.append({"name": name, "input": input_value, "attributes": attributes})
+        yield FakeTraceSpan()
+
+    class FakeWorkflow:
+        def invoke(self, state):
+            return {
+                "answer": "Оформить акт. [S1]",
+                "citations_valid": True,
+                "evidence": [object(), object()],
+                "retrieval": {
+                    "final_evidence": 2,
+                    "reranker": "fallback:deterministic",
+                    "fallbacks": ["reranker_missing_dashscope_api_key"],
+                },
+            }
+
+    monkeypatch.setattr("imperial_rag.runtime.trace_agent_step", fake_trace_agent_step)
+    runtime = Runtime(settings=Settings(), workflow=FakeWorkflow())
+
+    assert runtime.query("Что делать с браком?")["answer"] == "Оформить акт. [S1]"
+    assert trace_calls == [
+        {
+            "name": "imperial_rag.query",
+            "input": "Что делать с браком?",
+            "attributes": {"runtime.workspace_root": "/Users/danil/Public/imperial"},
+        },
+        {
+            "output": {
+                "answer": "Оформить акт. [S1]",
+                "citations_valid": True,
+                "evidence_count": 2,
+                "retrieval": {
+                    "final_evidence": 2,
+                    "reranker": "fallback:deterministic",
+                    "fallbacks": ["reranker_missing_dashscope_api_key"],
+                },
+            }
+        },
+    ]
 
 
 def test_runtime_query_uses_retrieval_service(monkeypatch, tmp_path):

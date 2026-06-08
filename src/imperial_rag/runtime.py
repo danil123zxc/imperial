@@ -8,6 +8,7 @@ from imperial_rag.config import Settings
 from imperial_rag.indexing import KeywordIndex, make_qdrant_store
 from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import ChunkNeighborStore, RetrievalService, RetrievalSettings
+from imperial_rag.tracing import trace_agent_step
 from imperial_rag.workflows import build_query_workflow
 
 
@@ -69,7 +70,14 @@ class Runtime:
     dependencies: QueryDependencies | None = None
 
     def query(self, question: str) -> dict:
-        return self.query_workflow().invoke({"question": question})
+        with trace_agent_step(
+            "imperial_rag.query",
+            question,
+            attributes={"runtime.workspace_root": str(self.settings.workspace_root)},
+        ) as span:
+            result = self.query_workflow().invoke({"question": question})
+            span.set_output(_query_trace_output(result))
+            return result
 
     def query_workflow(self):
         if self.workflow is None:
@@ -127,3 +135,27 @@ def build_live_query_workflow(settings: Settings | None = None):
 
 def _semantic_search_enabled() -> bool:
     return dashscope_configured()
+
+
+def _query_trace_output(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {"answer": getattr(result, "answer", str(result))}
+    output: dict[str, Any] = {
+        "answer": result.get("answer", ""),
+        "citations_valid": result.get("citations_valid"),
+        "evidence_count": len(result.get("evidence") or result.get("retrieved_documents") or []),
+    }
+    retrieval = result.get("retrieval")
+    if isinstance(retrieval, dict):
+        output["retrieval"] = {
+            key: retrieval[key]
+            for key in (
+                "final_evidence",
+                "reranker",
+                "fallbacks",
+                "vector_search_status",
+                "keyword_search_status",
+            )
+            if key in retrieval
+        }
+    return output
