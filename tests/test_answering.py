@@ -68,6 +68,26 @@ def test_validate_citations_rejects_unknown_ids_and_allows_refusal():
     assert validate_citations("Fact. [missing]", docs) == (False, ["missing"])
 
 
+def test_validate_citations_allows_form_placeholder_with_real_citation():
+    docs = [Document(page_content="Date placeholder is part of the form.", metadata={"citation_id": "known"})]
+
+    answer = "Заполните поле [укажите дату] в форме заявления. [S1]"
+
+    assert validate_citations(answer, docs) == (True, [])
+
+
+def test_validate_citations_rejects_placeholder_without_real_citation():
+    docs = [Document(page_content="Date placeholder is part of the form.", metadata={"citation_id": "known"})]
+
+    assert validate_citations("Заполните поле [укажите дату] в форме заявления.", docs) == (False, [])
+
+
+def test_validate_citations_rejects_unknown_short_source_label():
+    docs = [Document(page_content="Known", metadata={"citation_id": "known"})]
+
+    assert validate_citations("Fact. [S99]", docs) == (False, ["S99"])
+
+
 def test_validate_citations_allows_uncited_structural_headings_with_cited_facts():
     docs = [Document(page_content="Known", metadata={"citation_id": "known", "source_type": "body"})]
     answer = """**Обязанности в качестве грузчика:**

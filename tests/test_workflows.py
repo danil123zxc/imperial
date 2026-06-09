@@ -302,6 +302,27 @@ def test_query_workflow_replaces_unsupported_generated_answer_with_refusal():
     assert result["invalid_citations"] == ["missing"]
 
 
+def test_query_workflow_preserves_cited_answer_with_form_placeholder():
+    docs = [
+        Document(
+            page_content="Дата «_____» _______2025 г. (укажите дату)",
+            metadata={"citation_id": "resignation-form", "source_type": "body"},
+        )
+    ]
+    answer = "В заявлении нужно заполнить поле [укажите дату]. [S1]"
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: answer,
+    )
+
+    result = workflow.invoke({"question": "Как оформляется заявление на увольнение?"})
+
+    assert result["answer"] == answer
+    assert result["citations_valid"] is True
+    assert result["invalid_citations"] == []
+
+
 def test_query_workflow_preserves_cited_answer_with_uncited_structural_headings():
     docs = [Document(page_content="Known fact.", metadata={"citation_id": "known", "source_type": "body"})]
     answer = """**Обязанности:**

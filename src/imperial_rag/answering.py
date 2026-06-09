@@ -126,6 +126,20 @@ def _markers_in_text(text: str) -> list[str]:
     return re.findall(r"\[[^\]]+\]", text)
 
 
+def _citation_markers_in_text(text: str, known_markers: set[str]) -> list[str]:
+    return [marker for marker in _markers_in_text(text) if _normalize_marker(marker) in known_markers]
+
+
+def _is_unknown_citation_marker(marker: str, known_markers: set[str]) -> bool:
+    normalized = _normalize_marker(marker)
+    if normalized in known_markers:
+        return False
+    label = marker.strip()[1:-1].strip()
+    if re.fullmatch(r"S\d+", label):
+        return True
+    return bool(re.fullmatch(r"[A-Za-z0-9_.:/#-]+", label))
+
+
 def _is_structural_heading(text: str) -> bool:
     stripped = text.strip()
     if re.fullmatch(r"#{1,6}\s+\S.*", stripped):
@@ -149,7 +163,7 @@ def answer_has_required_citations(answer: str, citations: list[str]) -> bool:
         if _is_structural_heading(paragraph):
             continue
         checked_factual_line = True
-        markers = {_normalize_marker(marker) for marker in _markers_in_text(paragraph)}
+        markers = {_normalize_marker(marker) for marker in _citation_markers_in_text(paragraph, known_markers)}
         if not markers:
             return False
         if not markers.issubset(known_markers):
@@ -163,7 +177,7 @@ def validate_citations(answer: str, documents: list[Document]) -> tuple[bool, li
     stripped = answer.strip()
     if stripped in {REFUSAL_TEXT, "No indexed evidence was enough to answer."}:
         return True, []
-    invalid = [marker.strip("[]") for marker in _markers_in_text(answer) if _normalize_marker(marker) not in known]
+    invalid = [marker.strip("[]") for marker in _markers_in_text(answer) if _is_unknown_citation_marker(marker, known)]
     if invalid:
         return False, invalid
     return answer_has_required_citations(answer, citations), invalid
