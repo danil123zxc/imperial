@@ -6,7 +6,7 @@ import pytest
 from langchain_core.documents import Document
 
 import imperial_rag.retrieval as retrieval_module
-from imperial_rag.retrieval import CandidateMerger, FallbackRanker, RetrievalSettings
+from imperial_rag.retrieval import CandidateMerger, FallbackRanker, RetrievalSettings, RrfCandidateFusion
 from imperial_rag.retrieval import ChunkNeighborStore, EvidenceSelector, NeighborExpander
 from imperial_rag.retrieval import HybridRetriever
 from imperial_rag.retrieval import RetrievalService
@@ -104,6 +104,7 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
         "IMPERIAL_RAG_FINAL_EVIDENCE_MIN",
         "IMPERIAL_RAG_FINAL_EVIDENCE_MAX",
         "IMPERIAL_RAG_MMR_LAMBDA_MULT",
+        "IMPERIAL_RAG_RRF_K",
         "IMPERIAL_RAG_QWEN_RERANK_MODEL",
         "IMPERIAL_RAG_PRIMARY_RERANKER",
         "IMPERIAL_RAG_FALLBACK_RERANKER",
@@ -123,6 +124,7 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
     assert settings.final_evidence_min == 18
     assert settings.final_evidence_max == 24
     assert settings.mmr_lambda_mult == 0.4
+    assert settings.rrf_k == 60
     assert settings.primary_reranker == "dashscope:qwen3-rerank"
     assert settings.fallback_reranker == "fallback:deterministic"
 
@@ -161,6 +163,7 @@ def test_retrieval_settings_read_environment_overrides(monkeypatch):
     monkeypatch.setenv("IMPERIAL_RAG_FINAL_EVIDENCE_MIN", "14")
     monkeypatch.setenv("IMPERIAL_RAG_FINAL_EVIDENCE_MAX", "20")
     monkeypatch.setenv("IMPERIAL_RAG_MMR_LAMBDA_MULT", "0.65")
+    monkeypatch.setenv("IMPERIAL_RAG_RRF_K", "42")
     monkeypatch.setenv("IMPERIAL_RAG_PRIMARY_RERANKER", "dashscope:custom-primary")
     monkeypatch.setenv("IMPERIAL_RAG_FALLBACK_RERANKER", "fallback:custom")
 
@@ -177,6 +180,7 @@ def test_retrieval_settings_read_environment_overrides(monkeypatch):
     assert settings.final_evidence_min == 14
     assert settings.final_evidence_max == 20
     assert settings.mmr_lambda_mult == 0.65
+    assert settings.rrf_k == 42
     assert settings.primary_reranker == "dashscope:custom-primary"
     assert settings.fallback_reranker == "fallback:custom"
 
@@ -277,6 +281,10 @@ def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
 
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k", "v", "n"]
     assert result.diagnostics["merged_candidates"] == 2
+    assert result.diagnostics["fusion"] == "rrf"
+    assert result.diagnostics["fusion_rrf_k"] == 60
+    assert result.diagnostics["fused_candidates"] == 2
+    assert result.diagnostics["rerank_input_candidates"] == 2
     assert result.diagnostics["final_evidence"] == 3
     assert result.diagnostics["reranker"] == "fallback:deterministic"
 
@@ -309,11 +317,12 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
         "retrieve.vector_search",
         "retrieve.keyword_search",
         "retrieve.merge_candidates",
+        "retrieve.fuse_candidates",
         "retrieve.rerank",
         "retrieve.expand_neighbors",
         "retrieve.select_evidence",
     ]
-    assert [record["query"] for record in records] == ["возврат брака"] * 6
+    assert [record["query"] for record in records] == ["возврат брака"] * 7
     assert records[0]["output"]["status"] == "ok"
     assert records[0]["output"]["count"] == 1
     assert records[0]["output"]["top_documents"][0]["citation_id"] == "v"
@@ -325,16 +334,19 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[1]["set_attributes"]["retrieval.documents.0.document.content"] == "Порядок возврата брака"
     assert records[2]["kind"] == "CHAIN"
     assert records[2]["output"]["count"] == 2
-    assert records[3]["kind"] == "RERANKER"
-    assert records[3]["output"]["reranker"] == "fallback:deterministic"
-    assert "reranker_missing_dashscope_api_key" in records[3]["output"]["fallbacks"]
-    assert records[3]["set_attributes"]["reranker.input_documents.0.document.id"] == "v"
-    assert records[3]["set_attributes"]["reranker.input_documents.1.document.id"] == "k"
-    assert records[3]["set_attributes"]["reranker.output_documents.0.document.id"] == "k"
-    assert records[4]["output"]["count"] == 3
-    assert records[4]["output"]["added_neighbors"] == 2
+    assert records[3]["kind"] == "CHAIN"
+    assert records[3]["output"]["fusion"] == "rrf"
+    assert records[3]["output"]["count"] == 2
+    assert records[4]["kind"] == "RERANKER"
+    assert records[4]["output"]["reranker"] == "fallback:deterministic"
+    assert "reranker_missing_dashscope_api_key" in records[4]["output"]["fallbacks"]
+    assert records[4]["set_attributes"]["reranker.input_documents.0.document.id"] == "v"
+    assert records[4]["set_attributes"]["reranker.input_documents.1.document.id"] == "k"
+    assert records[4]["set_attributes"]["reranker.output_documents.0.document.id"] == "k"
     assert records[5]["output"]["count"] == 3
-    assert records[5]["output"]["final_evidence_max"] == 3
+    assert records[5]["output"]["added_neighbors"] == 2
+    assert records[6]["output"]["count"] == 3
+    assert records[6]["output"]["final_evidence_max"] == 3
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k", "v", "n"]
 
 
@@ -364,6 +376,7 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
         "retrieve.vector_search",
         "retrieve.keyword_search",
         "retrieve.merge_candidates",
+        "retrieve.fuse_candidates",
         "retrieve.rerank",
         "retrieve.expand_neighbors",
         "retrieve.select_evidence",
@@ -372,8 +385,8 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
     assert records[0]["output"]["fallbacks"] == ["vector_search_failed"]
     assert records[1]["output"]["status"] == "unavailable"
     assert records[1]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
-    assert records[3]["output"]["reranker"] == "none"
-    assert records[5]["output"]["count"] == 0
+    assert records[4]["output"]["reranker"] == "none"
+    assert records[6]["output"]["count"] == 0
     assert result.evidence == []
 
 
@@ -398,9 +411,9 @@ def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
 
     result = service.retrieve("возврат")
 
-    assert records[3]["name"] == "retrieve.rerank"
-    assert records[3]["output"]["reranker"] == "fallback:deterministic"
-    assert "reranker_failed:dashscope:qwen3-rerank-test" in records[3]["output"]["fallbacks"]
+    assert records[4]["name"] == "retrieve.rerank"
+    assert records[4]["output"]["reranker"] == "fallback:deterministic"
+    assert "reranker_failed:dashscope:qwen3-rerank-test" in records[4]["output"]["fallbacks"]
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
 
 
@@ -565,6 +578,98 @@ def test_candidate_merger_reconciles_duplicate_vector_keyword_metadata():
     assert merged[0].metadata["_keyword_score"] == -1.25
     assert merged[0].metadata["file_name"] == "vector-return.docx"
     assert merged[0].metadata["section_heading"] == "Возврат брака"
+
+
+def test_rrf_candidate_fusion_prioritizes_overlap_documents():
+    docs = [
+        Document(page_content="vector top", metadata={"citation_id": "vector", "_vector_rank": 0}),
+        Document(page_content="keyword top", metadata={"citation_id": "keyword", "_keyword_rank": 0}),
+        Document(page_content="both", metadata={"citation_id": "both", "_vector_rank": 10, "_keyword_rank": 10}),
+    ]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [doc.metadata["citation_id"] for doc in fused] == ["both", "vector", "keyword"]
+    assert fused[0].metadata["_rrf_score"] > fused[1].metadata["_rrf_score"]
+    assert [doc.metadata["_fusion_rank"] for doc in fused] == [0, 1, 2]
+
+
+def test_rrf_candidate_fusion_interleaves_equal_vector_and_keyword_ranks():
+    docs = [
+        Document(page_content=f"vector {index}", metadata={"citation_id": f"v{index}", "_vector_rank": index})
+        for index in range(3)
+    ] + [
+        Document(page_content=f"keyword {index}", metadata={"citation_id": f"k{index}", "_keyword_rank": index})
+        for index in range(3)
+    ]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [doc.metadata["citation_id"] for doc in fused] == ["v0", "k0", "v1", "k1", "v2", "k2"]
+
+
+def test_rrf_candidate_fusion_does_not_mutate_input_documents():
+    docs = [
+        Document(page_content="vector", metadata={"citation_id": "v", "_vector_rank": 0}),
+        Document(page_content="keyword", metadata={"citation_id": "k", "_keyword_rank": 0}),
+    ]
+    original_metadata = [dict(document.metadata) for document in docs]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [document.metadata for document in docs] == original_metadata
+    assert all("_rrf_score" in document.metadata for document in fused)
+    assert all("_fusion_rank" in document.metadata for document in fused)
+
+
+def test_rrf_candidate_fusion_places_unranked_documents_last():
+    docs = [
+        Document(page_content="unranked first", metadata={"citation_id": "unranked"}),
+        Document(page_content="vector", metadata={"citation_id": "v", "_vector_rank": 2}),
+        Document(page_content="keyword", metadata={"citation_id": "k", "_keyword_rank": 1}),
+    ]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [doc.metadata["citation_id"] for doc in fused] == ["k", "v", "unranked"]
+    assert fused[-1].metadata["_rrf_score"] == 0.0
+
+
+def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    records = capture_retrieval_spans(monkeypatch)
+    vector_docs = [
+        Document(page_content=f"vector {index}", metadata={"citation_id": f"v{index}"})
+        for index in range(32)
+    ]
+    keyword_docs = [
+        Document(page_content=f"keyword {index}", metadata={"citation_id": f"k{index}", "_keyword_rank": index})
+        for index in range(40)
+    ]
+
+    class EchoCompressor:
+        def compress_documents(self, documents, query):
+            return list(documents[:2])
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n, settings: EchoCompressor(), raising=False)
+    service = RetrievalService(
+        vector_search=FakeVectorSearch(vector_docs),
+        keyword_search=FakeKeywordSearch(keyword_docs),
+        neighbor_store=ChunkNeighborStore([]),
+        settings=RetrievalSettings(rerank_input_limit=6, rerank_top_n=2),
+    )
+
+    result = service.retrieve("возврат брака")
+
+    rerank_record = records[4]
+    assert rerank_record["name"] == "retrieve.rerank"
+    assert [
+        rerank_record["set_attributes"][f"reranker.input_documents.{index}.document.id"]
+        for index in range(6)
+    ] == ["v0", "k0", "v1", "k1", "v2", "k2"]
+    assert rerank_record["output"]["rerank_input"] == 6
+    assert result.diagnostics["rerank_input_candidates"] == 6
 
 
 def test_fallback_ranker_prioritizes_keyword_and_filename_matches():

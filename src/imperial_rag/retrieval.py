@@ -46,6 +46,7 @@ class RetrievalSettings:
     final_evidence_min: int = 18
     final_evidence_max: int = 24
     mmr_lambda_mult: float = 0.4
+    rrf_k: int = 60
     primary_reranker: str = "dashscope:qwen3-rerank"
     fallback_reranker: str = "fallback:deterministic"
 
@@ -65,6 +66,7 @@ class RetrievalSettings:
             final_evidence_min=_env_int("IMPERIAL_RAG_FINAL_EVIDENCE_MIN", cls.final_evidence_min),
             final_evidence_max=_env_int("IMPERIAL_RAG_FINAL_EVIDENCE_MAX", cls.final_evidence_max),
             mmr_lambda_mult=_env_float("IMPERIAL_RAG_MMR_LAMBDA_MULT", cls.mmr_lambda_mult),
+            rrf_k=_env_int("IMPERIAL_RAG_RRF_K", cls.rrf_k),
             primary_reranker=primary_reranker,
             fallback_reranker=_env_str("IMPERIAL_RAG_FALLBACK_RERANKER", cls.fallback_reranker),
         )
@@ -366,6 +368,33 @@ class CandidateMerger:
         return merged
 
 
+class RrfCandidateFusion:
+    def fuse(self, documents: list[Document], rrf_k: int) -> list[Document]:
+        scored = [
+            (self._score(document, rrf_k), index, document)
+            for index, document in enumerate(documents)
+        ]
+        fused: list[Document] = []
+        for fusion_rank, (score, _index, document) in enumerate(sorted(scored, key=lambda item: (-item[0], item[1]))):
+            metadata = dict(document.metadata or {})
+            metadata["_rrf_score"] = score
+            metadata["_fusion_rank"] = fusion_rank
+            fused.append(Document(page_content=document.page_content, metadata=metadata))
+        return fused
+
+    def _score(self, document: Document, rrf_k: int) -> float:
+        metadata = document.metadata or {}
+        return self._rank_score(metadata.get("_vector_rank"), rrf_k) + self._rank_score(
+            metadata.get("_keyword_rank"),
+            rrf_k,
+        )
+
+    def _rank_score(self, rank: Any, rrf_k: int) -> float:
+        if isinstance(rank, bool) or not isinstance(rank, (int, float)) or rank < 0:
+            return 0.0
+        return 1.0 / (rrf_k + rank + 1.0)
+
+
 class FallbackRanker:
     _SOURCE_TYPE_BOOSTS = {
         "body": 0.35,
@@ -523,6 +552,7 @@ class RetrievalService:
         self.settings = settings or RetrievalSettings.from_env()
         self.hybrid = HybridRetriever(vector_search=vector_search, keyword_search=keyword_search, settings=self.settings)
         self.merger = CandidateMerger()
+        self.fusion = RrfCandidateFusion()
         self.reranker = Reranker(settings=self.settings)
         self.neighbor_store = neighbor_store or ChunkNeighborStore([])
         self.expander = NeighborExpander(store=self.neighbor_store, settings=self.settings)
@@ -550,6 +580,31 @@ class RetrievalService:
             )
 
         with trace_retrieval_step(
+            "retrieve.fuse_candidates",
+            query,
+            kind="CHAIN",
+            attributes={
+                "retrieval.fusion": "rrf",
+                "retrieval.fusion_rrf_k": self.settings.rrf_k,
+                "retrieval.input_count": len(merged),
+                "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
+            },
+        ) as span:
+            fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
+            rerank_input = fused[: self.settings.rerank_input_limit]
+            diagnostics["fusion"] = "rrf"
+            diagnostics["fusion_rrf_k"] = self.settings.rrf_k
+            diagnostics["fused_candidates"] = len(fused)
+            diagnostics["rerank_input_candidates"] = len(rerank_input)
+            _set_documents_span_output(
+                span,
+                fused,
+                fusion="rrf",
+                fusion_rrf_k=self.settings.rrf_k,
+                rerank_input_candidates=len(rerank_input),
+            )
+
+        with trace_retrieval_step(
             "retrieve.rerank",
             query,
             kind="RERANKER",
@@ -559,8 +614,8 @@ class RetrievalService:
                 "retrieval.primary_reranker": self.settings.primary_reranker,
             },
         ) as span:
-            span.set_reranker_input_documents(merged)
-            reranked = self.reranker.rerank(query, merged, diagnostics)
+            span.set_reranker_input_documents(rerank_input)
+            reranked = self.reranker.rerank(query, rerank_input, diagnostics)
             _set_documents_span_output(
                 span,
                 reranked,
