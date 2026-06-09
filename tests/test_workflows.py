@@ -287,19 +287,96 @@ def test_query_workflow_preserves_explicit_empty_keyword_candidates():
     assert result["keyword_candidates"] == []
 
 
-def test_query_workflow_replaces_unsupported_generated_answer_with_refusal():
+def test_query_workflow_preserves_unsupported_generated_answer_with_invalid_diagnostics():
+    docs = [Document(page_content="Known fact.", metadata={"citation_id": "known"})]
+    generated_answer = "Unsupported fact. [missing]"
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: generated_answer,
+    )
+
+    result = workflow.invoke({"question": "What is known?"})
+
+    assert result["answer"] == generated_answer
+    assert result["citations_valid"] is False
+    assert result["invalid_citations"] == ["missing"]
+
+
+def test_query_workflow_preserves_uncited_generated_answer_with_invalid_diagnostics():
+    docs = [Document(page_content="Known fact.", metadata={"citation_id": "known"})]
+    generated_answer = "Known fact."
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: generated_answer,
+    )
+
+    result = workflow.invoke({"question": "What is known?"})
+
+    assert result["answer"] == generated_answer
+    assert result["citations_valid"] is False
+    assert result["invalid_citations"] == []
+
+
+def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypatch):
+    from imperial_rag import workflows as workflows_module
+
+    docs = [Document(page_content="Known fact.", metadata={"citation_id": "known"})]
+    generated_answer = "Unsupported fact. [missing]"
+    trace_calls = []
+
+    class FakeTraceSpan:
+        def set_output(self, value):
+            trace_calls.append({"output": value})
+
+    @contextmanager
+    def fake_trace_answer_step(name, question, *, attributes=None):
+        trace_calls.append({"name": name, "question": question, "attributes": attributes})
+        yield FakeTraceSpan()
+
+    monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: generated_answer,
+    )
+
+    result = workflow.invoke({"question": "What is known?"})
+
+    assert result["answer"] == generated_answer
+    assert trace_calls == [
+        {
+            "name": "answer.generate",
+            "question": "What is known?",
+            "attributes": {"answer.evidence_count": 1, "answer.citation_count": 1},
+        },
+        {
+            "output": {
+                "answer": generated_answer,
+                "citations_valid": False,
+                "invalid_citations": ["missing"],
+                "refused": False,
+                "evidence_count": 1,
+                "citation_count": 1,
+            }
+        },
+    ]
+
+
+def test_query_workflow_preserves_generated_refusal_text_with_evidence():
     docs = [Document(page_content="Known fact.", metadata={"citation_id": "known"})]
 
     workflow = build_query_workflow(
         retrieve=lambda question: docs,
-        generate=lambda question, retrieved_docs: "Unsupported fact. [missing]",
+        generate=lambda question, retrieved_docs: REFUSAL_TEXT,
     )
 
     result = workflow.invoke({"question": "What is known?"})
 
     assert result["answer"] == REFUSAL_TEXT
-    assert result["citations_valid"] is False
-    assert result["invalid_citations"] == ["missing"]
+    assert result["citations_valid"] is True
+    assert result["invalid_citations"] == []
 
 
 def test_query_workflow_preserves_cited_answer_with_form_placeholder():

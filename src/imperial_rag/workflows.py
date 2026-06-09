@@ -258,22 +258,12 @@ def build_query_workflow(
                 response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
                 answer = str(response.content)
             valid, invalid = validate_citations(answer, evidence)
-            if not valid:
-                update = {
-                    "answer": REFUSAL_TEXT,
-                    "citations": citations,
-                    "sources": sources,
-                    "citations_valid": False,
-                    "invalid_citations": invalid,
-                }
-                _set_answer_trace_output(span, update, evidence_count=len(evidence), citation_count=len(citations))
-                return update
             update = {
                 "answer": answer,
                 "citations": citations,
                 "sources": sources,
-                "citations_valid": True,
-                "invalid_citations": [],
+                "citations_valid": valid,
+                "invalid_citations": invalid,
             }
             _set_answer_trace_output(span, update, evidence_count=len(evidence), citation_count=len(citations))
             return update
