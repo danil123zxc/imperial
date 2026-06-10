@@ -2,8 +2,16 @@ import subprocess
 import sys
 import textwrap
 import types
+from types import SimpleNamespace
 
-from imperial_rag.web_app import APP_TITLE, build_status_summary, load_status_summary
+from langchain_core.documents import Document
+
+from imperial_rag.web_app import (
+    APP_TITLE,
+    build_retrieved_file_groups,
+    build_status_summary,
+    load_status_summary,
+)
 
 
 def test_status_summary_displays_manifest_counts():
@@ -19,6 +27,108 @@ def test_load_status_summary_is_importable_without_manifest_stack():
     summary = load_status_summary(settings=object())
 
     assert "Total files:" in summary
+
+
+def test_build_retrieved_file_groups_groups_chunks_by_file_and_preserves_markers(tmp_path):
+    documents_root = tmp_path / "documents"
+    source_path = documents_root / "11. РЕГЛАМЕНТЫ" / "Регламент ЛОГИСТИКА.docx"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"docx bytes")
+    settings = SimpleNamespace(documents_root=documents_root)
+
+    groups = build_retrieved_file_groups(
+        [
+            Document(
+                page_content="Первый найденный фрагмент.",
+                metadata={
+                    "file_id": "logistics",
+                    "file_path": str(source_path),
+                    "relative_path": "11. РЕГЛАМЕНТЫ/Регламент ЛОГИСТИКА.docx",
+                    "file_name": "Регламент ЛОГИСТИКА.docx",
+                    "source_type": "body",
+                },
+            ),
+            Document(
+                page_content="Второй найденный фрагмент.",
+                metadata={
+                    "file_id": "logistics",
+                    "file_path": str(source_path),
+                    "relative_path": "11. РЕГЛАМЕНТЫ/Регламент ЛОГИСТИКА.docx",
+                    "file_name": "Регламент ЛОГИСТИКА.docx",
+                    "source_type": "body",
+                },
+            ),
+        ],
+        settings,
+    )
+
+    assert len(groups) == 1
+    assert groups[0].file_name == "Регламент ЛОГИСТИКА.docx"
+    assert groups[0].chunk_count == 2
+    assert groups[0].markers == ("[S1]", "[S2]")
+    assert [snippet.text for snippet in groups[0].snippets] == [
+        "Первый найденный фрагмент.",
+        "Второй найденный фрагмент.",
+    ]
+    assert groups[0].can_download is True
+
+
+def test_build_retrieved_file_groups_uses_relative_path_for_safe_download(tmp_path):
+    documents_root = tmp_path / "documents"
+    source_path = documents_root / "forms" / "заявление на увольнение.docx"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"form")
+    settings = SimpleNamespace(documents_root=documents_root)
+
+    groups = build_retrieved_file_groups(
+        [
+            Document(
+                page_content="Фрагмент заявления.",
+                metadata={
+                    "relative_path": "forms/заявление на увольнение.docx",
+                    "file_name": "заявление на увольнение.docx",
+                    "source_type": "body",
+                },
+            )
+        ],
+        settings,
+    )
+
+    assert groups[0].download_path == source_path.resolve()
+    assert groups[0].download_name == "заявление на увольнение.docx"
+    assert groups[0].can_download is True
+
+
+def test_build_retrieved_file_groups_disables_missing_or_outside_downloads(tmp_path):
+    documents_root = tmp_path / "documents"
+    documents_root.mkdir()
+    outside_path = tmp_path / "outside.docx"
+    outside_path.write_bytes(b"outside")
+    settings = SimpleNamespace(documents_root=documents_root)
+
+    groups = build_retrieved_file_groups(
+        [
+            Document(
+                page_content="Missing file snippet.",
+                metadata={"relative_path": "missing.docx", "file_name": "missing.docx"},
+            ),
+            Document(
+                page_content="Outside file snippet.",
+                metadata={"file_path": str(outside_path), "file_name": "outside.docx"},
+            ),
+        ],
+        settings,
+    )
+
+    assert [group.can_download for group in groups] == [False, False]
+    assert [group.download_path for group in groups] == [None, None]
+    assert [group.snippets[0].text for group in groups] == ["Missing file snippet.", "Outside file snippet."]
+
+
+def test_build_retrieved_file_groups_returns_empty_list_without_evidence(tmp_path):
+    settings = SimpleNamespace(documents_root=tmp_path / "documents")
+
+    assert build_retrieved_file_groups([], settings) == []
 
 
 def test_main_loads_project_env_before_creating_settings(monkeypatch):
