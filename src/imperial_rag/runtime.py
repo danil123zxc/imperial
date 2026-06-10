@@ -7,7 +7,7 @@ from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
 from imperial_rag.indexing import KeywordIndex, make_qdrant_store
 from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
-from imperial_rag.retrieval import ChunkNeighborStore, RetrievalService, RetrievalSettings
+from imperial_rag.retrieval import RetrievalService, RetrievalSettings
 from imperial_rag.tracing import trace_agent_step
 from imperial_rag.workflows import build_query_workflow
 
@@ -102,7 +102,6 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
             retrieval_service_cache["value"] = RetrievalService(
                 vector_search=deps.vector_search,
                 keyword_search=deps.keyword_search,
-                neighbor_store=ChunkNeighborStore.from_jsonl(resolved_settings.extraction_root / "chunks.jsonl"),
                 settings=RetrievalSettings.from_env(),
             )
         return retrieval_service_cache["value"]

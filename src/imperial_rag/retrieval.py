@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import asdict, dataclass, field, replace
-from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import Document
@@ -42,9 +40,6 @@ class RetrievalSettings:
     keyword_limit: int = 30
     rerank_input_limit: int = 100
     rerank_top_n: int = 10
-    neighbor_window: int = 0
-    final_evidence_min: int = 10
-    final_evidence_max: int = 10
     mmr_lambda_mult: float = 0.4
     rrf_k: int = 60
     primary_reranker: str = "dashscope:qwen3-rerank"
@@ -62,9 +57,6 @@ class RetrievalSettings:
             keyword_limit=_env_int("IMPERIAL_RAG_KEYWORD_LIMIT", cls.keyword_limit),
             rerank_input_limit=_env_int("IMPERIAL_RAG_RERANK_INPUT_LIMIT", cls.rerank_input_limit),
             rerank_top_n=_env_int("IMPERIAL_RAG_RERANK_TOP_N", cls.rerank_top_n),
-            neighbor_window=_env_int("IMPERIAL_RAG_NEIGHBOR_WINDOW", cls.neighbor_window),
-            final_evidence_min=_env_int("IMPERIAL_RAG_FINAL_EVIDENCE_MIN", cls.final_evidence_min),
-            final_evidence_max=_env_int("IMPERIAL_RAG_FINAL_EVIDENCE_MAX", cls.final_evidence_max),
             mmr_lambda_mult=_env_float("IMPERIAL_RAG_MMR_LAMBDA_MULT", cls.mmr_lambda_mult),
             rrf_k=_env_int("IMPERIAL_RAG_RRF_K", cls.rrf_k),
             primary_reranker=primary_reranker,
@@ -192,115 +184,6 @@ class HybridRetriever:
 def _document_key(document: Document) -> str:
     metadata = document.metadata or {}
     return str(metadata.get("citation_id") or metadata.get("chunk_id") or document.page_content)
-
-
-def _neighbor_key(document: Document) -> tuple[Any, Any, int] | None:
-    metadata = document.metadata or {}
-    file_id = metadata.get("file_id")
-    source_type = metadata.get("source_type")
-    chunk_index = metadata.get("chunk_index")
-    if file_id is None or source_type is None:
-        return None
-    if isinstance(chunk_index, bool) or not isinstance(chunk_index, int):
-        return None
-    return (file_id, source_type, _source_locator(metadata), chunk_index)
-
-
-def _source_locator(metadata: dict[str, Any]) -> Any:
-    for key in ("page_number", "sheet_name", "image_index", "section_heading"):
-        value = metadata.get(key)
-        if value is not None:
-            return (key, value)
-    return None
-
-
-class ChunkNeighborStore:
-    def __init__(self, chunks: list[Document] | None = None) -> None:
-        self._chunks_by_key: dict[tuple[Any, Any, int], Document] = {}
-        for chunk in chunks or []:
-            key = _neighbor_key(chunk)
-            if key is not None:
-                self._chunks_by_key[key] = chunk
-
-    @classmethod
-    def from_jsonl(cls, path: Path | str) -> "ChunkNeighborStore":
-        jsonl_path = Path(path)
-        if not jsonl_path.exists():
-            return cls()
-
-        chunks: list[Document] = []
-        try:
-            with jsonl_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    payload = json.loads(stripped)
-                    if not isinstance(payload, dict):
-                        return cls([])
-                    if "page_content" not in payload or "metadata" not in payload:
-                        return cls([])
-                    page_content = payload["page_content"]
-                    metadata = payload["metadata"]
-                    if not isinstance(page_content, str) or not isinstance(metadata, dict):
-                        return cls([])
-                    chunks.append(Document(page_content=page_content, metadata=dict(metadata)))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return cls([])
-        return cls(chunks)
-
-    def neighbors(self, document: Document, window: int) -> list[Document]:
-        key = _neighbor_key(document)
-        if key is None or window <= 0:
-            return []
-
-        file_id, source_type, source_locator, chunk_index = key
-        neighbors: list[Document] = []
-        for offset in range(1, window + 1):
-            previous = self._chunks_by_key.get((file_id, source_type, source_locator, chunk_index - offset))
-            if previous is not None:
-                neighbors.append(previous)
-
-            next_document = self._chunks_by_key.get((file_id, source_type, source_locator, chunk_index + offset))
-            if next_document is not None:
-                neighbors.append(next_document)
-        return neighbors
-
-
-class NeighborExpander:
-    def __init__(self, store: ChunkNeighborStore, settings: RetrievalSettings | None = None) -> None:
-        self.store = store
-        self.settings = settings or RetrievalSettings.from_env()
-
-    def expand(self, documents: list[Document]) -> list[Document]:
-        limit = max(0, self.settings.final_evidence_max)
-        expanded: list[Document] = []
-        seen: set[str] = set()
-
-        for document in documents:
-            if self._append_unique(expanded, seen, document) >= limit:
-                return expanded[:limit]
-
-        for document in documents:
-            for neighbor in self.store.neighbors(document, self.settings.neighbor_window):
-                if self._append_unique(expanded, seen, neighbor) >= limit:
-                    return expanded[:limit]
-        return expanded
-
-    def _append_unique(self, documents: list[Document], seen: set[str], document: Document) -> int:
-        key = _document_key(document)
-        if key not in seen:
-            documents.append(document)
-            seen.add(key)
-        return len(documents)
-
-
-class EvidenceSelector:
-    def __init__(self, settings: RetrievalSettings | None = None) -> None:
-        self.settings = settings or RetrievalSettings.from_env()
-
-    def select(self, documents: list[Document]) -> list[Document]:
-        return list(documents[: max(0, self.settings.final_evidence_max)])
 
 
 def _content_key(document: Document) -> str:
@@ -546,7 +429,6 @@ class RetrievalService:
         self,
         vector_search: Any,
         keyword_search: Any,
-        neighbor_store: ChunkNeighborStore | None = None,
         settings: RetrievalSettings | None = None,
     ) -> None:
         self.settings = settings or RetrievalSettings.from_env()
@@ -554,9 +436,6 @@ class RetrievalService:
         self.merger = CandidateMerger()
         self.fusion = RrfCandidateFusion()
         self.reranker = Reranker(settings=self.settings)
-        self.neighbor_store = neighbor_store or ChunkNeighborStore([])
-        self.expander = NeighborExpander(store=self.neighbor_store, settings=self.settings)
-        self.selector = EvidenceSelector(settings=self.settings)
 
     def retrieve(self, query: str) -> RetrievalResult:
         candidates = self.hybrid.retrieve(query)
@@ -626,42 +505,8 @@ class RetrievalService:
             )
             span.set_reranker_output_documents(reranked)
 
-        with trace_retrieval_step(
-            "retrieve.expand_neighbors",
-            query,
-            kind="CHAIN",
-            attributes={
-                "retrieval.neighbor_window": self.settings.neighbor_window,
-                "retrieval.input_count": len(reranked),
-            },
-        ) as span:
-            expanded = self.expander.expand(reranked)
-            _set_documents_span_output(
-                span,
-                expanded,
-                input_count=len(reranked),
-                added_neighbors=max(0, len(expanded) - len(reranked)),
-            )
-
-        with trace_retrieval_step(
-            "retrieve.select_evidence",
-            query,
-            kind="CHAIN",
-            attributes={
-                "retrieval.final_evidence_min": self.settings.final_evidence_min,
-                "retrieval.final_evidence_max": self.settings.final_evidence_max,
-                "retrieval.input_count": len(expanded),
-            },
-        ) as span:
-            evidence = self.selector.select(expanded)
-            diagnostics["final_evidence"] = len(evidence)
-            _set_documents_span_output(
-                span,
-                evidence,
-                input_count=len(expanded),
-                final_evidence_min=self.settings.final_evidence_min,
-                final_evidence_max=self.settings.final_evidence_max,
-            )
+        evidence = reranked
+        diagnostics["final_evidence"] = len(evidence)
         return RetrievalResult(
             evidence=evidence,
             vector_docs=candidates.vector_docs,

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-import pytest
 from langchain_core.documents import Document
 
 import imperial_rag.retrieval as retrieval_module
 from imperial_rag.retrieval import CandidateMerger, FallbackRanker, RetrievalSettings, RrfCandidateFusion
-from imperial_rag.retrieval import ChunkNeighborStore, EvidenceSelector, NeighborExpander
 from imperial_rag.retrieval import HybridRetriever
 from imperial_rag.retrieval import RetrievalService
 from imperial_rag.retrieval import Reranker
@@ -37,13 +35,6 @@ class FakeKeywordSearch:
                 self.score = 0.0
 
         return [Hit(document) for document in self.docs[:limit]]
-
-
-def chunk(index):
-    return Document(
-        page_content=f"chunk {index}",
-        metadata={"citation_id": f"c{index}", "file_id": "f", "source_type": "body", "chunk_index": index},
-    )
 
 
 def capture_retrieval_spans(monkeypatch):
@@ -100,9 +91,6 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
         "IMPERIAL_RAG_KEYWORD_LIMIT",
         "IMPERIAL_RAG_RERANK_INPUT_LIMIT",
         "IMPERIAL_RAG_RERANK_TOP_N",
-        "IMPERIAL_RAG_NEIGHBOR_WINDOW",
-        "IMPERIAL_RAG_FINAL_EVIDENCE_MIN",
-        "IMPERIAL_RAG_FINAL_EVIDENCE_MAX",
         "IMPERIAL_RAG_MMR_LAMBDA_MULT",
         "IMPERIAL_RAG_RRF_K",
         "IMPERIAL_RAG_QWEN_RERANK_MODEL",
@@ -120,9 +108,6 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
     assert settings.keyword_limit == 30
     assert settings.rerank_input_limit == 100
     assert settings.rerank_top_n == 10
-    assert settings.neighbor_window == 0
-    assert settings.final_evidence_min == 10
-    assert settings.final_evidence_max == 10
     assert settings.mmr_lambda_mult == 0.4
     assert settings.rrf_k == 60
     assert settings.primary_reranker == "dashscope:qwen3-rerank"
@@ -159,9 +144,6 @@ def test_retrieval_settings_read_environment_overrides(monkeypatch):
     monkeypatch.setenv("IMPERIAL_RAG_KEYWORD_LIMIT", "35")
     monkeypatch.setenv("IMPERIAL_RAG_RERANK_INPUT_LIMIT", "55")
     monkeypatch.setenv("IMPERIAL_RAG_RERANK_TOP_N", "10")
-    monkeypatch.setenv("IMPERIAL_RAG_NEIGHBOR_WINDOW", "2")
-    monkeypatch.setenv("IMPERIAL_RAG_FINAL_EVIDENCE_MIN", "14")
-    monkeypatch.setenv("IMPERIAL_RAG_FINAL_EVIDENCE_MAX", "20")
     monkeypatch.setenv("IMPERIAL_RAG_MMR_LAMBDA_MULT", "0.65")
     monkeypatch.setenv("IMPERIAL_RAG_RRF_K", "42")
     monkeypatch.setenv("IMPERIAL_RAG_PRIMARY_RERANKER", "dashscope:custom-primary")
@@ -176,9 +158,6 @@ def test_retrieval_settings_read_environment_overrides(monkeypatch):
     assert settings.keyword_limit == 35
     assert settings.rerank_input_limit == 55
     assert settings.rerank_top_n == 10
-    assert settings.neighbor_window == 2
-    assert settings.final_evidence_min == 14
-    assert settings.final_evidence_max == 20
     assert settings.mmr_lambda_mult == 0.65
     assert settings.rrf_k == 42
     assert settings.primary_reranker == "dashscope:custom-primary"
@@ -265,27 +244,21 @@ def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
     keyword_docs = [
         Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 1, "_keyword_rank": 0})
     ]
-    all_chunks = [
-        vector_docs[0],
-        keyword_docs[0],
-        Document(page_content="neighbor", metadata={"citation_id": "n", "file_id": "f", "source_type": "body", "chunk_index": 2}),
-    ]
     service = RetrievalService(
         vector_search=FakeVectorSearch(vector_docs),
         keyword_search=FakeKeywordSearch(keyword_docs),
-        neighbor_store=ChunkNeighborStore(all_chunks),
-        settings=RetrievalSettings(rerank_top_n=1, neighbor_window=1, final_evidence_max=3),
+        settings=RetrievalSettings(rerank_top_n=1),
     )
 
     result = service.retrieve("возврат брака")
 
-    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k", "v", "n"]
+    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
     assert result.diagnostics["merged_candidates"] == 2
     assert result.diagnostics["fusion"] == "rrf"
     assert result.diagnostics["fusion_rrf_k"] == 60
     assert result.diagnostics["fused_candidates"] == 2
     assert result.diagnostics["rerank_input_candidates"] == 2
-    assert result.diagnostics["final_evidence"] == 3
+    assert result.diagnostics["final_evidence"] == 1
     assert result.diagnostics["reranker"] == "fallback:deterministic"
 
 
@@ -299,16 +272,10 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     keyword_docs = [
         Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 1, "_keyword_rank": 0})
     ]
-    all_chunks = [
-        vector_docs[0],
-        keyword_docs[0],
-        Document(page_content="neighbor", metadata={"citation_id": "n", "file_id": "f", "source_type": "body", "chunk_index": 2}),
-    ]
     service = RetrievalService(
         vector_search=FakeVectorSearch(vector_docs),
         keyword_search=FakeKeywordSearch(keyword_docs),
-        neighbor_store=ChunkNeighborStore(all_chunks),
-        settings=RetrievalSettings(rerank_top_n=1, neighbor_window=1, final_evidence_max=3),
+        settings=RetrievalSettings(rerank_top_n=1),
     )
 
     result = service.retrieve("возврат брака")
@@ -319,10 +286,8 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
         "retrieve.merge_candidates",
         "retrieve.fuse_candidates",
         "retrieve.rerank",
-        "retrieve.expand_neighbors",
-        "retrieve.select_evidence",
     ]
-    assert [record["query"] for record in records] == ["возврат брака"] * 7
+    assert [record["query"] for record in records] == ["возврат брака"] * 5
     assert records[0]["output"]["status"] == "ok"
     assert records[0]["output"]["count"] == 1
     assert records[0]["output"]["top_documents"][0]["citation_id"] == "v"
@@ -343,11 +308,8 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[4]["set_attributes"]["reranker.input_documents.0.document.id"] == "v"
     assert records[4]["set_attributes"]["reranker.input_documents.1.document.id"] == "k"
     assert records[4]["set_attributes"]["reranker.output_documents.0.document.id"] == "k"
-    assert records[5]["output"]["count"] == 3
-    assert records[5]["output"]["added_neighbors"] == 2
-    assert records[6]["output"]["count"] == 3
-    assert records[6]["output"]["final_evidence_max"] == 3
-    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k", "v", "n"]
+    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
+    assert result.diagnostics["final_evidence"] == 1
 
 
 def test_retrieval_service_traces_search_fallbacks(monkeypatch):
@@ -366,7 +328,6 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
     service = RetrievalService(
         vector_search=BrokenVector(),
         keyword_search=BrokenKeyword(),
-        neighbor_store=ChunkNeighborStore([]),
         settings=RetrievalSettings(),
     )
 
@@ -378,16 +339,14 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
         "retrieve.merge_candidates",
         "retrieve.fuse_candidates",
         "retrieve.rerank",
-        "retrieve.expand_neighbors",
-        "retrieve.select_evidence",
     ]
     assert records[0]["output"]["status"] == "unavailable"
     assert records[0]["output"]["fallbacks"] == ["vector_search_failed"]
     assert records[1]["output"]["status"] == "unavailable"
     assert records[1]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
     assert records[4]["output"]["reranker"] == "none"
-    assert records[6]["output"]["count"] == 0
     assert result.evidence == []
+    assert result.diagnostics["final_evidence"] == 0
 
 
 def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
@@ -405,7 +364,6 @@ def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
     service = RetrievalService(
         vector_search=FakeVectorSearch([]),
         keyword_search=FakeKeywordSearch(docs),
-        neighbor_store=ChunkNeighborStore([]),
         settings=RetrievalSettings(primary_reranker="dashscope:qwen3-rerank-test", rerank_top_n=1),
     )
 
@@ -415,109 +373,6 @@ def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
     assert records[4]["output"]["reranker"] == "fallback:deterministic"
     assert "reranker_failed:dashscope:qwen3-rerank-test" in records[4]["output"]["fallbacks"]
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
-
-
-def test_neighbor_expander_adds_previous_and_next_chunks():
-    chunks = [
-        Document(page_content="previous", metadata={"citation_id": "c0", "file_id": "f", "source_type": "body", "chunk_index": 0}),
-        Document(page_content="hit", metadata={"citation_id": "c1", "file_id": "f", "source_type": "body", "chunk_index": 1}),
-        Document(page_content="next", metadata={"citation_id": "c2", "file_id": "f", "source_type": "body", "chunk_index": 2}),
-    ]
-    store = ChunkNeighborStore(chunks)
-
-    expanded = NeighborExpander(store=store, settings=RetrievalSettings(neighbor_window=1, final_evidence_max=10)).expand([chunks[1]])
-
-    assert [doc.metadata["citation_id"] for doc in expanded] == ["c1", "c0", "c2"]
-
-
-def test_chunk_neighbor_store_keeps_sheet_context_separate():
-    chunks = [
-        Document(
-            page_content="sheet one hit",
-            metadata={"citation_id": "s1c0", "file_id": "f", "source_type": "sheet", "sheet_name": "Склад", "chunk_index": 0},
-        ),
-        Document(
-            page_content="sheet one next",
-            metadata={"citation_id": "s1c1", "file_id": "f", "source_type": "sheet", "sheet_name": "Склад", "chunk_index": 1},
-        ),
-        Document(
-            page_content="sheet two hit",
-            metadata={"citation_id": "s2c0", "file_id": "f", "source_type": "sheet", "sheet_name": "Продажи", "chunk_index": 0},
-        ),
-        Document(
-            page_content="sheet two next",
-            metadata={"citation_id": "s2c1", "file_id": "f", "source_type": "sheet", "sheet_name": "Продажи", "chunk_index": 1},
-        ),
-    ]
-    store = ChunkNeighborStore(chunks)
-
-    assert [doc.metadata["citation_id"] for doc in store.neighbors(chunks[0], window=1)] == ["s1c1"]
-
-
-def test_chunk_neighbor_store_from_jsonl_malformed_row_returns_empty_store(tmp_path):
-    chunks_path = tmp_path / "chunks.jsonl"
-    chunks_path.write_text(
-        '{"page_content": "previous", "metadata": {"citation_id": "c0", "file_id": "f", "source_type": "body", "chunk_index": 0}}\n'
-        'not-json\n',
-        encoding="utf-8",
-    )
-
-    try:
-        store = ChunkNeighborStore.from_jsonl(chunks_path)
-    except Exception as exc:
-        pytest.fail(f"from_jsonl should degrade safely for malformed artifacts: {exc}")
-
-    assert store.neighbors(chunk(1), window=1) == []
-
-
-def test_neighbor_expander_preserves_hits_first_then_deduped_neighbor_order():
-    chunks = [chunk(index) for index in range(1, 8)]
-    store = ChunkNeighborStore(chunks)
-
-    expanded = NeighborExpander(
-        store=store,
-        settings=RetrievalSettings(neighbor_window=2, final_evidence_max=10),
-    ).expand([chunks[2], chunks[4]])
-
-    assert [doc.metadata["citation_id"] for doc in expanded] == ["c3", "c5", "c2", "c4", "c1", "c6", "c7"]
-
-
-def test_neighbor_expander_caps_final_evidence_during_expansion():
-    chunks = [chunk(index) for index in range(1, 8)]
-    store = ChunkNeighborStore(chunks)
-
-    expanded = NeighborExpander(
-        store=store,
-        settings=RetrievalSettings(neighbor_window=2, final_evidence_max=4),
-    ).expand([chunks[2], chunks[4]])
-
-    assert [doc.metadata["citation_id"] for doc in expanded] == ["c3", "c5", "c2", "c4"]
-
-
-def test_neighbor_expander_does_not_mutate_input_documents():
-    chunks = [chunk(index) for index in range(1, 4)]
-    hit = chunks[1]
-    original_metadata = dict(hit.metadata)
-
-    NeighborExpander(
-        store=ChunkNeighborStore(chunks),
-        settings=RetrievalSettings(neighbor_window=1, final_evidence_max=10),
-    ).expand([hit])
-
-    assert hit.metadata == original_metadata
-
-
-def test_evidence_selector_caps_final_evidence():
-    docs = [
-        Document(page_content=f"doc {index}", metadata={"citation_id": f"c{index}"})
-        for index in range(30)
-    ]
-
-    selected = EvidenceSelector(settings=RetrievalSettings(final_evidence_max=10)).select(docs)
-
-    assert len(selected) == 10
-    assert selected[0].metadata["citation_id"] == "c0"
-    assert selected[-1].metadata["citation_id"] == "c9"
 
 
 def test_candidate_merger_deduplicates_by_citation_and_content():
@@ -656,7 +511,6 @@ def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypat
     service = RetrievalService(
         vector_search=FakeVectorSearch(vector_docs),
         keyword_search=FakeKeywordSearch(keyword_docs),
-        neighbor_store=ChunkNeighborStore([]),
         settings=RetrievalSettings(rerank_input_limit=6, rerank_top_n=2),
     )
 
@@ -717,7 +571,6 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     service = RetrievalService(
         vector_search=vector,
         keyword_search=keyword,
-        neighbor_store=ChunkNeighborStore([*vector_docs, *keyword_docs]),
         settings=RetrievalSettings(),
     )
 
@@ -735,11 +588,13 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     assert result.diagnostics["reranked_candidates"] == 10
     assert result.diagnostics["final_evidence"] == 10
     assert len(result.evidence) == 10
-    assert records[5]["name"] == "retrieve.expand_neighbors"
-    assert records[5]["output"]["count"] == 10
-    assert records[5]["output"]["added_neighbors"] == 0
-    assert records[6]["name"] == "retrieve.select_evidence"
-    assert records[6]["output"]["final_evidence_max"] == 10
+    assert [record["name"] for record in records] == [
+        "retrieve.vector_search",
+        "retrieve.keyword_search",
+        "retrieve.merge_candidates",
+        "retrieve.fuse_candidates",
+        "retrieve.rerank",
+    ]
 
 
 def test_fallback_ranker_prioritizes_keyword_and_filename_matches():
