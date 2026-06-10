@@ -115,14 +115,14 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
 
     assert settings.chunk_size == 400
     assert settings.chunk_overlap == 50
-    assert settings.vector_fetch_k == 80
-    assert settings.vector_k == 32
-    assert settings.keyword_limit == 40
-    assert settings.rerank_input_limit == 60
-    assert settings.rerank_top_n == 12
-    assert settings.neighbor_window == 1
-    assert settings.final_evidence_min == 18
-    assert settings.final_evidence_max == 24
+    assert settings.vector_fetch_k == 70
+    assert settings.vector_k == 70
+    assert settings.keyword_limit == 30
+    assert settings.rerank_input_limit == 100
+    assert settings.rerank_top_n == 10
+    assert settings.neighbor_window == 0
+    assert settings.final_evidence_min == 10
+    assert settings.final_evidence_max == 10
     assert settings.mmr_lambda_mult == 0.4
     assert settings.rrf_k == 60
     assert settings.primary_reranker == "dashscope:qwen3-rerank"
@@ -274,7 +274,7 @@ def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
         vector_search=FakeVectorSearch(vector_docs),
         keyword_search=FakeKeywordSearch(keyword_docs),
         neighbor_store=ChunkNeighborStore(all_chunks),
-        settings=RetrievalSettings(rerank_top_n=1, final_evidence_max=3),
+        settings=RetrievalSettings(rerank_top_n=1, neighbor_window=1, final_evidence_max=3),
     )
 
     result = service.retrieve("возврат брака")
@@ -308,7 +308,7 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
         vector_search=FakeVectorSearch(vector_docs),
         keyword_search=FakeKeywordSearch(keyword_docs),
         neighbor_store=ChunkNeighborStore(all_chunks),
-        settings=RetrievalSettings(rerank_top_n=1, final_evidence_max=3),
+        settings=RetrievalSettings(rerank_top_n=1, neighbor_window=1, final_evidence_max=3),
     )
 
     result = service.retrieve("возврат брака")
@@ -513,11 +513,11 @@ def test_evidence_selector_caps_final_evidence():
         for index in range(30)
     ]
 
-    selected = EvidenceSelector(settings=RetrievalSettings(final_evidence_max=24)).select(docs)
+    selected = EvidenceSelector(settings=RetrievalSettings(final_evidence_max=10)).select(docs)
 
-    assert len(selected) == 24
+    assert len(selected) == 10
     assert selected[0].metadata["citation_id"] == "c0"
-    assert selected[-1].metadata["citation_id"] == "c23"
+    assert selected[-1].metadata["citation_id"] == "c9"
 
 
 def test_candidate_merger_deduplicates_by_citation_and_content():
@@ -670,6 +670,76 @@ def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypat
     ] == ["v0", "k0", "v1", "k1", "v2", "k2"]
     assert rerank_record["output"]["rerank_input"] == 6
     assert result.diagnostics["rerank_input_candidates"] == 6
+
+
+def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    records = capture_retrieval_spans(monkeypatch)
+    vector_docs = [
+        Document(
+            page_content=f"vector {index}",
+            metadata={"citation_id": f"v{index}", "file_id": "vf", "source_type": "body", "chunk_index": index},
+        )
+        for index in range(70)
+    ]
+    keyword_docs = [
+        Document(
+            page_content=f"keyword {index}",
+            metadata={
+                "citation_id": f"k{index}",
+                "file_id": "kf",
+                "source_type": "body",
+                "chunk_index": index,
+                "_keyword_rank": index,
+            },
+        )
+        for index in range(30)
+    ]
+    factory_calls = []
+    compress_calls = []
+
+    class EchoCompressor:
+        def __init__(self, top_n):
+            self.top_n = top_n
+
+        def compress_documents(self, documents, query):
+            compress_calls.append({"query": query, "count": len(documents), "top_n": self.top_n})
+            return list(documents[: self.top_n])
+
+    def fake_create_reranker(top_n, settings):
+        factory_calls.append({"top_n": top_n, "rerank_model": settings.rerank_model})
+        return EchoCompressor(top_n)
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", fake_create_reranker, raising=False)
+    vector = FakeVectorSearch(vector_docs)
+    keyword = FakeKeywordSearch(keyword_docs)
+    service = RetrievalService(
+        vector_search=vector,
+        keyword_search=keyword,
+        neighbor_store=ChunkNeighborStore([*vector_docs, *keyword_docs]),
+        settings=RetrievalSettings(),
+    )
+
+    result = service.retrieve("возврат брака")
+
+    assert vector.calls == [{"query": "возврат брака", "k": 70, "fetch_k": 70, "lambda_mult": 0.4}]
+    assert keyword.calls == [{"query": "возврат брака", "limit": 30}]
+    assert len(result.vector_docs) == 70
+    assert len(result.keyword_docs) == 30
+    assert factory_calls == [{"top_n": 10, "rerank_model": "qwen3-rerank"}]
+    assert compress_calls == [{"query": "возврат брака", "count": 100, "top_n": 10}]
+    assert result.diagnostics["merged_candidates"] == 100
+    assert result.diagnostics["rerank_input_candidates"] == 100
+    assert result.diagnostics["rerank_input"] == 100
+    assert result.diagnostics["reranked_candidates"] == 10
+    assert result.diagnostics["final_evidence"] == 10
+    assert len(result.evidence) == 10
+    assert records[5]["name"] == "retrieve.expand_neighbors"
+    assert records[5]["output"]["count"] == 10
+    assert records[5]["output"]["added_neighbors"] == 0
+    assert records[6]["name"] == "retrieve.select_evidence"
+    assert records[6]["output"]["final_evidence_max"] == 10
 
 
 def test_fallback_ranker_prioritizes_keyword_and_filename_matches():

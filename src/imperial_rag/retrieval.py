@@ -37,14 +37,14 @@ def _env_str(name: str, default: str) -> str:
 class RetrievalSettings:
     chunk_size: int = 400
     chunk_overlap: int = 50
-    vector_fetch_k: int = 80
-    vector_k: int = 32
-    keyword_limit: int = 40
-    rerank_input_limit: int = 60
-    rerank_top_n: int = 12
-    neighbor_window: int = 1
-    final_evidence_min: int = 18
-    final_evidence_max: int = 24
+    vector_fetch_k: int = 70
+    vector_k: int = 70
+    keyword_limit: int = 30
+    rerank_input_limit: int = 100
+    rerank_top_n: int = 10
+    neighbor_window: int = 0
+    final_evidence_min: int = 10
+    final_evidence_max: int = 10
     mmr_lambda_mult: float = 0.4
     rrf_k: int = 60
     primary_reranker: str = "dashscope:qwen3-rerank"
