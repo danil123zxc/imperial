@@ -30,6 +30,8 @@ _DOCUMENT_ID = DocumentAttributes.DOCUMENT_ID
 _DOCUMENT_METADATA = DocumentAttributes.DOCUMENT_METADATA
 _DOCUMENT_SCORE = DocumentAttributes.DOCUMENT_SCORE
 _RETRIEVAL_PREVIEW_LIMIT = 3
+_TRACE_DOCUMENT_LIMIT = 10
+_TRACE_DOCUMENT_CONTENT_CHARS = 800
 
 
 class OpenInferenceTraceSpan:
@@ -115,6 +117,28 @@ def trace_answer_step(
 
 
 @contextmanager
+def trace_pipeline_step(
+    name: str,
+    input_value: str,
+    *,
+    attributes: Mapping[str, Any] | None = None,
+) -> Iterator[OpenInferenceTraceSpan]:
+    with trace_openinference_step(name, input_value, kind="CHAIN", attributes=attributes) as span:
+        yield span
+
+
+@contextmanager
+def trace_embedding_step(
+    name: str,
+    input_value: str,
+    *,
+    attributes: Mapping[str, Any] | None = None,
+) -> Iterator[OpenInferenceTraceSpan]:
+    with trace_openinference_step(name, input_value, kind="EMBEDDING", attributes=attributes) as span:
+        yield span
+
+
+@contextmanager
 def trace_retrieval_step(
     name: str,
     query: str,
@@ -153,8 +177,8 @@ def retrieval_documents_preview(
 
 def openinference_document_attributes(key_prefix: str, documents: Sequence[Any]) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
-    for index, document in enumerate(list(documents)):
-        content = str(getattr(document, "page_content", ""))
+    for index, document in enumerate(list(documents)[:_TRACE_DOCUMENT_LIMIT]):
+        content = _compact_text(str(getattr(document, "page_content", "")), _TRACE_DOCUMENT_CONTENT_CHARS)
         metadata = dict(getattr(document, "metadata", {}) or {})
         document_id = _document_id(metadata)
         score = _document_score(metadata)

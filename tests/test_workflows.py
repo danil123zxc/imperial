@@ -84,7 +84,25 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
         {
             "name": "answer.generate",
             "question": "Как оформить возврат брака?",
+            "attributes": {
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+                "answer.citation_ids": ["return-policy"],
+                "answer.context_chars": 32,
+            },
+        },
+        {
+            "name": "answer.validate_citations",
+            "question": "Как оформить возврат брака?",
             "attributes": {"answer.evidence_count": 1, "answer.citation_count": 1},
+        },
+        {
+            "output": {
+                "citations_valid": True,
+                "invalid_citations": [],
+                "evidence_count": 1,
+                "citation_count": 1,
+            }
         },
         {
             "output": {
@@ -123,7 +141,12 @@ def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
         {
             "name": "answer.generate",
             "question": "Что не найдено?",
-            "attributes": {"answer.evidence_count": 0, "answer.citation_count": 0},
+            "attributes": {
+                "answer.evidence_count": 0,
+                "answer.citation_count": 0,
+                "answer.citation_ids": [],
+                "answer.context_chars": 0,
+            },
         },
         {
             "output": {
@@ -349,7 +372,25 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
         {
             "name": "answer.generate",
             "question": "What is known?",
+            "attributes": {
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+                "answer.citation_ids": ["known"],
+                "answer.context_chars": 11,
+            },
+        },
+        {
+            "name": "answer.validate_citations",
+            "question": "What is known?",
             "attributes": {"answer.evidence_count": 1, "answer.citation_count": 1},
+        },
+        {
+            "output": {
+                "citations_valid": False,
+                "invalid_citations": ["missing"],
+                "evidence_count": 1,
+                "citation_count": 1,
+            }
         },
         {
             "output": {

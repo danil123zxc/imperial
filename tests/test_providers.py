@@ -387,6 +387,120 @@ def test_dashscope_text_embeddings_batches_documents_at_dashscope_limit():
     assert vectors == [[float(index)] for index in range(10)] + [[0.0]]
 
 
+def test_dashscope_text_embeddings_traces_embedding_batches(monkeypatch):
+    calls = []
+    records = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span):
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                status_code=200,
+                output={"embeddings": [{"embedding": [1.0, 2.0]}, {"embedding": [3.0, 4.0]}]},
+            )
+
+    import imperial_rag.tracing as tracing_module
+    from imperial_rag.providers import DashScopeTextEmbeddings, QwenProviderSettings
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    settings = QwenProviderSettings(api_key="key", embedding_dimensions=2048)
+    embeddings = DashScopeTextEmbeddings(settings=settings, client=FakeTextEmbedding)
+
+    assert embeddings.embed_documents(["a", "b"]) == [[1.0, 2.0], [3.0, 4.0]]
+
+    assert len(calls) == 1
+    assert records[0]["name"] == "embedding.dashscope.batch"
+    assert records[0]["attributes"]["openinference.span.kind"] == "EMBEDDING"
+    assert records[0]["attributes"]["input.value"] == "document"
+    assert records[0]["attributes"]["embedding.model"] == "text-embedding-v4"
+    assert records[0]["attributes"]["embedding.dimensions"] == 2048
+    assert records[0]["attributes"]["embedding.batch_size"] == 2
+    assert records[0]["attributes"]["embedding.offset"] == 0
+    assert records[0]["span"].attributes["output.value"] == '{"dimensions": 2, "vector_count": 2}'
+    assert records[0]["span"].status.status_code is tracing_module.StatusCode.OK
+
+
+def test_dashscope_text_embeddings_trace_records_provider_errors_without_secret(monkeypatch):
+    records = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span):
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    class FakeTextEmbedding:
+        @staticmethod
+        def call(**kwargs):
+            raise RuntimeError("network failed for sk-secret")
+
+    import imperial_rag.tracing as tracing_module
+    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    embeddings = DashScopeTextEmbeddings(
+        settings=QwenProviderSettings(api_key="sk-secret"),
+        client=FakeTextEmbedding,
+    )
+
+    with pytest.raises(DashScopeProviderError) as exc:
+        embeddings.embed_query("question")
+
+    assert "sk-secret" not in str(exc.value)
+    assert records[0]["name"] == "embedding.dashscope.batch"
+    assert records[0]["span"].attributes["error.type"] == "DashScopeProviderError"
+    assert records[0]["span"].status.status_code is tracing_module.StatusCode.ERROR
+
+
 def test_dashscope_text_embeddings_configures_sdk(monkeypatch):
     class FakeTextEmbedding:
         @staticmethod

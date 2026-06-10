@@ -11,6 +11,8 @@ from typing import Any
 
 from langchain_core.embeddings import Embeddings
 
+from imperial_rag.tracing import trace_embedding_step
+
 
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 DEFAULT_DASHSCOPE_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -257,43 +259,56 @@ class DashScopeTextEmbeddings(Embeddings):
         return vectors
 
     def _embed_batch(self, texts: list[str], text_type: str, offset: int = 0) -> list[list[float]]:
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "input": texts,
-            "text_type": text_type,
-            "api_key": self.api_key,
-        }
-        if self.dimensions is not None:
-            kwargs["dimension"] = self.dimensions
-        try:
-            response = self.client.call(**kwargs)
-        except Exception as exc:
-            message = _sanitize_provider_message(str(exc), self.api_key)
-            provider_error = DashScopeProviderError(
-                f"DashScope embedding failed: exception={exc.__class__.__name__} message={message}"
+        with trace_embedding_step(
+            "embedding.dashscope.batch",
+            text_type,
+            attributes={
+                "embedding.model": self.model,
+                "embedding.dimensions": self.dimensions,
+                "embedding.text_type": text_type,
+                "embedding.batch_size": len(texts),
+                "embedding.offset": offset,
+            },
+        ) as span:
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "input": texts,
+                "text_type": text_type,
+                "api_key": self.api_key,
+            }
+            if self.dimensions is not None:
+                kwargs["dimension"] = self.dimensions
+            try:
+                response = self.client.call(**kwargs)
+            except Exception as exc:
+                message = _sanitize_provider_message(str(exc), self.api_key)
+                raise DashScopeProviderError(
+                    f"DashScope embedding failed: exception={exc.__class__.__name__} message={message}"
+                ) from exc
+            status_code = _response_get(response, "status_code")
+            if status_code != 200:
+                _raise_dashscope_response_error("embedding", response, api_key=self.api_key)
+            output = _response_get(response, "output")
+            embeddings = _response_get(output, "embeddings")
+            if not isinstance(embeddings, list) or not embeddings:
+                raise DashScopeProviderError("DashScope embedding failed: missing output.embeddings")
+            if len(embeddings) != len(texts):
+                raise DashScopeProviderError(
+                    f"DashScope embedding failed: expected {len(texts)} embeddings but received {len(embeddings)}"
+                )
+            vectors: list[list[float]] = []
+            for index, item in enumerate(embeddings):
+                embedding = _response_get(item, "embedding")
+                if not embedding:
+                    raise DashScopeProviderError(f"DashScope embedding failed: missing embedding at index {offset + index}")
+                vectors.append(list(embedding))
+            span.set_output(
+                {
+                    "vector_count": len(vectors),
+                    "dimensions": len(vectors[0]) if vectors else self.dimensions,
+                }
             )
-        else:
-            provider_error = None
-        if provider_error is not None:
-            raise provider_error
-        status_code = _response_get(response, "status_code")
-        if status_code != 200:
-            _raise_dashscope_response_error("embedding", response, api_key=self.api_key)
-        output = _response_get(response, "output")
-        embeddings = _response_get(output, "embeddings")
-        if not isinstance(embeddings, list) or not embeddings:
-            raise DashScopeProviderError("DashScope embedding failed: missing output.embeddings")
-        if len(embeddings) != len(texts):
-            raise DashScopeProviderError(
-                f"DashScope embedding failed: expected {len(texts)} embeddings but received {len(embeddings)}"
-            )
-        vectors: list[list[float]] = []
-        for index, item in enumerate(embeddings):
-            embedding = _response_get(item, "embedding")
-            if not embedding:
-                raise DashScopeProviderError(f"DashScope embedding failed: missing embedding at index {offset + index}")
-            vectors.append(list(embedding))
-        return vectors
+            return vectors
 
 
 def create_embeddings(settings: QwenProviderSettings | None = None) -> Embeddings:

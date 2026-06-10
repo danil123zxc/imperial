@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -146,7 +147,123 @@ def test_run_ingestion_records_embedding_model_only_for_indexed_vectors(tmp_path
     assert updates["file2"]["embedding_model"] is None
 
 
-def _install_fake_dependencies(monkeypatch, *, include_no_text_record: bool = False) -> None:
+def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path, monkeypatch):
+    from imperial_rag import pipeline as pipeline_module
+
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch)
+    records = _capture_pipeline_spans(monkeypatch, pipeline_module)
+
+    summary = run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
+
+    assert summary.chunk_count == 1
+    assert [record["name"] for record in records] == [
+        "ingest.corpus",
+        "ingest.scan_files",
+        "ingest.extract_files",
+        "ingest.build_chunks",
+        "ingest.keyword_index",
+    ]
+    assert records[0]["output"] == {
+        "total_files": 1,
+        "indexed_files": 1,
+        "manifest_only_files": 0,
+        "no_text_files": 0,
+        "unsupported_files": 0,
+        "failed_files": 0,
+        "chunk_count": 1,
+        "keyword_indexed": True,
+        "vector_indexed": False,
+    }
+    assert records[1]["output"] == {"total_files": 1}
+    assert records[2]["output"] == {
+        "document_count": 1,
+        "status_counts": {"indexed": 1},
+        "failed_file_count": 0,
+    }
+    assert records[3]["output"] == {"document_count": 1, "chunk_count": 1, "chunk_size": 400, "chunk_overlap": 50}
+    assert records[4]["output"] == {"chunk_count": 1, "indexed": True}
+
+
+def test_run_ingestion_traces_vector_stage_only_when_enabled(tmp_path, monkeypatch):
+    from imperial_rag import pipeline as pipeline_module
+
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch)
+    records = _capture_pipeline_spans(monkeypatch, pipeline_module)
+
+    summary = run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=True)
+
+    assert summary.vector_indexed is True
+    assert [record["name"] for record in records] == [
+        "ingest.corpus",
+        "ingest.scan_files",
+        "ingest.extract_files",
+        "ingest.build_chunks",
+        "ingest.keyword_index",
+        "ingest.vector_index",
+    ]
+    assert records[5]["output"] == {"chunk_count": 1, "indexed": True}
+
+
+def test_run_ingestion_traces_extraction_failure_summary(tmp_path, monkeypatch):
+    from imperial_rag import pipeline as pipeline_module
+
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    (docs / "broken.docx").write_text("broken", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch, include_failed_record=True)
+    records = _capture_pipeline_spans(monkeypatch, pipeline_module)
+
+    summary = run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
+
+    assert summary.failed_files == 1
+    assert records[2]["name"] == "ingest.extract_files"
+    assert records[2]["output"] == {
+        "document_count": 1,
+        "status_counts": {"failed": 1, "indexed": 1},
+        "failed_file_count": 1,
+        "failed_files": [{"file_id": "file3", "message": "extract failed"}],
+    }
+
+
+def _capture_pipeline_spans(monkeypatch, pipeline_module):
+    records = []
+
+    @contextmanager
+    def fake_trace_pipeline_step(name, input_value, *, attributes=None):
+        record = {
+            "name": name,
+            "input": input_value,
+            "attributes": dict(attributes or {}),
+            "output": None,
+        }
+
+        class FakeSpan:
+            def set_output(self, output):
+                record["output"] = output
+
+            def set_attribute(self, key, value):
+                record.setdefault("attributes_set", {})[key] = value
+
+        records.append(record)
+        yield FakeSpan()
+
+    monkeypatch.setattr(pipeline_module, "trace_pipeline_step", fake_trace_pipeline_step, raising=False)
+    return records
+
+
+def _install_fake_dependencies(
+    monkeypatch,
+    *,
+    include_no_text_record: bool = False,
+    include_failed_record: bool = False,
+) -> None:
     config = ModuleType("imperial_rag.config")
     config.Settings = FakeSettings
 
@@ -178,7 +295,18 @@ def _install_fake_dependencies(monkeypatch, *, include_no_text_record: bool = Fa
         relative_path=Path("empty.txt"),
         filename="empty.txt",
     )
-    records = [record, no_text_record] if include_no_text_record else [record]
+    failed_record = SimpleNamespace(
+        file_id="file3",
+        absolute_path=Path("/fake/broken.docx"),
+        relative_path=Path("broken.docx"),
+        filename="broken.docx",
+        extension=".docx",
+    )
+    records = [record]
+    if include_no_text_record:
+        records.append(no_text_record)
+    if include_failed_record:
+        records.append(failed_record)
     manifest = ModuleType("imperial_rag.manifest")
     manifest.FileStatus = FileStatus
     manifest.IndexStatus = IndexStatus
@@ -193,6 +321,8 @@ def _install_fake_dependencies(monkeypatch, *, include_no_text_record: bool = Fa
     extraction = ModuleType("imperial_rag.extraction")
 
     def extract_file(record, **kwargs):
+        if record.file_id == "file3":
+            raise RuntimeError("extract failed")
         if record.file_id == "file2":
             return SimpleNamespace(
                 status=FileStatus.NO_TEXT,

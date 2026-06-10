@@ -335,6 +335,65 @@ def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) ->
     assert recorded_span.status.status_code is tracing_module.StatusCode.OK
 
 
+def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_pipeline_step(
+        "ingest.build_chunks",
+        "corpus",
+        attributes={"ingest.document_count": 2},
+    ) as span:
+        span.set_output({"chunk_count": 3})
+    with tracing_module.trace_embedding_step(
+        "embedding.dashscope.batch",
+        "document",
+        attributes={"embedding.batch_size": 2},
+    ) as span:
+        span.set_output({"vector_count": 2})
+
+    assert records[0]["name"] == "ingest.build_chunks"
+    assert records[0]["attributes"]["openinference.span.kind"] == "CHAIN"
+    assert records[0]["attributes"]["input.value"] == "corpus"
+    assert records[0]["attributes"]["ingest.document_count"] == 2
+    assert records[0]["span"].attributes["output.value"] == '{"chunk_count": 3}'
+    assert records[0]["span"].status.status_code is tracing_module.StatusCode.OK
+    assert records[1]["name"] == "embedding.dashscope.batch"
+    assert records[1]["attributes"]["openinference.span.kind"] == "EMBEDDING"
+    assert records[1]["attributes"]["input.value"] == "document"
+    assert records[1]["attributes"]["embedding.batch_size"] == 2
+    assert records[1]["span"].attributes["output.value"] == '{"vector_count": 2}'
+    assert records[1]["span"].status.status_code is tracing_module.StatusCode.OK
+
+
 def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
@@ -391,6 +450,55 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     assert recorded_span.attributes["retrieval.documents.0.document.score"] == -2.5
 
 
+def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __enter__(self):
+            span = FakeSpan()
+            records.append({"span": span})
+            return span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpanContext()
+
+    documents = [
+        type(
+            "Document",
+            (),
+            {
+                "page_content": f"doc-{index} " + ("x" * 900),
+                "metadata": {"chunk_id": f"chunk-{index}"},
+            },
+        )()
+        for index in range(11)
+    ]
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieve.vector_search", "возврат") as span:
+        span.set_retrieval_documents(documents)
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["retrieval.documents.0.document.content"] == f"doc-0 {'x' * 794}..."
+    assert recorded_span.attributes["retrieval.documents.9.document.id"] == "chunk-9"
+    assert "retrieval.documents.10.document.content" not in recorded_span.attributes
+    assert "retrieval.documents.10.document.id" not in recorded_span.attributes
+
+
 def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
@@ -430,6 +538,56 @@ def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
     assert recorded_span.attributes["reranker.input_documents.0.document.id"] == "in"
     assert recorded_span.attributes["reranker.output_documents.0.document.content"] == "reranked"
     assert recorded_span.attributes["reranker.output_documents.0.document.id"] == "out"
+
+
+def test_trace_span_caps_and_truncates_native_reranker_documents(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __enter__(self):
+            span = FakeSpan()
+            records.append({"span": span})
+            return span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpanContext()
+
+    documents = [
+        type(
+            "Document",
+            (),
+            {
+                "page_content": f"candidate-{index} " + ("y" * 900),
+                "metadata": {"chunk_id": f"candidate-{index}"},
+            },
+        )()
+        for index in range(11)
+    ]
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieve.rerank", "возврат", kind="RERANKER") as span:
+        span.set_reranker_input_documents(documents)
+        span.set_reranker_output_documents(documents)
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["reranker.input_documents.0.document.content"] == f"candidate-0 {'y' * 788}..."
+    assert recorded_span.attributes["reranker.output_documents.9.document.id"] == "candidate-9"
+    assert "reranker.input_documents.10.document.content" not in recorded_span.attributes
+    assert "reranker.output_documents.10.document.content" not in recorded_span.attributes
 
 
 def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:

@@ -239,7 +239,7 @@ def build_query_workflow(
         with trace_answer_step(
             "answer.generate",
             state["question"],
-            attributes={"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+            attributes=_answer_trace_attributes(evidence, citations),
         ) as span:
             if not evidence:
                 update: QueryState = {
@@ -257,7 +257,20 @@ def build_query_workflow(
                 resolved_model = model or _legacy_openai_chat_model()
                 response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
                 answer = str(response.content)
-            valid, invalid = validate_citations(answer, evidence)
+            with trace_answer_step(
+                "answer.validate_citations",
+                state["question"],
+                attributes={"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+            ) as validation_span:
+                valid, invalid = validate_citations(answer, evidence)
+                validation_span.set_output(
+                    {
+                        "citations_valid": valid,
+                        "invalid_citations": invalid,
+                        "evidence_count": len(evidence),
+                        "citation_count": len(citations),
+                    }
+                )
             update = {
                 "answer": answer,
                 "citations": citations,
@@ -277,6 +290,19 @@ def build_query_workflow(
     graph.add_edge("retrieve", "call_model")
     graph.add_edge("call_model", END)
     return graph.compile()
+
+
+def _answer_trace_attributes(evidence: Sequence[Document], citations: Sequence[str]) -> dict[str, Any]:
+    return {
+        "answer.evidence_count": len(evidence),
+        "answer.citation_count": len(citations),
+        "answer.citation_ids": [
+            str(document.metadata.get("citation_id"))
+            for document in evidence
+            if document.metadata.get("citation_id") is not None
+        ],
+        "answer.context_chars": sum(len(str(document.page_content)) for document in evidence),
+    }
 
 
 def _set_answer_trace_output(span: Any, update: Mapping[str, Any], *, evidence_count: int, citation_count: int) -> None:
