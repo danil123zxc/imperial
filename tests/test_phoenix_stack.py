@@ -7,9 +7,9 @@ def test_compose_defines_persistent_self_hosted_phoenix():
     compose = Path("compose.yaml").read_text(encoding="utf-8")
 
     assert "arizephoenix/phoenix:latest" in compose
-    assert '"6006:6006"' in compose
-    assert '"4317:4317"' in compose
-    assert "PHOENIX_WORKING_DIR=/mnt/data" in compose
+    assert '"127.0.0.1:6006:6006"' in compose
+    assert '"127.0.0.1:4317:4317"' in compose
+    assert "PHOENIX_WORKING_DIR: /mnt/data" in compose
     assert "phoenix_data:/mnt/data" in compose
 
 
