@@ -15,6 +15,10 @@ class Settings:
     )
     qdrant_url: str = field(default_factory=lambda: os.environ.get("QDRANT_URL", "http://localhost:6333"))
     qdrant_collection: str = field(default_factory=lambda: os.environ.get("QDRANT_COLLECTION", "imperial_chunks_qwen"))
+    elasticsearch_url: str = field(default_factory=lambda: os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200"))
+    elasticsearch_index: str = field(
+        default_factory=lambda: os.environ.get("ELASTICSEARCH_INDEX", "imperial_keyword_chunks")
+    )
     phoenix_project_name: str = field(default_factory=lambda: os.environ.get("PHOENIX_PROJECT_NAME", "imperial-rag"))
     phoenix_collector_endpoint: str = field(
         default_factory=lambda: os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces")
