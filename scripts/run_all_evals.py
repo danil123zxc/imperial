@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from time import perf_counter
 from urllib import request
 
 
@@ -35,17 +36,25 @@ def main(argv: list[str] | None = None) -> None:
 
     phoenix_eval._load_project_env(args.workspace_root)
     settings = phoenix_eval._build_settings(args.workspace_root)
-    _assert_phoenix_reachable(settings.phoenix_client_endpoint)
-    phoenix_eval._configure_tracing(settings, enabled=True)
+    _configure_observability(settings)
+    started_at = perf_counter()
+    try:
+        _assert_phoenix_reachable(settings.phoenix_client_endpoint)
+        phoenix_eval._configure_tracing(settings, enabled=True)
 
-    examples = phoenix_eval.load_questions(args.questions_path)
-    phoenix_eval.run_phoenix_experiment(
-        examples=examples,
-        settings=settings,
-        dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
-        experiment_name=args.experiment_name,
-        ragas_metric_names=phoenix_eval.parse_phoenix_ragas_metrics(args.ragas_metrics),
-    )
+        examples = phoenix_eval.load_questions(args.questions_path)
+        metric_names = phoenix_eval.parse_phoenix_ragas_metrics(args.ragas_metrics)
+        phoenix_eval.run_phoenix_experiment(
+            examples=examples,
+            settings=settings,
+            dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
+            experiment_name=args.experiment_name,
+            ragas_metric_names=metric_names,
+        )
+        _log_completion(started_at, example_count=len(examples), ragas_metrics=",".join(metric_names))
+    except (Exception, SystemExit) as exc:
+        _log_failure("all_evals", exc, started_at, ragas_metrics=args.ragas_metrics)
+        raise
 
 
 def _assert_phoenix_reachable(endpoint: str, timeout: float = 2.0) -> None:
@@ -57,6 +66,37 @@ def _assert_phoenix_reachable(endpoint: str, timeout: float = 2.0) -> None:
             f"Phoenix is not reachable at {endpoint}. "
             f"Start it with `{PHOENIX_START_COMMAND}` and rerun this command."
         ) from exc
+
+
+def _configure_observability(settings) -> None:
+    from imperial_rag.observability import configure_observability
+
+    configure_observability(settings)
+
+
+def _log_completion(started_at: float, *, example_count: int, ragas_metrics: str) -> None:
+    from imperial_rag.observability import log_event
+
+    log_event(
+        "imperial_rag.all_evals",
+        operation="all_evals",
+        status="success",
+        component="cli",
+        duration_ms=_duration_ms(started_at),
+        example_count=example_count,
+        phoenix_mode=True,
+        ragas_metrics=ragas_metrics,
+    )
+
+
+def _log_failure(operation: str, exc: BaseException, started_at: float, **fields) -> None:
+    from imperial_rag.observability import log_failure
+
+    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
+
+
+def _duration_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
 
 
 if __name__ == "__main__":

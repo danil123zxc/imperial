@@ -7,6 +7,7 @@ import sys
 import types
 import warnings
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 
@@ -184,26 +185,68 @@ def main(argv: list[str] | None = None) -> None:
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
-    examples = load_questions(args.questions_path)
-    metric_names = parse_metric_names(args.metrics)
-    prepared = build_ragas_rows(examples, runtime=build_runtime(settings=settings))
-    if not prepared.rows:
-        raise SystemExit("No supported Ragas rows were prepared from the eval examples.")
+    _configure_observability(settings)
+    started_at = perf_counter()
+    try:
+        examples = load_questions(args.questions_path)
+        metric_names = parse_metric_names(args.metrics)
+        prepared = build_ragas_rows(examples, runtime=build_runtime(settings=settings))
+        if not prepared.rows:
+            raise SystemExit("No supported Ragas rows were prepared from the eval examples.")
 
-    result = evaluate_ragas_rows(prepared.rows, metric_names)
-    records = result_records(result)
-    if args.output_path:
-        write_jsonl(args.output_path, records)
-    else:
-        for record in records:
-            print(json.dumps(record, ensure_ascii=False, sort_keys=True))
-    print(f"ragas_examples={len(prepared.rows)}")
-    print(f"ragas_skipped={prepared.skipped}")
-    print(f"ragas_metrics={','.join(metric_names)}")
+        result = evaluate_ragas_rows(prepared.rows, metric_names)
+        records = result_records(result)
+        if args.output_path:
+            write_jsonl(args.output_path, records)
+        else:
+            for record in records:
+                print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+        print(f"ragas_examples={len(prepared.rows)}")
+        print(f"ragas_skipped={prepared.skipped}")
+        print(f"ragas_metrics={','.join(metric_names)}")
+        _log_completion(
+            started_at,
+            example_count=len(prepared.rows),
+            skipped_count=prepared.skipped,
+            ragas_metrics=",".join(metric_names),
+            wrote_output=bool(args.output_path),
+        )
+    except (Exception, SystemExit) as exc:
+        _log_failure("ragas_eval", exc, started_at, ragas_metrics=args.metrics)
+        raise
 
 
 def _retrieved_contexts(outputs: dict[str, Any]) -> list[str]:
     return retrieved_contexts_from_output(outputs)
+
+
+def _configure_observability(settings: Any) -> None:
+    from imperial_rag.observability import configure_observability
+
+    configure_observability(settings)
+
+
+def _log_completion(started_at: float, **fields: Any) -> None:
+    from imperial_rag.observability import log_event
+
+    log_event(
+        "imperial_rag.ragas_eval",
+        operation="ragas_eval",
+        status="success",
+        component="cli",
+        duration_ms=_duration_ms(started_at),
+        **fields,
+    )
+
+
+def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
+    from imperial_rag.observability import log_failure
+
+    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
+
+
+def _duration_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
 
 
 def _merge_records_by_position(

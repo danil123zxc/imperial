@@ -121,6 +121,12 @@ uv run python scripts/query.py "question text" --trace-phoenix
 uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --trace-phoenix
 ```
 
+### Local Logs
+
+The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr, so they are captured wherever the process is launched. The current detached Streamlit run redirects stderr into `/tmp/imperial-streamlit-8501.log`.
+
+Phoenix remains the trace and evaluation system. This v1 logging layer does not send logs or alerts to Sentry or any other external service.
+
 ## Evaluation
 
 Gold questions live in `evals/questions.jsonl`.
@@ -243,6 +249,8 @@ Common settings:
 - `PHOENIX_COLLECTOR_ENDPOINT`: Phoenix trace collector endpoint.
 - `PHOENIX_CLIENT_ENDPOINT`: Phoenix client/UI endpoint.
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
+- `IMPERIAL_RAG_LOG_LEVEL`: local structured log level, defaulting to `INFO`.
+- `IMPERIAL_RAG_LOG_FORMAT`: local structured log format; v1 supports `json`.
 - `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, and `COHERE_API_KEY`: legacy debugging compatibility only when `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE` is enabled.
 
 Retrieval and chunking tuning variables are also listed in `.env.example`, including chunk size, overlap, vector fetch limits, keyword limits, reranker choices, and final evidence limits.

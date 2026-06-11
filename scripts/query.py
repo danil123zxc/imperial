@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 
@@ -17,8 +18,15 @@ def main(argv: list[str] | None = None) -> None:
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
+    _configure_observability(settings)
     _configure_tracing(settings, args.trace_phoenix)
-    result = _query(settings=settings, question=args.question)
+    started_at = perf_counter()
+    try:
+        result = _query(settings=settings, question=args.question)
+    except (Exception, SystemExit) as exc:
+        _log_failure("query", exc, started_at)
+        raise
+    _log_query_completion(result, started_at)
     print(str(_result_value(result, "answer", "")))
     sources = _result_value(result, "sources", None) or _result_value(result, "citations", []) or []
     for source in sources:
@@ -54,6 +62,31 @@ def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
     configure_phoenix_tracing(settings, enabled=True if trace_phoenix else None)
 
 
+def _configure_observability(settings: Any) -> None:
+    from imperial_rag.observability import configure_observability
+
+    configure_observability(settings)
+
+
+def _log_query_completion(result: Any, started_at: float) -> None:
+    from imperial_rag.observability import log_event
+
+    log_event(
+        "imperial_rag.query",
+        operation="query",
+        status="success",
+        component="cli",
+        duration_ms=_duration_ms(started_at),
+        **_query_log_fields(result),
+    )
+
+
+def _log_failure(operation: str, exc: BaseException, started_at: float) -> None:
+    from imperial_rag.observability import log_failure
+
+    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at))
+
+
 def _build_settings(workspace_root: Path | None) -> Any:
     from imperial_rag.config import Settings
 
@@ -87,6 +120,37 @@ def _result_value(result: Any, key: str, default: Any) -> Any:
     if isinstance(result, dict):
         return result.get(key, default)
     return getattr(result, key, default)
+
+
+def _query_log_fields(result: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    retrieval = _result_value(result, "retrieval", {}) or {}
+    if isinstance(retrieval, dict):
+        for key in (
+            "final_evidence",
+            "vector_candidates",
+            "keyword_candidates",
+            "merged_candidates",
+            "rerank_input_candidates",
+            "reranked_candidates",
+            "reranker",
+        ):
+            if key in retrieval:
+                fields[key] = retrieval[key]
+        fallbacks = retrieval.get("fallbacks")
+        if isinstance(fallbacks, list):
+            fields["fallback_count"] = len(fallbacks)
+    evidence = _result_value(result, "evidence", None) or _result_value(result, "retrieved_documents", None)
+    if evidence is not None and "final_evidence" not in fields:
+        try:
+            fields["final_evidence"] = len(evidence)
+        except TypeError:
+            pass
+    return fields
+
+
+def _duration_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
 
 
 def _ensure_src_on_path() -> None:

@@ -8,6 +8,16 @@ from pathlib import Path
 DEFAULT_WORKSPACE_ROOT = Path("/Users/danil/Public/imperial")
 
 
+def _log_level_from_env() -> str:
+    raw = os.environ.get("IMPERIAL_RAG_LOG_LEVEL", "INFO").strip().upper()
+    return raw or "INFO"
+
+
+def _log_format_from_env() -> str:
+    raw = os.environ.get("IMPERIAL_RAG_LOG_FORMAT", "json").strip().casefold()
+    return raw if raw == "json" else "json"
+
+
 @dataclass(frozen=True)
 class Settings:
     workspace_root: Path = field(
@@ -26,6 +36,8 @@ class Settings:
     phoenix_client_endpoint: str = field(
         default_factory=lambda: os.environ.get("PHOENIX_CLIENT_ENDPOINT", "http://localhost:6006")
     )
+    log_level: str = field(default_factory=_log_level_from_env)
+    log_format: str = field(default_factory=_log_format_from_env)
 
     @property
     def documents_root(self) -> Path:

@@ -5,6 +5,7 @@ import json
 import mimetypes
 from pathlib import Path
 import sys
+from time import perf_counter
 from typing import Any
 
 
@@ -142,8 +143,10 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
     settings = Settings()
+    from imperial_rag.observability import configure_observability
     from imperial_rag.tracing import configure_phoenix_tracing
 
+    configure_observability(settings)
     configure_phoenix_tracing(settings)
 
     with st.sidebar:
@@ -164,7 +167,26 @@ def main() -> None:
     with st.chat_message("user"):
         st.write(question)
 
-    result = query_runtime(settings, question)
+    started_at = perf_counter()
+    try:
+        result = query_runtime(settings, question)
+    except Exception as exc:
+        from imperial_rag.observability import log_failure
+
+        log_failure("web_query", exc, component="streamlit", duration_ms=_duration_ms(started_at))
+        with st.chat_message("assistant"):
+            st.error("Something went wrong while answering. Check local logs for details.")
+        return
+    from imperial_rag.observability import log_event
+
+    log_event(
+        "imperial_rag.web_query",
+        operation="web_query",
+        status="success",
+        component="streamlit",
+        duration_ms=_duration_ms(started_at),
+        **_query_log_fields(result),
+    )
     answer = str(result.get("answer", ""))
     sources = result.get("sources") or result.get("citations") or []
     evidence = result.get("evidence") or result.get("retrieved_documents") or []
@@ -188,6 +210,37 @@ def _coerce_result(result: Any) -> dict[str, Any]:
         "sources": getattr(result, "sources", getattr(result, "citations", [])),
         "evidence": getattr(result, "evidence", getattr(result, "retrieved_documents", [])),
     }
+
+
+def _query_log_fields(result: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    retrieval = result.get("retrieval") if isinstance(result, dict) else getattr(result, "retrieval", None)
+    if isinstance(retrieval, dict):
+        for key in (
+            "final_evidence",
+            "vector_candidates",
+            "keyword_candidates",
+            "merged_candidates",
+            "rerank_input_candidates",
+            "reranked_candidates",
+            "reranker",
+        ):
+            if key in retrieval:
+                fields[key] = retrieval[key]
+        fallbacks = retrieval.get("fallbacks")
+        if isinstance(fallbacks, list):
+            fields["fallback_count"] = len(fallbacks)
+    evidence = result.get("evidence") or result.get("retrieved_documents") if isinstance(result, dict) else None
+    if evidence is not None and "final_evidence" not in fields:
+        try:
+            fields["final_evidence"] = len(evidence)
+        except TypeError:
+            pass
+    return fields
+
+
+def _duration_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
 
 
 def _render_chat_message(st: Any, message: dict[str, Any], message_index: int, settings: Any) -> None:

@@ -7,6 +7,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 
@@ -186,24 +187,54 @@ def main(argv: list[str] | None = None) -> None:
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
-    if args.trace_phoenix or args.use_phoenix:
-        _configure_tracing(settings, enabled=True)
-    examples = load_questions(args.questions_path)
+    _configure_observability(settings)
+    started_at = perf_counter()
+    try:
+        if args.trace_phoenix or args.use_phoenix:
+            _configure_tracing(settings, enabled=True)
+        examples = load_questions(args.questions_path)
+        metric_names = parse_phoenix_ragas_metrics(args.ragas_metrics)
 
-    if args.use_phoenix:
-        run_phoenix_experiment(
-            examples=examples,
-            settings=settings,
-            dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
-            experiment_name=args.experiment_name,
-            ragas_metric_names=parse_phoenix_ragas_metrics(args.ragas_metrics),
+        if args.use_phoenix:
+            run_phoenix_experiment(
+                examples=examples,
+                settings=settings,
+                dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
+                experiment_name=args.experiment_name,
+                ragas_metric_names=metric_names,
+            )
+            _log_eval_completion(
+                started_at,
+                operation="phoenix_eval",
+                status="success",
+                example_count=len(examples),
+                phoenix_mode=True,
+                ragas_metrics=",".join(metric_names),
+            )
+            return
+
+        rows = run_local_eval(examples, runtime=build_runtime(settings=settings))
+        passed = sum(1 for row in rows if row["citation_behavior"] and row["source_hint_behavior"])
+        print(f"local_eval_examples={len(rows)}")
+        print(f"local_eval_passed={passed}")
+        _log_eval_completion(
+            started_at,
+            operation="phoenix_eval",
+            status="success",
+            example_count=len(rows),
+            passed_count=passed,
+            phoenix_mode=False,
+            ragas_metrics=",".join(metric_names),
         )
-        return
-
-    rows = run_local_eval(examples, runtime=build_runtime(settings=settings))
-    passed = sum(1 for row in rows if row["citation_behavior"] and row["source_hint_behavior"])
-    print(f"local_eval_examples={len(rows)}")
-    print(f"local_eval_passed={passed}")
+    except (Exception, SystemExit) as exc:
+        _log_failure(
+            "phoenix_eval",
+            exc,
+            started_at,
+            phoenix_mode=args.use_phoenix,
+            ragas_metrics=args.ragas_metrics,
+        )
+        raise
 
 
 def run_phoenix_experiment(
@@ -264,6 +295,33 @@ def _run_phoenix_experiment(
         experiment_name=experiment_name,
         ragas_metric_names=ragas_metric_names,
     )
+
+
+def _configure_observability(settings: Any) -> None:
+    from imperial_rag.observability import configure_observability
+
+    configure_observability(settings)
+
+
+def _log_eval_completion(started_at: float, **fields: Any) -> None:
+    from imperial_rag.observability import log_event
+
+    log_event(
+        "imperial_rag.phoenix_eval",
+        component="cli",
+        duration_ms=_duration_ms(started_at),
+        **fields,
+    )
+
+
+def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
+    from imperial_rag.observability import log_failure
+
+    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
+
+
+def _duration_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
 
 
 def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:

@@ -263,6 +263,9 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch):
     tracing_module = types.ModuleType("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: calls.append("tracing")
 
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: calls.append("observability")
+
     class SessionState(dict):
         def __getattr__(self, key):
             return self[key]
@@ -290,11 +293,84 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch):
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
 
     web_app.main()
 
-    assert calls[:2] == ["env", "settings"]
+    assert calls[:3] == ["env", "settings", "observability"]
+
+
+def test_main_logs_web_query_failure_without_private_question(monkeypatch):
+    from imperial_rag import web_app
+
+    calls = []
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        pass
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+    observability_module.log_event = lambda *args, **kwargs: calls.append(("event", args, kwargs))
+    observability_module.log_failure = lambda *args, **kwargs: calls.append(("failure", args, kwargs))
+
+    class SessionState(dict):
+        def __getattr__(self, key):
+            return self[key]
+
+        def __setattr__(self, key, value):
+            self[key] = value
+
+    class Sidebar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class ChatMessage:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    errors = []
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        sidebar=Sidebar(),
+        header=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        session_state=SessionState(),
+        chat_input=lambda *args, **kwargs: "private question",
+        chat_message=lambda *args, **kwargs: ChatMessage(),
+        write=lambda *args, **kwargs: None,
+        error=lambda message: errors.append(message),
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+    monkeypatch.setattr(web_app, "query_runtime", lambda settings, question: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    web_app.main()
+
+    failure = [call for call in calls if call[0] == "failure"][0]
+    assert failure[1][0] == "web_query"
+    assert "question" not in failure[2]
+    assert errors == ["Something went wrong while answering. Check local logs for details."]
 
 
 def test_main_bootstraps_src_path_for_streamlit_script_launch():

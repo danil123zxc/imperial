@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 
@@ -18,8 +19,21 @@ def main(argv: list[str] | None = None) -> None:
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
+    _configure_observability(settings)
     _configure_tracing(settings, args.trace_phoenix)
-    summary = _run(settings=settings, enable_ocr=args.enable_ocr, index_vectors=args.index_vectors)
+    started_at = perf_counter()
+    try:
+        summary = _run(settings=settings, enable_ocr=args.enable_ocr, index_vectors=args.index_vectors)
+    except (Exception, SystemExit) as exc:
+        _log_failure(
+            "ingest",
+            exc,
+            started_at,
+            enable_ocr=args.enable_ocr,
+            index_vectors=args.index_vectors,
+        )
+        raise
+    _log_ingest_completion(summary, started_at, enable_ocr=args.enable_ocr, index_vectors=args.index_vectors)
     print_summary(summary)
 
 
@@ -43,6 +57,36 @@ def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
     from imperial_rag.tracing import configure_phoenix_tracing
 
     configure_phoenix_tracing(settings, enabled=True if trace_phoenix else None)
+
+
+def _configure_observability(settings: Any) -> None:
+    from imperial_rag.observability import configure_observability
+
+    configure_observability(settings)
+
+
+def _log_ingest_completion(summary: Any, started_at: float, *, enable_ocr: bool, index_vectors: bool) -> None:
+    from imperial_rag.observability import log_event
+
+    fields = _summary_log_fields(summary)
+    failed_files = _int_value(fields.get("failed_files"))
+    log_event(
+        "imperial_rag.ingest",
+        level="error" if failed_files else "info",
+        operation="ingest",
+        status="failed_files" if failed_files else "success",
+        component="cli",
+        duration_ms=_duration_ms(started_at),
+        enable_ocr=enable_ocr,
+        index_vectors=index_vectors,
+        **fields,
+    )
+
+
+def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
+    from imperial_rag.observability import log_failure
+
+    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
 
 
 def _run(settings: Any, enable_ocr: bool, index_vectors: bool) -> Any:
@@ -128,6 +172,28 @@ def _summary_value(summary: Any, attr: str, default: Any = "") -> Any:
     if isinstance(summary, dict):
         return summary.get(attr, default)
     return getattr(summary, attr, default)
+
+
+def _summary_log_fields(summary: Any) -> dict[str, Any]:
+    return {
+        "total_files": _summary_value(summary, "total_files", 0),
+        "indexed_files": _summary_value(summary, "indexed_files", 0),
+        "failed_files": _summary_value(summary, "failed_files", 0),
+        "chunk_count": _summary_value(summary, "chunk_count", 0),
+        "keyword_indexed": _summary_value(summary, "keyword_indexed", 0),
+        "vector_indexed": _summary_value(summary, "vector_indexed", 0),
+    }
+
+
+def _duration_ms(started_at: float) -> int:
+    return int((perf_counter() - started_at) * 1000)
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _ensure_src_on_path() -> None:
