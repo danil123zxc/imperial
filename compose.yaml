@@ -4,7 +4,8 @@ x-imperial-app-base: &imperial-app-base
     dockerfile: Dockerfile
   image: imperial-rag-app:local
   env_file:
-    - .env
+    - path: .env
+      required: false
   environment:
     IMPERIAL_RAG_WORKSPACE_ROOT: /app
     QDRANT_URL: http://qdrant:6333
