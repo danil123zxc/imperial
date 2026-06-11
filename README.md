@@ -2,7 +2,7 @@
 
 Imperial RAG is a local/private retrieval-augmented generation system for the Imperial document corpus. It ingests files from `documents/`, extracts searchable text, builds local keyword and optional vector indexes, and answers questions only from retrieved evidence with source citations.
 
-The project is designed for private local operation: source files stay in the workspace, generated state lives under `.imperial_rag/`, Qdrant runs locally when vector search is needed, and Phoenix can be self-hosted locally for tracing and evaluation storage.
+The project is designed for private local operation: source files stay in the workspace, generated filesystem state lives under `.imperial_rag/`, Elasticsearch keyword service state lives in the local Docker volume `imperial_elasticsearch_data`, Qdrant runs locally when vector search is needed, and Phoenix can be self-hosted locally for tracing and evaluation storage.
 
 ## What It Does
 
@@ -53,7 +53,13 @@ cp .env.example .env
 
 Fill in local secrets such as `DASHSCOPE_API_KEY` in `.env` or your shell environment. Do not commit real keys.
 
-Run ingestion without vector indexing:
+Start the required local Elasticsearch keyword service:
+
+```bash
+./scripts/start_elasticsearch.sh
+```
+
+In another terminal, run ingestion without vector indexing:
 
 ```bash
 uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial
@@ -252,7 +258,8 @@ tests/                     pytest suite
 evals/questions.jsonl      Deterministic evaluation questions
 docs/superpowers/          Design specs and implementation plans
 documents/                 Private source corpus
-.imperial_rag/             Generated local state, indexes, extracted text, caches
+.imperial_rag/             Generated local filesystem state, extracted text, caches
+imperial_elasticsearch_data  Local Docker volume for keyword index state
 compose.yaml               Local Phoenix, Qdrant, and Elasticsearch services
 pyproject.toml             Python package and dependency configuration
 ```
@@ -285,6 +292,7 @@ Treat these paths as private:
 
 - `documents/`
 - `.imperial_rag/`
+- Elasticsearch Docker volume `imperial_elasticsearch_data`
 - local Qdrant storage
 - Phoenix traces and experiment data
 - `.env` files containing real secrets
