@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import Counter
 from pathlib import Path
 
@@ -27,7 +26,18 @@ class DeterministicOcrClient:
         )
 
 
-def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) -> None:
+class FakeKeywordIndex:
+    last_settings = None
+    last_documents = None
+
+    def __init__(self, settings) -> None:
+        FakeKeywordIndex.last_settings = settings
+
+    def replace_all(self, documents) -> None:
+        FakeKeywordIndex.last_documents = list(documents)
+
+
+def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, monkeypatch) -> None:
     docs = tmp_path / "documents"
     docs.mkdir()
     _write_docx(docs / "policy.docx")
@@ -38,6 +48,9 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) 
     (docs / "corrupted.docx").write_bytes(b"not a valid docx zip package")
     settings = Settings(workspace_root=tmp_path)
     ocr_client = DeterministicOcrClient()
+    FakeKeywordIndex.last_settings = None
+    FakeKeywordIndex.last_documents = None
+    monkeypatch.setattr("imperial_rag.elasticsearch_keyword.ElasticsearchKeywordIndex", FakeKeywordIndex)
 
     summary = ingest_corpus(settings=settings, ocr_client=ocr_client, vector_store=None)
 
@@ -118,15 +131,17 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) 
     assert "RTF_SENTINEL" in chunk_text
     assert "OCR_SENTINEL_SCAN_TEXT" in chunk_text
 
-    keyword_rows = _read_keyword_rows(settings.keyword_db_path)
-    assert len(keyword_rows) == 5
-    assert Counter(json.loads(metadata)["relative_path"] for _text, metadata in keyword_rows) == {
+    keyword_documents = FakeKeywordIndex.last_documents
+    assert FakeKeywordIndex.last_settings is settings
+    assert keyword_documents is not None
+    assert len(keyword_documents) == 5
+    assert Counter(document.metadata["relative_path"] for document in keyword_documents) == {
         "policy.docx": 2,
         "schedule.xlsx": 1,
         "note.rtf": 1,
         "scan.png": 1,
     }
-    keyword_text = "\n".join(text for text, _metadata in keyword_rows)
+    keyword_text = "\n".join(document.page_content for document in keyword_documents)
     assert "DOCX_BODY_SENTINEL" in keyword_text
     assert "DOCX_TABLE_SENTINEL" in keyword_text
     assert "XLSX_SENTINEL" in keyword_text
@@ -158,15 +173,3 @@ def _read_chunk_rows(path: Path) -> list[dict]:
 
 def _relative_path_counts(rows: list[dict]) -> dict[str, int]:
     return dict(Counter(row["metadata"]["relative_path"] for row in rows))
-
-
-def _read_keyword_rows(db_path: Path) -> list[tuple[str, str]]:
-    with sqlite3.connect(db_path) as conn:
-        table_names = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'",
-            ).fetchall()
-        }
-        table = "chunks_fts" if "chunks_fts" in table_names else "chunks"
-        return conn.execute(f"SELECT text, metadata FROM {table}").fetchall()

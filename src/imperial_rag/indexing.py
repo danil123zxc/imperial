@@ -53,8 +53,8 @@ def _build_fts_match_query(tokens: list[str], operator: str) -> str:
 
 
 class KeywordIndex:
-    def __init__(self, db_path: Path | Settings) -> None:
-        self.db_path = db_path.keyword_db_path if hasattr(db_path, "keyword_db_path") else Path(db_path)
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path)
         self._uses_fts = self._fts5_available()

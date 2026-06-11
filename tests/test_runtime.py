@@ -172,7 +172,7 @@ def test_build_query_dependencies_defers_chat_model_without_dashscope(monkeypatc
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr("imperial_rag.runtime.KeywordIndex", lambda db_path: object())
+    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", lambda settings: object())
 
     def fake_create_chat_model():
         calls.append("factory")
@@ -197,19 +197,20 @@ def test_build_query_dependencies_skips_vector_search_on_metadata_mismatch(monke
     calls = {}
     fake_chat_model = object()
 
-    class FakeKeywordIndex:
-        def __init__(self, db_path):
-            calls["keyword_db_path"] = db_path
+    class FakeElasticsearchKeywordIndex:
+        def __init__(self, settings):
+            calls["settings"] = settings
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
-    monkeypatch.setattr("imperial_rag.runtime.KeywordIndex", FakeKeywordIndex)
+    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
     monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
     monkeypatch.setattr("imperial_rag.runtime.vector_metadata_matches_config", lambda settings: False, raising=False)
 
-    dependencies = build_query_dependencies(Settings(workspace_root=tmp_path))
+    settings = Settings(workspace_root=tmp_path)
+    dependencies = build_query_dependencies(settings)
 
     assert getattr(dependencies.vector_search, "provider_mismatch", False) is True
-    assert calls["keyword_db_path"] == tmp_path / ".imperial_rag" / "keyword.sqlite3"
+    assert calls["settings"] is settings
 
 
 def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):
@@ -224,7 +225,7 @@ def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: calls.append("factory") or fake_chat_model)
-    monkeypatch.setattr("imperial_rag.runtime.KeywordIndex", lambda db_path: object())
+    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", lambda settings: object())
     monkeypatch.setattr("imperial_rag.runtime._semantic_search_enabled", lambda: False)
 
     deps = build_query_dependencies(Settings(workspace_root=tmp_path))

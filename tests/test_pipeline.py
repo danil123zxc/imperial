@@ -31,6 +31,8 @@ class IndexStatus(str, Enum):
 @dataclass(frozen=True)
 class FakeSettings:
     workspace_root: Path
+    elasticsearch_url: str = "http://127.0.0.1:9200"
+    elasticsearch_index: str = "test_keyword_chunks"
 
     @property
     def documents_root(self) -> Path:
@@ -39,10 +41,6 @@ class FakeSettings:
     @property
     def manifest_db_path(self) -> Path:
         return self.workspace_root / ".imperial_rag" / "manifest.sqlite3"
-
-    @property
-    def keyword_db_path(self) -> Path:
-        return self.workspace_root / ".imperial_rag" / "keyword.sqlite3"
 
     @property
     def extraction_root(self) -> Path:
@@ -71,9 +69,11 @@ class FakeManifestStore:
 
 class FakeKeywordIndex:
     last_docs = None
+    last_settings = None
 
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
+    def __init__(self, settings) -> None:
+        self.settings = settings
+        FakeKeywordIndex.last_settings = settings
 
     def replace_all(self, documents):
         FakeKeywordIndex.last_docs = list(documents)
@@ -95,6 +95,7 @@ def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatc
     assert rows[0]["metadata"]["relative_path"] == "policy.txt"
     assert rows[0]["metadata"]["chunk_id"] == "file1:body:0"
     assert FakeKeywordIndex.last_docs is not None
+    assert FakeKeywordIndex.last_settings == FakeSettings(tmp_path)
     assert FakeManifestStore.last is not None
     assert FakeManifestStore.last.status_updates[0]["chunk_count"] == 1
     assert FakeManifestStore.last.index_updates[0]["keyword_index_status"] == IndexStatus.INDEXED
@@ -352,7 +353,11 @@ def _install_fake_dependencies(
     build_chunks.calls = []
     chunking.build_chunks = build_chunks
 
+    elasticsearch_keyword = ModuleType("imperial_rag.elasticsearch_keyword")
+    elasticsearch_keyword.ElasticsearchKeywordIndex = FakeKeywordIndex
+
     indexing = ModuleType("imperial_rag.indexing")
+    indexing.ElasticsearchKeywordIndex = FakeKeywordIndex
     indexing.KeywordIndex = FakeKeywordIndex
     indexing.create_qdrant_vector_store = lambda settings: SimpleNamespace(add_documents=lambda documents, ids: ids)
     indexing.index_vector_documents = lambda documents, settings=None, vector_store=None: [
@@ -361,7 +366,7 @@ def _install_fake_dependencies(
     indexing.index_documents = lambda vector_store, documents: [doc.metadata["chunk_id"] for doc in documents]
     indexing.embedding_model_identifier = lambda: "text-embedding-v4:2048"
 
-    for module in (config, retrieval, manifest, extraction, chunking, indexing):
+    for module in (config, retrieval, manifest, extraction, chunking, elasticsearch_keyword, indexing):
         monkeypatch.setitem(sys.modules, module.__name__, module)
 
 

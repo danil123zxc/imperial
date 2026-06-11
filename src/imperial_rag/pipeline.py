@@ -233,9 +233,9 @@ def _run(
 def _load_dependencies() -> dict[str, Any]:
     from imperial_rag.chunking import build_chunks
     from imperial_rag.config import Settings
+    from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
     from imperial_rag.extraction import extract_file
     from imperial_rag.indexing import (
-        KeywordIndex,
         create_qdrant_vector_store,
         embedding_model_identifier,
         index_vector_documents,
@@ -254,7 +254,7 @@ def _load_dependencies() -> dict[str, Any]:
         "RetrievalSettings": RetrievalSettings,
         "build_chunks": build_chunks,
         "extract_file": extract_file,
-        "KeywordIndex": KeywordIndex,
+        "KeywordIndex": ElasticsearchKeywordIndex,
         "create_qdrant_vector_store": create_qdrant_vector_store,
         "embedding_model_identifier": embedding_model_identifier,
         "index_vector_documents": index_vector_documents,
@@ -406,7 +406,7 @@ def _count_chunks_by_file(chunks: list[Any]) -> Counter[str]:
 
 
 def _replace_keyword_index(keyword_index_cls: Any, settings: Any, chunks: list[Any]) -> bool:
-    keyword_index = keyword_index_cls(Path(settings.keyword_db_path))
+    keyword_index = keyword_index_cls(settings)
     keyword_index.replace_all(chunks)
     return True
 

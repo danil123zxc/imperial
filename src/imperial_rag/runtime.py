@@ -5,7 +5,8 @@ from typing import Any
 
 from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
-from imperial_rag.indexing import KeywordIndex, make_qdrant_store
+from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
+from imperial_rag.indexing import make_qdrant_store
 from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import RetrievalService, RetrievalSettings
 from imperial_rag.tracing import trace_agent_step
@@ -58,7 +59,7 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
         vector_search = _NoopVectorSearch()
     return QueryDependencies(
         vector_search=vector_search,
-        keyword_search=KeywordIndex(settings.keyword_db_path),
+        keyword_search=ElasticsearchKeywordIndex(settings),
         chat_model=_DeferredProviderChatModel(),
     )
 
