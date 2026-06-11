@@ -7,7 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     STREAMLIT_SERVER_HEADLESS=true \
-    IMPERIAL_RAG_WORKSPACE_ROOT=/app
+    IMPERIAL_RAG_WORKSPACE_ROOT=/app \
+    PYTHONPATH=/app/src
 
 COPY pyproject.toml uv.lock ./
 COPY src ./src
