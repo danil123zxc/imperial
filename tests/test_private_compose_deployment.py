@@ -115,6 +115,19 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     assert '"127.0.0.1:4317:4317"' in phoenix
 
 
+def test_compose_pins_phoenix_and_qdrant_images() -> None:
+    compose = _read("compose.yaml")
+    phoenix = _service_block(compose, "phoenix")
+    qdrant = _service_block(compose, "qdrant")
+
+    assert "image: arizephoenix/phoenix:latest\n" not in compose
+    assert "image: qdrant/qdrant:latest\n" not in compose
+    assert "image: arizephoenix/phoenix:" in phoenix
+    assert "image: qdrant/qdrant:" in qdrant
+    assert "@sha256:" in phoenix
+    assert "@sha256:" in qdrant
+
+
 def test_env_example_documents_compose_overrides() -> None:
     env_example = _read(".env.example")
     lines = set(env_example.splitlines())
