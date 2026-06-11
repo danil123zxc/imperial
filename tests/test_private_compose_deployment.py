@@ -47,3 +47,28 @@ def test_dockerfile_builds_uv_streamlit_runtime() -> None:
     assert '"--server.address", "0.0.0.0"' in dockerfile
     assert '"--server.port", "8501"' in dockerfile
     assert '"--server.headless", "true"' in dockerfile
+
+
+def test_compose_defines_private_app_and_ingest_services() -> None:
+    compose = _read("compose.yaml")
+
+    required_snippets = [
+        "x-imperial-app-base:",
+        "app:",
+        "ingest:",
+        'profiles: ["ingest"]',
+        '"127.0.0.1:8501:8501"',
+        '"127.0.0.1:6006:6006"',
+        '"127.0.0.1:4317:4317"',
+        '"127.0.0.1:6333:6333"',
+        "QDRANT_URL: http://qdrant:6333",
+        "PHOENIX_CLIENT_ENDPOINT: http://phoenix:6006",
+        "PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces",
+        "./documents:/app/documents:ro",
+        "./.imperial_rag:/app/.imperial_rag",
+        "scripts/ingest.py",
+        "--index-vectors",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in compose

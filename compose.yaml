@@ -1,13 +1,88 @@
+x-imperial-app-base: &imperial-app-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: imperial-rag-app:local
+  env_file:
+    - .env
+  environment:
+    IMPERIAL_RAG_WORKSPACE_ROOT: /app
+    QDRANT_URL: http://qdrant:6333
+    QDRANT_COLLECTION: imperial_chunks_qwen
+    PHOENIX_CLIENT_ENDPOINT: http://phoenix:6006
+    PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+  volumes:
+    - ./documents:/app/documents:ro
+    - ./.imperial_rag:/app/.imperial_rag
+  depends_on:
+    qdrant:
+      condition: service_healthy
+    phoenix:
+      condition: service_started
+
 services:
+  app:
+    <<: *imperial-app-base
+    ports:
+      - "127.0.0.1:8501:8501"
+    command:
+      - uv
+      - run
+      - python
+      - -m
+      - streamlit
+      - run
+      - src/imperial_rag/web_app.py
+      - --server.address
+      - 0.0.0.0
+      - --server.port
+      - "8501"
+      - --server.headless
+      - "true"
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  ingest:
+    <<: *imperial-app-base
+    profiles: ["ingest"]
+    command:
+      - uv
+      - run
+      - python
+      - scripts/ingest.py
+      - --workspace-root
+      - /app
+      - --index-vectors
+    restart: "no"
+
   phoenix:
     image: arizephoenix/phoenix:latest
     ports:
-      - "6006:6006"
-      - "4317:4317"
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:4317:4317"
     environment:
-      - PHOENIX_WORKING_DIR=/mnt/data
+      PHOENIX_WORKING_DIR: /mnt/data
     volumes:
       - phoenix_data:/mnt/data
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/python3.13
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/', timeout=2).read(1)"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -16,20 +91,13 @@ services:
       - "127.0.0.1:6333:6333"
     volumes:
       - ./.imperial_rag/qdrant_storage:/qdrant/storage
-
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
-    ports:
-      - "127.0.0.1:9200:9200"
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc ': > /dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
 volumes:
   phoenix_data:
-    driver: local
-  elasticsearch_data:
     driver: local
