@@ -78,10 +78,10 @@ The server filesystem remains the source of truth for private data:
 Normal startup is:
 
 ```bash
-docker compose up -d app qdrant phoenix
+docker compose up -d app qdrant elasticsearch phoenix
 ```
 
-The app loads environment values, reads SQLite/generated state from `/app/.imperial_rag`, uses local keyword search, uses Qdrant through `http://qdrant:6333`, and sends Phoenix traces only when tracing flags are enabled.
+The app loads environment values, reads manifest/OCR SQLite and generated artifacts from `/app/.imperial_rag`, uses Elasticsearch through `http://elasticsearch:9200` for keyword search, uses Qdrant through `http://qdrant:6333`, and sends Phoenix traces only when tracing flags are enabled.
 
 Reindexing is explicit:
 
@@ -97,9 +97,10 @@ Compose should include cheap service checks where practical:
 
 - `app`: `http://127.0.0.1:8501/_stcore/health` from inside the container.
 - `qdrant`: `http://127.0.0.1:6333/healthz` from inside the container.
+- `elasticsearch`: `http://127.0.0.1:9200/` from inside the container.
 - `phoenix`: simple HTTP check against port `6006`.
 
-The app should wait for Qdrant health when Compose can express that cleanly, because Qdrant is required for vector search and vector indexing. Phoenix should start with the normal stack, but app startup must not be gated on Phoenix health; tracing remains optional, and Phoenix downtime should not prevent ordinary querying when tracing is disabled. Keyword-only fallback can still operate from SQLite if runtime provider checks disable semantic search.
+The app should wait for Qdrant and Elasticsearch health when Compose can express that cleanly, because Qdrant is required for vector search and Elasticsearch is required for keyword search. Phoenix should start with the normal stack, but app startup must not be gated on Phoenix health; tracing remains optional, and Phoenix downtime should not prevent ordinary querying when tracing is disabled. If runtime provider checks disable semantic search, keyword-only fallback still depends on Elasticsearch.
 
 ## Configuration
 
@@ -107,6 +108,8 @@ The app should wait for Qdrant health when Compose can express that cleanly, bec
 
 - Host-local default: `QDRANT_URL=http://localhost:6333`
 - Compose default: `QDRANT_URL=http://qdrant:6333`
+- Host-local default: `ELASTICSEARCH_URL=http://localhost:9200`
+- Compose default: `ELASTICSEARCH_URL=http://elasticsearch:9200`
 - Host-local default: `PHOENIX_CLIENT_ENDPOINT=http://localhost:6006`
 - Compose default: `PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006`
 - Host-local default: `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006/v1/traces`

@@ -306,7 +306,7 @@ class FallbackRanker:
         score = 0.0
         score += self._rank_boost(metadata.get("_vector_rank"), weight=1.0)
         score += self._rank_boost(metadata.get("_keyword_rank"), weight=1.6)
-        score += self._lower_is_better_score_boost(metadata.get("_keyword_score"), weight=0.02)
+        score += self._higher_is_better_score_boost(metadata.get("_keyword_score"), weight=0.02)
         score += self._term_boost(tokens, searchable, per_term=0.4, all_terms=1.2)
 
         path_text = " ".join(
@@ -327,11 +327,11 @@ class FallbackRanker:
             return 0.0
         return weight / (numeric + 1.0)
 
-    def _lower_is_better_score_boost(self, value: Any, weight: float) -> float:
+    def _higher_is_better_score_boost(self, value: Any, weight: float) -> float:
         numeric = self._number(value)
         if numeric is None:
             return 0.0
-        return self._clamp(-numeric * weight, lower=-0.25, upper=0.25)
+        return self._clamp(numeric * weight, lower=-0.25, upper=0.25)
 
     def _term_boost(self, tokens: list[str], text: str, per_term: float, all_terms: float) -> float:
         if not tokens:

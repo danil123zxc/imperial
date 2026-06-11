@@ -636,6 +636,23 @@ def test_fallback_ranker_ignores_ambiguous_vector_score_direction():
     assert [doc.metadata["citation_id"] for doc in ranked] == ["better-rank", "ambiguous-score"]
 
 
+def test_fallback_ranker_treats_elasticsearch_keyword_score_as_higher_is_better():
+    docs = [
+        Document(
+            page_content="Возврат брака оформляется актом.",
+            metadata={"citation_id": "low-es-score", "_keyword_score": 1.0},
+        ),
+        Document(
+            page_content="Возврат брака оформляется актом.",
+            metadata={"citation_id": "high-es-score", "_keyword_score": 10.0},
+        ),
+    ]
+
+    ranked = FallbackRanker().rank("возврат брака", docs, top_n=2)
+
+    assert [doc.metadata["citation_id"] for doc in ranked] == ["high-es-score", "low-es-score"]
+
+
 def test_reranker_uses_dashscope_provider_when_api_key_configured(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
