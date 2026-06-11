@@ -8,47 +8,11 @@ from langchain_core.documents import Document
 
 from imperial_rag.config import Settings
 from imperial_rag.indexing import (
-    KeywordIndex,
     create_qdrant_vector_store,
     index_documents,
     index_vector_documents,
     stable_chunk_id,
 )
-
-
-def test_sqlite_keyword_compat_indexes_and_searches_russian_exact_term(tmp_path: Path) -> None:
-    index = KeywordIndex(tmp_path / "keyword.sqlite3")
-    docs = [
-        Document(page_content="Регламент возврата брака из магазина", metadata={"citation_id": "return-policy"}),
-        Document(page_content="Должностная инструкция водителя", metadata={"citation_id": "driver-policy"}),
-    ]
-
-    index.index_documents(docs)
-    results = index.search("возврат брака", k=5)
-
-    assert [result.metadata["citation_id"] for result in results] == ["return-policy"]
-
-
-def test_sqlite_keyword_compat_search_with_scores_adds_rank_metadata(tmp_path: Path) -> None:
-    index = KeywordIndex(tmp_path / "keyword.sqlite3")
-    index.index_documents([Document(page_content="Регламент возврата брака", metadata={"citation_id": "a"})])
-
-    hits = index.search_with_scores("возврат", limit=5)
-
-    assert len(hits) == 1
-    assert hits[0].document.metadata["_keyword_rank"] == 0
-    assert isinstance(hits[0].document.metadata["_keyword_score"], float)
-    assert isinstance(hits[0].score, float)
-
-
-def test_sqlite_keyword_compat_reindexes_same_chunk_without_duplicates(tmp_path: Path) -> None:
-    index = KeywordIndex(tmp_path / "keyword.sqlite3")
-    doc = Document(page_content="Возврат брака", metadata={"citation_id": "return-policy"})
-
-    index.index_documents([doc])
-    index.index_documents([doc])
-
-    assert [result.metadata["citation_id"] for result in index.search("возврат", k=5)] == ["return-policy"]
 
 
 def test_stable_chunk_id_uses_citation_metadata_and_content() -> None:

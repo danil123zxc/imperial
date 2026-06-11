@@ -175,7 +175,7 @@ def _run(
             "corpus",
             attributes={"ingest.chunk_count": len(chunks)},
         ) as keyword_span:
-            keyword_indexed = _replace_keyword_index(deps["KeywordIndex"], settings, chunks)
+            keyword_indexed = _replace_keyword_index(deps["KeywordSearchIndex"], settings, chunks)
             keyword_span.set_output({"chunk_count": len(chunks), "indexed": keyword_indexed})
 
         vector_indexed = False
@@ -254,7 +254,7 @@ def _load_dependencies() -> dict[str, Any]:
         "RetrievalSettings": RetrievalSettings,
         "build_chunks": build_chunks,
         "extract_file": extract_file,
-        "KeywordIndex": ElasticsearchKeywordIndex,
+        "KeywordSearchIndex": ElasticsearchKeywordIndex,
         "create_qdrant_vector_store": create_qdrant_vector_store,
         "embedding_model_identifier": embedding_model_identifier,
         "index_vector_documents": index_vector_documents,

@@ -131,10 +131,6 @@ class ElasticsearchKeywordIndex:
             score=score,
         )
 
-
-KeywordIndex = ElasticsearchKeywordIndex
-
-
 def elasticsearch_health(settings: Settings, *, client: Any | None = None) -> bool:
     if client is None:
         from elasticsearch import Elasticsearch

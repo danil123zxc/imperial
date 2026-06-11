@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import uuid
-from pathlib import Path
 from typing import Any, Sequence
 
 from langchain_core.documents import Document
@@ -12,14 +10,6 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
 from imperial_rag.config import Settings
-from imperial_rag.keyword import (
-    KeywordHit,
-    keyword_query_tokens,
-    normalize_search_text,
-    relaxed_candidate_sort_key,
-    relaxed_query_token_sets,
-    searchable_document_text,
-)
 from imperial_rag.providers import (
     QwenProviderSettings,
     create_embeddings,
@@ -42,172 +32,6 @@ _CITATION_METADATA_KEYS = (
     "chunk_index",
     "start_index",
 )
-
-
-def build_fts_match_query(query: str) -> str:
-    return _build_fts_match_query(keyword_query_tokens(query), operator="AND")
-
-
-def _build_fts_match_query(tokens: list[str], operator: str) -> str:
-    return f" {operator} ".join(f'"{token}"' for token in tokens)
-
-
-class KeywordIndex:
-    def __init__(self, db_path: Path) -> None:
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
-        self._uses_fts = self._fts5_available()
-        self._create_schema()
-
-    def clear(self) -> None:
-        with self._conn:
-            table = "chunks_fts" if self._uses_fts else "chunks"
-            self._conn.execute(f"DELETE FROM {table}")
-
-    def replace_all(self, documents: list[Document]) -> None:
-        self.clear()
-        self.index_documents(documents)
-
-    def index_documents(self, documents: list[Document]) -> None:
-        table = "chunks_fts" if self._uses_fts else "chunks"
-        rows = [
-            (
-                stable_chunk_id(document),
-                document.page_content,
-                normalize_search_text(searchable_document_text(document)),
-                json.dumps(document.metadata, ensure_ascii=False),
-            )
-            for document in documents
-        ]
-        with self._conn:
-            if self._uses_fts:
-                self._conn.executemany(f"DELETE FROM {table} WHERE chunk_id = ?", [(row[0],) for row in rows])
-                insert_verb = "INSERT INTO"
-            else:
-                insert_verb = "REPLACE INTO"
-            self._conn.executemany(
-                f"{insert_verb} {table}(chunk_id, text, normalized_text, metadata) VALUES (?, ?, ?, ?)",
-                rows,
-            )
-
-    def search(self, query: str, limit: int = 5, k: int | None = None) -> list[Document]:
-        return [hit.document for hit in self.search_with_scores(query, limit=limit, k=k)]
-
-    def search_with_scores(self, query: str, limit: int = 5, k: int | None = None) -> list[KeywordHit]:
-        resolved_limit = k if k is not None else limit
-        query_tokens = keyword_query_tokens(query)
-        if not query_tokens:
-            return []
-        if self._uses_fts:
-            rows = self._search_fts(query_tokens, resolved_limit, operator="AND")
-            if not rows:
-                rows = self._search_relaxed_fts(query_tokens, resolved_limit)
-            return [
-                KeywordHit(
-                    document=Document(
-                        page_content=text,
-                        metadata={**json.loads(metadata_json), "_keyword_rank": rank, "_keyword_score": float(score)},
-                    ),
-                    score=float(score),
-                )
-                for rank, (text, metadata_json, score) in enumerate(rows)
-            ]
-
-        rows = self._search_like(query_tokens, resolved_limit, operator="AND")
-        if not rows:
-            rows = self._search_relaxed_like(query_tokens, resolved_limit)
-        return [
-            KeywordHit(
-                document=Document(
-                    page_content=text,
-                    metadata={**json.loads(metadata_json), "_keyword_rank": rank, "_keyword_score": float(rank)},
-                ),
-                score=float(rank),
-            )
-            for rank, (text, metadata_json) in enumerate(rows)
-        ]
-
-    def _search_fts(self, query_tokens: list[str], limit: int, operator: str) -> list[tuple[str, str, float]]:
-        match_query = _build_fts_match_query(query_tokens, operator=operator)
-        return self._conn.execute(
-            """
-            SELECT text, metadata, bm25(chunks_fts) AS score
-            FROM chunks_fts
-            WHERE normalized_text MATCH ?
-            ORDER BY score
-            LIMIT ?
-            """,
-            (match_query, limit),
-        ).fetchall()
-
-    def _search_relaxed_fts(self, query_tokens: list[str], limit: int) -> list[tuple[str, str, float]]:
-        candidates: dict[tuple[str, str], tuple[int, int, int, tuple[str, str, float]]] = {}
-        for query_order, relaxed_tokens in enumerate(relaxed_query_token_sets(query_tokens)):
-            for row_order, row in enumerate(self._search_fts(relaxed_tokens, limit, operator="AND")):
-                key = (row[0], row[1])
-                candidate = (len(relaxed_tokens), query_order, row_order, row)
-                previous = candidates.get(key)
-                if previous is None or relaxed_candidate_sort_key(candidate) < relaxed_candidate_sort_key(previous):
-                    candidates[key] = candidate
-        return [
-            candidate[-1]
-            for candidate in sorted(candidates.values(), key=relaxed_candidate_sort_key)[:limit]
-        ]
-
-    def _search_like(self, query_tokens: list[str], limit: int, operator: str) -> list[tuple[str, str]]:
-        where_clause = f" {operator} ".join("normalized_text LIKE ?" for _ in query_tokens)
-        return self._conn.execute(
-            f"SELECT text, metadata FROM chunks WHERE {where_clause} ORDER BY chunk_id LIMIT ?",
-            [f"%{token}%" for token in query_tokens] + [limit],
-        ).fetchall()
-
-    def _search_relaxed_like(self, query_tokens: list[str], limit: int) -> list[tuple[str, str]]:
-        candidates: dict[tuple[str, str], tuple[int, int, int, tuple[str, str]]] = {}
-        for query_order, relaxed_tokens in enumerate(relaxed_query_token_sets(query_tokens)):
-            for row_order, row in enumerate(self._search_like(relaxed_tokens, limit, operator="AND")):
-                key = (row[0], row[1])
-                candidate = (len(relaxed_tokens), query_order, row_order, row)
-                previous = candidates.get(key)
-                if previous is None or relaxed_candidate_sort_key(candidate) < relaxed_candidate_sort_key(previous):
-                    candidates[key] = candidate
-        return [
-            candidate[-1]
-            for candidate in sorted(candidates.values(), key=relaxed_candidate_sort_key)[:limit]
-        ]
-
-    def _create_schema(self) -> None:
-        if self._uses_fts:
-            self._conn.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
-                USING fts5(
-                    chunk_id UNINDEXED,
-                    text UNINDEXED,
-                    normalized_text,
-                    metadata UNINDEXED
-                )
-                """
-            )
-            return
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chunks (
-                chunk_id TEXT PRIMARY KEY,
-                text TEXT NOT NULL,
-                normalized_text TEXT NOT NULL,
-                metadata TEXT NOT NULL
-            )
-            """
-        )
-
-    def _fts5_available(self) -> bool:
-        try:
-            self._conn.execute("CREATE VIRTUAL TABLE temp.fts5_probe USING fts5(text)")
-            self._conn.execute("DROP TABLE temp.fts5_probe")
-        except sqlite3.OperationalError:
-            return False
-        return True
 
 
 def stable_chunk_id(document: Document) -> str:
@@ -304,6 +128,3 @@ def qdrant_is_healthy(qdrant_url: str) -> bool:
 
 def qdrant_health(settings: Settings) -> bool:
     return qdrant_is_healthy(settings.qdrant_url)
-
-
-from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex, elasticsearch_health  # noqa: E402

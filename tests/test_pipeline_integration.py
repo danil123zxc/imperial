@@ -26,15 +26,15 @@ class DeterministicOcrClient:
         )
 
 
-class FakeKeywordIndex:
+class FakeKeywordSearchIndex:
     last_settings = None
     last_documents = None
 
     def __init__(self, settings) -> None:
-        FakeKeywordIndex.last_settings = settings
+        FakeKeywordSearchIndex.last_settings = settings
 
     def replace_all(self, documents) -> None:
-        FakeKeywordIndex.last_documents = list(documents)
+        FakeKeywordSearchIndex.last_documents = list(documents)
 
 
 def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, monkeypatch) -> None:
@@ -48,9 +48,9 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, 
     (docs / "corrupted.docx").write_bytes(b"not a valid docx zip package")
     settings = Settings(workspace_root=tmp_path)
     ocr_client = DeterministicOcrClient()
-    FakeKeywordIndex.last_settings = None
-    FakeKeywordIndex.last_documents = None
-    monkeypatch.setattr("imperial_rag.elasticsearch_keyword.ElasticsearchKeywordIndex", FakeKeywordIndex)
+    FakeKeywordSearchIndex.last_settings = None
+    FakeKeywordSearchIndex.last_documents = None
+    monkeypatch.setattr("imperial_rag.elasticsearch_keyword.ElasticsearchKeywordIndex", FakeKeywordSearchIndex)
 
     summary = ingest_corpus(settings=settings, ocr_client=ocr_client, vector_store=None)
 
@@ -131,8 +131,8 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, 
     assert "RTF_SENTINEL" in chunk_text
     assert "OCR_SENTINEL_SCAN_TEXT" in chunk_text
 
-    keyword_documents = FakeKeywordIndex.last_documents
-    assert FakeKeywordIndex.last_settings is settings
+    keyword_documents = FakeKeywordSearchIndex.last_documents
+    assert FakeKeywordSearchIndex.last_settings is settings
     assert keyword_documents is not None
     assert len(keyword_documents) == 5
     assert Counter(document.metadata["relative_path"] for document in keyword_documents) == {

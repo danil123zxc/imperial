@@ -67,16 +67,16 @@ class FakeManifestStore:
         self.index_updates.append(kwargs)
 
 
-class FakeKeywordIndex:
+class FakeKeywordSearchIndex:
     last_docs = None
     last_settings = None
 
     def __init__(self, settings) -> None:
         self.settings = settings
-        FakeKeywordIndex.last_settings = settings
+        FakeKeywordSearchIndex.last_settings = settings
 
     def replace_all(self, documents):
-        FakeKeywordIndex.last_docs = list(documents)
+        FakeKeywordSearchIndex.last_docs = list(documents)
 
 
 def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatch):
@@ -94,8 +94,8 @@ def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatc
     assert summary.chunk_count == 1
     assert rows[0]["metadata"]["relative_path"] == "policy.txt"
     assert rows[0]["metadata"]["chunk_id"] == "file1:body:0"
-    assert FakeKeywordIndex.last_docs is not None
-    assert FakeKeywordIndex.last_settings == FakeSettings(tmp_path)
+    assert FakeKeywordSearchIndex.last_docs is not None
+    assert FakeKeywordSearchIndex.last_settings == FakeSettings(tmp_path)
     assert FakeManifestStore.last is not None
     assert FakeManifestStore.last.status_updates[0]["chunk_count"] == 1
     assert FakeManifestStore.last.index_updates[0]["keyword_index_status"] == IndexStatus.INDEXED
@@ -354,11 +354,9 @@ def _install_fake_dependencies(
     chunking.build_chunks = build_chunks
 
     elasticsearch_keyword = ModuleType("imperial_rag.elasticsearch_keyword")
-    elasticsearch_keyword.ElasticsearchKeywordIndex = FakeKeywordIndex
+    elasticsearch_keyword.ElasticsearchKeywordIndex = FakeKeywordSearchIndex
 
     indexing = ModuleType("imperial_rag.indexing")
-    indexing.ElasticsearchKeywordIndex = FakeKeywordIndex
-    indexing.KeywordIndex = FakeKeywordIndex
     indexing.create_qdrant_vector_store = lambda settings: SimpleNamespace(add_documents=lambda documents, ids: ids)
     indexing.index_vector_documents = lambda documents, settings=None, vector_store=None: [
         doc.metadata["chunk_id"] for doc in documents
