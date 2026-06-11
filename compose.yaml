@@ -19,7 +19,7 @@ x-imperial-app-base: &imperial-app-base
     qdrant:
       condition: service_healthy
     phoenix:
-      condition: service_started
+      condition: service_healthy
 
 services:
   app:

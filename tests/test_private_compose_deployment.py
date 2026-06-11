@@ -94,6 +94,7 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     for snippet in required_snippets:
         assert snippet in compose
 
+    assert compose.count("condition: service_healthy") >= 2
     assert "ports:" not in ingest
     assert '"127.0.0.1:8501:8501"' in app
     assert '"127.0.0.1:6333:6333"' in qdrant
