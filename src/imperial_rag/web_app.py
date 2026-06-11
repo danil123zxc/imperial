@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import mimetypes
 from pathlib import Path
 import sys
@@ -8,23 +9,7 @@ from typing import Any
 
 
 APP_TITLE = "Imperial RAG"
-SOURCE_DETAIL_FIELDS = (
-    "section_heading",
-    "page_number",
-    "sheet_name",
-    "table_index",
-    "row_range",
-    "image_index",
-    "embedded_media_name",
-)
-
-
-@dataclass(frozen=True)
-class RetrievedSnippet:
-    marker: str
-    text: str
-    source_type: str
-    details: tuple[str, ...] = ()
+PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
 
 
 @dataclass(frozen=True)
@@ -35,13 +20,8 @@ class RetrievedFileGroup:
     download_path: Path | None
     download_name: str
     download_mime: str
-    markers: tuple[str, ...]
-    snippets: tuple[RetrievedSnippet, ...]
+    preview_text: str
     can_download: bool
-
-    @property
-    def chunk_count(self) -> int:
-        return len(self.snippets)
 
 
 def build_status_summary(total_files: int, indexed_files: int, failed_files: int) -> str:
@@ -100,7 +80,7 @@ def build_retrieved_file_groups(evidence: list[Any], settings: Any) -> list[Retr
 
     for index, document in enumerate(evidence or []):
         metadata = dict(getattr(document, "metadata", {}) or {})
-        file_key = _file_group_key(metadata, index)
+        file_key = _file_group_key(metadata, index, documents_root)
         if file_key not in builders:
             file_name = _file_name(metadata, index)
             download_path = _safe_download_path(metadata, documents_root)
@@ -111,20 +91,8 @@ def build_retrieved_file_groups(evidence: list[Any], settings: Any) -> list[Retr
                 "download_path": download_path,
                 "download_name": file_name,
                 "download_mime": _download_mime(file_name),
-                "markers": [],
-                "snippets": [],
+                "preview_text": _file_preview_text(metadata, settings),
             }
-
-        marker = f"[S{index + 1}]"
-        builders[file_key]["markers"].append(marker)
-        builders[file_key]["snippets"].append(
-            RetrievedSnippet(
-                marker=marker,
-                text=str(getattr(document, "page_content", "")),
-                source_type=str(metadata.get("source_type") or "unknown"),
-                details=_snippet_details(metadata),
-            )
-        )
 
     groups: list[RetrievedFileGroup] = []
     for builder in builders.values():
@@ -137,12 +105,27 @@ def build_retrieved_file_groups(evidence: list[Any], settings: Any) -> list[Retr
                 download_path=download_path,
                 download_name=builder["download_name"],
                 download_mime=builder["download_mime"],
-                markers=tuple(builder["markers"]),
-                snippets=tuple(builder["snippets"]),
+                preview_text=builder["preview_text"],
                 can_download=download_path is not None,
             )
         )
     return groups
+
+
+def normalize_retrieved_file_groups(groups: list[Any], settings: Any) -> list[RetrievedFileGroup]:
+    documents_root = Path(getattr(settings, "documents_root", Path.cwd())).resolve()
+    builders: dict[str, RetrievedFileGroup] = {}
+
+    for index, group in enumerate(groups or []):
+        file_key = _stored_group_key(group, index, documents_root)
+        normalized = _coerce_retrieved_file_group(group, file_key, settings)
+        existing = builders.get(file_key)
+        if existing is None:
+            builders[file_key] = normalized
+            continue
+        builders[file_key] = _merge_file_groups(existing, normalized)
+
+    return list(builders.values())
 
 
 def main() -> None:
@@ -171,7 +154,7 @@ def main() -> None:
         st.session_state.messages = []
 
     for message_index, message in enumerate(st.session_state.messages):
-        _render_chat_message(st, message, message_index)
+        _render_chat_message(st, message, message_index, settings)
 
     question = st.chat_input("Ask about the indexed documents")
     if not question:
@@ -192,7 +175,7 @@ def main() -> None:
         "retrieved_files": build_retrieved_file_groups(evidence, settings),
     }
     st.session_state.messages.append(assistant_message)
-    _render_chat_message(st, assistant_message, len(st.session_state.messages) - 1)
+    _render_chat_message(st, assistant_message, len(st.session_state.messages) - 1, settings)
 
 
 def _coerce_result(result: Any) -> dict[str, Any]:
@@ -207,12 +190,12 @@ def _coerce_result(result: Any) -> dict[str, Any]:
     }
 
 
-def _render_chat_message(st: Any, message: dict[str, Any], message_index: int) -> None:
+def _render_chat_message(st: Any, message: dict[str, Any], message_index: int, settings: Any) -> None:
     with st.chat_message(message["role"]):
         st.write(message["content"])
         retrieved_files = message.get("retrieved_files") or []
         if retrieved_files:
-            _render_retrieved_files(st, retrieved_files, message_index)
+            _render_retrieved_files(st, normalize_retrieved_file_groups(retrieved_files, settings), message_index)
             return
         for source in message.get("sources", []):
             st.caption(str(source))
@@ -224,9 +207,8 @@ def _render_retrieved_files(st: Any, groups: list[RetrievedFileGroup], message_i
         with st.container(border=True):
             info_col, download_col = st.columns([5, 1])
             with info_col:
-                marker_text = ", ".join(group.markers)
                 st.markdown(f"**{group.file_name}**")
-                st.caption(f"{group.display_path} | {group.chunk_count} chunks | {marker_text}")
+                st.caption(group.display_path)
             with download_col:
                 data, disabled = _download_button_payload(group)
                 st.download_button(
@@ -236,14 +218,11 @@ def _render_retrieved_files(st: Any, groups: list[RetrievedFileGroup], message_i
                     mime=group.download_mime,
                     key=f"download-{message_index}-{group_index}",
                     disabled=disabled,
-                    use_container_width=True,
+                    width="stretch",
                     icon=":material/download:",
                 )
             with st.expander("Preview"):
-                for snippet in group.snippets:
-                    details = " | ".join((snippet.source_type, *snippet.details))
-                    st.caption(f"{snippet.marker} {details}")
-                    st.text(snippet.text)
+                st.text(group.preview_text)
 
 
 def _download_button_payload(group: RetrievedFileGroup) -> tuple[bytes, bool]:
@@ -255,11 +234,16 @@ def _download_button_payload(group: RetrievedFileGroup) -> tuple[bytes, bool]:
         return b"", True
 
 
-def _file_group_key(metadata: dict[str, Any], index: int) -> str:
-    for field in ("file_id", "file_path", "relative_path", "file_name"):
-        value = metadata.get(field)
-        if value:
-            return f"{field}:{value}"
+def _file_group_key(metadata: dict[str, Any], index: int, documents_root: Path) -> str:
+    relative_path = _metadata_relative_path(metadata, documents_root)
+    if relative_path:
+        return f"relative_path:{relative_path}"
+    file_id = metadata.get("file_id")
+    if file_id:
+        return f"file_id:{file_id}"
+    file_name = metadata.get("file_name")
+    if file_name:
+        return f"file_name:{file_name}"
     return f"unknown:{index}"
 
 
@@ -281,7 +265,7 @@ def _display_path(
 ) -> str:
     relative_path = metadata.get("relative_path")
     if relative_path:
-        return _shorten_path(str(relative_path))
+        return _shorten_path(_normalize_relative_path(relative_path))
     if download_path is not None:
         try:
             return _shorten_path(download_path.relative_to(documents_root).as_posix())
@@ -291,6 +275,28 @@ def _display_path(
     if parent_folder:
         return _shorten_path(f"{parent_folder}/{file_name}")
     return file_name
+
+
+def _metadata_relative_path(metadata: dict[str, Any], documents_root: Path) -> str | None:
+    relative_path = metadata.get("relative_path")
+    if relative_path:
+        return _normalize_relative_path(relative_path)
+
+    file_path = metadata.get("file_path")
+    if not file_path:
+        return None
+    try:
+        resolved = Path(str(file_path)).expanduser().resolve(strict=False)
+        return resolved.relative_to(documents_root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _normalize_relative_path(path: Any) -> str:
+    normalized = str(path).replace("\\", "/").strip()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.strip("/")
 
 
 def _shorten_path(path: str, max_parts: int = 3) -> str:
@@ -333,8 +339,115 @@ def _download_mime(file_name: str) -> str:
     return mimetypes.guess_type(file_name)[0] or "application/octet-stream"
 
 
-def _snippet_details(metadata: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(f"{field}={metadata[field]}" for field in SOURCE_DETAIL_FIELDS if metadata.get(field))
+def _file_preview_text(metadata: dict[str, Any], settings: Any) -> str:
+    file_id = metadata.get("file_id")
+    if not file_id:
+        return PREVIEW_UNAVAILABLE_TEXT
+    return _file_preview_text_by_id(str(file_id), settings)
+
+
+def _file_preview_text_by_id(file_id: str, settings: Any) -> str:
+    extraction_root = _extraction_root(settings)
+    if extraction_root is None or not _safe_artifact_id(file_id):
+        return PREVIEW_UNAVAILABLE_TEXT
+    artifact_path = extraction_root / "documents" / f"{file_id}.json"
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return PREVIEW_UNAVAILABLE_TEXT
+
+    documents = payload.get("documents") if isinstance(payload, dict) else None
+    if not isinstance(documents, list):
+        return PREVIEW_UNAVAILABLE_TEXT
+    parts: list[str] = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        text = str(document.get("page_content") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts) if parts else PREVIEW_UNAVAILABLE_TEXT
+
+
+def _extraction_root(settings: Any) -> Path | None:
+    extraction_root = getattr(settings, "extraction_root", None)
+    if extraction_root:
+        return Path(extraction_root)
+    processed_root = getattr(settings, "processed_root", None)
+    if processed_root:
+        return Path(processed_root) / "extracted"
+    return None
+
+
+def _safe_artifact_id(file_id: str) -> bool:
+    return bool(file_id) and "/" not in file_id and "\\" not in file_id and Path(file_id).name == file_id
+
+
+def _stored_group_key(group: Any, index: int, documents_root: Path) -> str:
+    download_path = getattr(group, "download_path", None)
+    if download_path is not None:
+        try:
+            resolved = Path(download_path).expanduser().resolve(strict=False)
+            return f"relative_path:{resolved.relative_to(documents_root).as_posix()}"
+        except (OSError, ValueError):
+            pass
+
+    file_key = str(getattr(group, "file_key", "") or "")
+    if file_key.startswith("relative_path:"):
+        return f"relative_path:{_normalize_relative_path(file_key.removeprefix('relative_path:'))}"
+    if file_key.startswith("file_path:"):
+        return _file_group_key({"file_path": file_key.removeprefix("file_path:")}, index, documents_root)
+    if file_key:
+        return file_key
+
+    file_name = getattr(group, "file_name", None)
+    if file_name:
+        return f"file_name:{file_name}"
+    return f"unknown:{index}"
+
+
+def _coerce_retrieved_file_group(group: Any, file_key: str, settings: Any) -> RetrievedFileGroup:
+    file_name = str(getattr(group, "file_name", "") or "retrieved-source")
+    download_path = getattr(group, "download_path", None)
+    if download_path is not None:
+        download_path = Path(download_path)
+    preview_text = str(getattr(group, "preview_text", "") or "")
+    if not preview_text:
+        preview_text = _stored_group_preview_text(group, settings)
+    return RetrievedFileGroup(
+        file_key=file_key,
+        file_name=file_name,
+        display_path=str(getattr(group, "display_path", "") or file_name),
+        download_path=download_path,
+        download_name=str(getattr(group, "download_name", "") or file_name),
+        download_mime=str(getattr(group, "download_mime", "") or _download_mime(file_name)),
+        preview_text=preview_text,
+        can_download=bool(getattr(group, "can_download", False)) and download_path is not None,
+    )
+
+
+def _stored_group_preview_text(group: Any, settings: Any) -> str:
+    file_key = str(getattr(group, "file_key", "") or "")
+    if file_key.startswith("file_id:"):
+        return _file_preview_text_by_id(file_key.removeprefix("file_id:"), settings)
+    return PREVIEW_UNAVAILABLE_TEXT
+
+
+def _merge_file_groups(existing: RetrievedFileGroup, duplicate: RetrievedFileGroup) -> RetrievedFileGroup:
+    preview_text = existing.preview_text
+    if preview_text == PREVIEW_UNAVAILABLE_TEXT and duplicate.preview_text != PREVIEW_UNAVAILABLE_TEXT:
+        preview_text = duplicate.preview_text
+    download_path = existing.download_path or duplicate.download_path
+    return RetrievedFileGroup(
+        file_key=existing.file_key,
+        file_name=existing.file_name,
+        display_path=existing.display_path,
+        download_path=download_path,
+        download_name=existing.download_name,
+        download_mime=existing.download_mime,
+        preview_text=preview_text,
+        can_download=existing.can_download or duplicate.can_download,
+    )
 
 
 def _ensure_src_on_path() -> None:

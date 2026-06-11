@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import textwrap
@@ -6,8 +7,10 @@ from types import SimpleNamespace
 
 from langchain_core.documents import Document
 
+from imperial_rag import web_app
 from imperial_rag.web_app import (
     APP_TITLE,
+    RetrievedFileGroup,
     build_retrieved_file_groups,
     build_status_summary,
     load_status_summary,
@@ -29,17 +32,32 @@ def test_load_status_summary_is_importable_without_manifest_stack():
     assert "Total files:" in summary
 
 
-def test_build_retrieved_file_groups_groups_chunks_by_file_and_preserves_markers(tmp_path):
+def test_build_retrieved_file_groups_groups_chunks_by_file_and_loads_file_preview(tmp_path):
     documents_root = tmp_path / "documents"
+    extraction_root = tmp_path / ".imperial_rag" / "extracted"
     source_path = documents_root / "11. РЕГЛАМЕНТЫ" / "Регламент ЛОГИСТИКА.docx"
     source_path.parent.mkdir(parents=True)
     source_path.write_bytes(b"docx bytes")
-    settings = SimpleNamespace(documents_root=documents_root)
+    artifact_path = extraction_root / "documents" / "logistics.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "documents": [
+                    {"page_content": "Первый фрагмент полного файла."},
+                    {"page_content": "Второй фрагмент полного файла."},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=extraction_root)
 
     groups = build_retrieved_file_groups(
         [
             Document(
-                page_content="Первый найденный фрагмент.",
+                page_content="Retrieved chunk should not be shown.",
                 metadata={
                     "file_id": "logistics",
                     "file_path": str(source_path),
@@ -49,7 +67,7 @@ def test_build_retrieved_file_groups_groups_chunks_by_file_and_preserves_markers
                 },
             ),
             Document(
-                page_content="Второй найденный фрагмент.",
+                page_content="Another retrieved chunk should not be shown.",
                 metadata={
                     "file_id": "logistics",
                     "file_path": str(source_path),
@@ -64,13 +82,106 @@ def test_build_retrieved_file_groups_groups_chunks_by_file_and_preserves_markers
 
     assert len(groups) == 1
     assert groups[0].file_name == "Регламент ЛОГИСТИКА.docx"
-    assert groups[0].chunk_count == 2
-    assert groups[0].markers == ("[S1]", "[S2]")
-    assert [snippet.text for snippet in groups[0].snippets] == [
-        "Первый найденный фрагмент.",
-        "Второй найденный фрагмент.",
-    ]
+    assert groups[0].display_path == "11. РЕГЛАМЕНТЫ/Регламент ЛОГИСТИКА.docx"
+    assert groups[0].preview_text == "Первый фрагмент полного файла.\n\nВторой фрагмент полного файла."
+    assert not hasattr(groups[0], "snippets")
+    assert not hasattr(groups[0], "markers")
+    assert not hasattr(groups[0], "chunk_count")
     assert groups[0].can_download is True
+
+
+def test_build_retrieved_file_groups_groups_same_relative_path_without_matching_file_id(tmp_path):
+    documents_root = tmp_path / "documents"
+    source_path = documents_root / "docs" / "same.docx"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"same")
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=tmp_path / "extracted")
+
+    groups = build_retrieved_file_groups(
+        [
+            Document(
+                page_content="First chunk",
+                metadata={
+                    "file_id": "old-id",
+                    "relative_path": "docs/same.docx",
+                    "file_name": "same.docx",
+                },
+            ),
+            Document(
+                page_content="Second chunk",
+                metadata={
+                    "relative_path": "docs/same.docx",
+                    "file_name": "same.docx",
+                },
+            ),
+        ],
+        settings,
+    )
+
+    assert len(groups) == 1
+    assert groups[0].file_key == "relative_path:docs/same.docx"
+
+
+def test_build_retrieved_file_groups_keeps_same_filename_in_different_folders_separate(tmp_path):
+    documents_root = tmp_path / "documents"
+    first = documents_root / "sales" / "policy.docx"
+    second = documents_root / "hr" / "policy.docx"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"sales")
+    second.write_bytes(b"hr")
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=tmp_path / "extracted")
+
+    groups = build_retrieved_file_groups(
+        [
+            Document(
+                page_content="Sales policy",
+                metadata={"relative_path": "sales/policy.docx", "file_name": "policy.docx"},
+            ),
+            Document(
+                page_content="HR policy",
+                metadata={"relative_path": "hr/policy.docx", "file_name": "policy.docx"},
+            ),
+        ],
+        settings,
+    )
+
+    assert [group.display_path for group in groups] == ["sales/policy.docx", "hr/policy.docx"]
+
+
+def test_normalize_retrieved_file_groups_merges_stored_duplicate_cards(tmp_path):
+    documents_root = tmp_path / "documents"
+    extraction_root = tmp_path / "extracted"
+    source_path = documents_root / "docs" / "same.docx"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"same")
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=extraction_root)
+    first = RetrievedFileGroup(
+        file_key="file_id:old",
+        file_name="same.docx",
+        display_path="docs/same.docx",
+        download_path=source_path,
+        download_name="same.docx",
+        download_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        preview_text="First preview",
+        can_download=True,
+    )
+    second = RetrievedFileGroup(
+        file_key="relative_path:docs/same.docx",
+        file_name="same.docx",
+        display_path="docs/same.docx",
+        download_path=source_path,
+        download_name="same.docx",
+        download_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        preview_text="Second preview",
+        can_download=True,
+    )
+
+    groups = web_app.normalize_retrieved_file_groups([first, second], settings)
+
+    assert len(groups) == 1
+    assert groups[0].file_key == "relative_path:docs/same.docx"
+    assert groups[0].preview_text == "First preview"
 
 
 def test_build_retrieved_file_groups_uses_relative_path_for_safe_download(tmp_path):
@@ -78,7 +189,7 @@ def test_build_retrieved_file_groups_uses_relative_path_for_safe_download(tmp_pa
     source_path = documents_root / "forms" / "заявление на увольнение.docx"
     source_path.parent.mkdir(parents=True)
     source_path.write_bytes(b"form")
-    settings = SimpleNamespace(documents_root=documents_root)
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=tmp_path / "extracted")
 
     groups = build_retrieved_file_groups(
         [
@@ -104,7 +215,7 @@ def test_build_retrieved_file_groups_disables_missing_or_outside_downloads(tmp_p
     documents_root.mkdir()
     outside_path = tmp_path / "outside.docx"
     outside_path.write_bytes(b"outside")
-    settings = SimpleNamespace(documents_root=documents_root)
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=tmp_path / "extracted")
 
     groups = build_retrieved_file_groups(
         [
@@ -122,7 +233,10 @@ def test_build_retrieved_file_groups_disables_missing_or_outside_downloads(tmp_p
 
     assert [group.can_download for group in groups] == [False, False]
     assert [group.download_path for group in groups] == [None, None]
-    assert [group.snippets[0].text for group in groups] == ["Missing file snippet.", "Outside file snippet."]
+    assert [group.preview_text for group in groups] == [
+        web_app.PREVIEW_UNAVAILABLE_TEXT,
+        web_app.PREVIEW_UNAVAILABLE_TEXT,
+    ]
 
 
 def test_build_retrieved_file_groups_returns_empty_list_without_evidence(tmp_path):
