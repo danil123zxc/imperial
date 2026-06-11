@@ -70,11 +70,13 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     ingest = _service_block(compose, "ingest")
     phoenix = _service_block(compose, "phoenix")
     qdrant = _service_block(compose, "qdrant")
+    elasticsearch = _service_block(compose, "elasticsearch")
 
     required_snippets = [
         "x-imperial-app-base:",
         "app:",
         "ingest:",
+        "elasticsearch:",
         "path: .env",
         "required: false",
         'profiles: ["ingest"]',
@@ -82,11 +84,19 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
         '"127.0.0.1:6006:6006"',
         '"127.0.0.1:4317:4317"',
         '"127.0.0.1:6333:6333"',
+        '"127.0.0.1:9200:9200"',
         "QDRANT_URL: http://qdrant:6333",
+        "ELASTICSEARCH_URL: http://elasticsearch:9200",
+        "ELASTICSEARCH_INDEX: imperial_keyword_chunks",
         "PHOENIX_CLIENT_ENDPOINT: http://phoenix:6006",
         "PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces",
+        "docker.elastic.co/elasticsearch/elasticsearch:8.19.15",
+        "discovery.type: single-node",
+        'xpack.security.enabled: "false"',
+        'xpack.security.http.ssl.enabled: "false"',
         "./documents:/app/documents:ro",
         "./.imperial_rag:/app/.imperial_rag",
+        "elasticsearch_data:/usr/share/elasticsearch/data",
         "scripts/ingest.py",
         "--index-vectors",
     ]
@@ -94,9 +104,10 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     for snippet in required_snippets:
         assert snippet in compose
 
-    assert compose.count("condition: service_healthy") >= 2
+    assert compose.count("condition: service_healthy") >= 3
     assert "ports:" not in ingest
     assert '"127.0.0.1:8501:8501"' in app
     assert '"127.0.0.1:6333:6333"' in qdrant
+    assert '"127.0.0.1:9200:9200"' in elasticsearch
     assert '"127.0.0.1:6006:6006"' in phoenix
     assert '"127.0.0.1:4317:4317"' in phoenix

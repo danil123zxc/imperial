@@ -10,6 +10,8 @@ x-imperial-app-base: &imperial-app-base
     IMPERIAL_RAG_WORKSPACE_ROOT: /app
     QDRANT_URL: http://qdrant:6333
     QDRANT_COLLECTION: imperial_chunks_qwen
+    ELASTICSEARCH_URL: http://elasticsearch:9200
+    ELASTICSEARCH_INDEX: imperial_keyword_chunks
     PHOENIX_CLIENT_ENDPOINT: http://phoenix:6006
     PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
   volumes:
@@ -17,6 +19,8 @@ x-imperial-app-base: &imperial-app-base
     - ./.imperial_rag:/app/.imperial_rag
   depends_on:
     qdrant:
+      condition: service_healthy
+    elasticsearch:
       condition: service_healthy
     phoenix:
       condition: service_healthy
@@ -99,6 +103,26 @@ services:
       retries: 12
       start_period: 10s
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.15
+    ports:
+      - "127.0.0.1:9200:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
 volumes:
   phoenix_data:
+    driver: local
+  elasticsearch_data:
     driver: local
