@@ -9,7 +9,7 @@ Generated from the live workspace on 2026-06-03; updated for the Elasticsearch k
 | Manifest SQLite | `.imperial_rag/manifest.sqlite3` | `files` | File discovery, extraction, chunk-count, and index-status ledger |
 | OCR cache SQLite | `.imperial_rag/ocr_cache.sqlite3` | `ocr_cache` | Created only when OCR runs |
 | Keyword Elasticsearch | `ELASTICSEARCH_URL`, default `http://localhost:9200` | `ELASTICSEARCH_INDEX`, default `imperial_keyword_chunks` | Required keyword-search service |
-| Qdrant vectors | `QDRANT_URL`, default `http://localhost:6333` | `QDRANT_COLLECTION`, default `imperial_chunks` | Semantic vector-search service |
+| Qdrant vectors | `QDRANT_URL`, default `http://localhost:6333` | `QDRANT_COLLECTION`, default `imperial_chunks_qwen` | Semantic vector-search service |
 
 The `documents/**/Thumbs.db` files are Windows thumbnail artifacts, not project databases.
 
@@ -48,7 +48,7 @@ erDiagram
         JSON metadata
     }
 
-    QDRANT_IMPERIAL_CHUNKS {
+    QDRANT_IMPERIAL_CHUNKS_QWEN {
         UUID point_id PK
         FLOAT_VECTOR embedding
         TEXT page_content
@@ -64,16 +64,16 @@ erDiagram
     }
 
     FILES ||--o{ ELASTICSEARCH_KEYWORD_INDEX : "file_id inside metadata JSON"
-    FILES ||--o{ QDRANT_IMPERIAL_CHUNKS : "file_id inside metadata payload"
+    FILES ||--o{ QDRANT_IMPERIAL_CHUNKS_QWEN : "file_id inside metadata payload"
     FILES ||--o{ OCR_CACHE : "sha256 to file_hash"
-    ELASTICSEARCH_KEYWORD_INDEX ||--o| QDRANT_IMPERIAL_CHUNKS : "same chunk content/metadata"
+    ELASTICSEARCH_KEYWORD_INDEX ||--o| QDRANT_IMPERIAL_CHUNKS_QWEN : "same chunk content/metadata"
 ```
 
 Notes:
 
 - `FILES` is the manifest table for scanned corpus files.
 - `ELASTICSEARCH_KEYWORD_INDEX` is the keyword-search index. Ingestion rebuilds it from `.imperial_rag/extracted/chunks.jsonl`; the old `.imperial_rag/keyword.sqlite3` file is obsolete generated state and is not read by the app.
-- `QDRANT_IMPERIAL_CHUNKS` is the configured Qdrant collection name from `QDRANT_COLLECTION`, defaulting to `imperial_chunks`.
+- `QDRANT_IMPERIAL_CHUNKS_QWEN` is the configured Qdrant collection name from `QDRANT_COLLECTION`, defaulting to `imperial_chunks_qwen`.
 - `OCR_CACHE` is code-defined as `.imperial_rag/ocr_cache.sqlite3`.
 
 ## Chunk Metadata Payload
@@ -118,7 +118,7 @@ flowchart LR
     app["Imperial RAG app"]
     manifest["SQLite: .imperial_rag/manifest.sqlite3<br/>files"]
     keyword["Elasticsearch: http://localhost:9200<br/>index imperial_keyword_chunks"]
-    qdrant["Qdrant: http://localhost:6333<br/>collection imperial_chunks"]
+    qdrant["Qdrant: http://localhost:6333<br/>collection imperial_chunks_qwen"]
     phoenix["Phoenix: http://localhost:6006<br/>container-managed storage volume phoenix_data"]
 
     app --> manifest
