@@ -9,7 +9,7 @@ The project is designed for private local operation: source files stay in the wo
 - Scans every file under `documents/` into a manifest.
 - Extracts text from supported documents, spreadsheets, PDFs, images, and OCR-backed sources.
 - Writes extracted artifacts and chunks under `.imperial_rag/`.
-- Builds a SQLite full-text keyword index for exact Russian/company terminology.
+- Builds a local Elasticsearch keyword index for exact Russian/company terminology.
 - Optionally indexes chunks into local Qdrant for semantic vector search.
 - Retrieves hybrid evidence and generates strict citation-based answers.
 - Provides a CLI query path and a local Streamlit chat UI.
@@ -21,7 +21,7 @@ The project is designed for private local operation: source files stay in the wo
 documents/
   -> manifest + extraction + OCR
   -> .imperial_rag/extracted/ artifacts and chunks
-  -> .imperial_rag/keyword.sqlite3 SQLite FTS
+  -> local Elasticsearch keyword index
   -> optional local Qdrant collection
   -> retrieval + strict citation answer generation
   -> CLI / Streamlit UI
@@ -32,7 +32,7 @@ Core package code lives in `src/imperial_rag/`:
 
 - `pipeline.py`, `extraction.py`, `ocr.py`, and `chunking.py` handle ingestion and text preparation.
 - `manifest.py` tracks discovered files, extraction status, duplicate groups, and index status.
-- `indexing.py` owns SQLite FTS keyword indexing and Qdrant vector indexing helpers.
+- `elasticsearch_keyword.py` owns Elasticsearch keyword indexing, and `indexing.py` owns Qdrant vector indexing helpers plus stable chunk ids.
 - `retrieval.py`, `answering.py`, `workflows.py`, and `runtime.py` own query-time RAG behavior.
 - `tracing.py` configures Phoenix tracing.
 - `web_app.py` provides the Streamlit UI.
@@ -74,6 +74,22 @@ uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.
 Then open `http://127.0.0.1:8501`.
 
 ## Local Services
+
+### Elasticsearch
+
+Elasticsearch is required for keyword search. Start it locally before running ingestion or querying the processed corpus:
+
+```bash
+./scripts/start_elasticsearch.sh
+```
+
+Defaults:
+
+- URL: `http://localhost:9200`
+- index: `imperial_keyword_chunks`
+- Docker volume: `imperial_elasticsearch_data`
+
+Ingestion rebuilds the Elasticsearch keyword index from `.imperial_rag/extracted/chunks.jsonl`. The old `.imperial_rag/keyword.sqlite3` file is obsolete generated state and is not read by the application after the Elasticsearch migration.
 
 ### Qdrant
 
@@ -221,6 +237,12 @@ Run the live Qdrant health test only when local Qdrant is intentionally running:
 IMPERIAL_RAG_LIVE_QDRANT=1 uv run python -m pytest tests/test_qdrant_health.py -q
 ```
 
+Run the live Elasticsearch test only when local Elasticsearch is intentionally running:
+
+```bash
+IMPERIAL_RAG_LIVE_ELASTICSEARCH=1 uv run python -m pytest tests/test_elasticsearch_live.py -q
+```
+
 ## Project Layout
 
 ```text
@@ -231,7 +253,7 @@ evals/questions.jsonl      Deterministic evaluation questions
 docs/superpowers/          Design specs and implementation plans
 documents/                 Private source corpus
 .imperial_rag/             Generated local state, indexes, extracted text, caches
-compose.yaml               Local Phoenix service
+compose.yaml               Local Phoenix, Qdrant, and Elasticsearch services
 pyproject.toml             Python package and dependency configuration
 ```
 
@@ -245,6 +267,8 @@ Common settings:
 - `IMPERIAL_RAG_WORKSPACE_ROOT`: workspace root, defaulting to `/Users/danil/Public/imperial`.
 - `QDRANT_URL`: Qdrant endpoint, defaulting to `http://localhost:6333`.
 - `QDRANT_COLLECTION`: Qdrant collection, defaulting to `imperial_chunks_qwen`.
+- `ELASTICSEARCH_URL`: Elasticsearch endpoint, defaulting to `http://localhost:9200`.
+- `ELASTICSEARCH_INDEX`: Elasticsearch keyword index, defaulting to `imperial_keyword_chunks`.
 - `PHOENIX_PROJECT_NAME`: Phoenix project name, defaulting to `imperial-rag`.
 - `PHOENIX_COLLECTOR_ENDPOINT`: Phoenix trace collector endpoint.
 - `PHOENIX_CLIENT_ENDPOINT`: Phoenix client/UI endpoint.
@@ -269,7 +293,7 @@ Do not commit API keys, generated corpus artifacts, local indexes, OCR cache dat
 
 ## Troubleshooting
 
-If query answers always refuse or lack useful evidence, run ingestion first and confirm `.imperial_rag/extracted/chunks.jsonl` and `.imperial_rag/keyword.sqlite3` exist.
+If query answers always refuse or lack useful evidence, run ingestion first, confirm `.imperial_rag/extracted/chunks.jsonl` exists, and make sure local Elasticsearch is running.
 
 If vector indexing fails, start Qdrant with `./scripts/start_qdrant.sh` before running ingestion with `--index-vectors`.
 
