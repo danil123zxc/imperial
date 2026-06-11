@@ -157,11 +157,54 @@ def test_search_uses_relaxed_queries_when_strict_search_misses(tmp_path: Path) -
     )
     index = make_index(tmp_path, client)
 
-    results = index.search("Как оформить возврат брака из магазина?", k=3)
+    results = index.search("Как оформить возврат брака из магазина?", k=1)
 
     assert [result.metadata["citation_id"] for result in results] == ["store"]
     assert len(client.search_calls) == 2
     assert client.search_calls[1]["query"]["bool"]["must"] != client.search_calls[0]["query"]["bool"]["must"]
+
+
+def test_search_relaxed_queries_continue_until_limit_is_filled(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.search_responses.extend(
+        [
+            {"hits": {"hits": []}},
+            {
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "first",
+                            "_score": 2.0,
+                            "_source": {
+                                "text": "Регламент возврата брака",
+                                "metadata": {"citation_id": "first"},
+                            },
+                        }
+                    ]
+                }
+            },
+            {
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "second",
+                            "_score": 1.5,
+                            "_source": {
+                                "text": "Возврат брака из магазина",
+                                "metadata": {"citation_id": "second"},
+                            },
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    index = make_index(tmp_path, client)
+
+    results = index.search("оформить возврат брака магазин", k=2)
+
+    assert [result.metadata["citation_id"] for result in results] == ["first", "second"]
+    assert len(client.search_calls) == 3
 
 
 def test_search_returns_empty_for_stopword_only_empty_query(tmp_path: Path) -> None:

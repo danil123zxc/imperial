@@ -118,8 +118,6 @@ class ElasticsearchKeywordIndex:
                 ordered_hits.append(hit)
                 if len(ordered_hits) >= limit:
                     return ordered_hits
-            if ordered_hits:
-                return ordered_hits
         return ordered_hits
 
     def _keyword_hit(self, hit: dict[str, Any], rank: int) -> KeywordHit:
