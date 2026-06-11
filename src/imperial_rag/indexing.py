@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -14,6 +12,14 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
 from imperial_rag.config import Settings
+from imperial_rag.keyword import (
+    KeywordHit,
+    keyword_query_tokens,
+    normalize_search_text,
+    relaxed_candidate_sort_key,
+    relaxed_query_token_sets,
+    searchable_document_text,
+)
 from imperial_rag.providers import (
     QwenProviderSettings,
     create_embeddings,
@@ -22,7 +28,6 @@ from imperial_rag.providers import (
 )
 
 
-_ENDING_RE = re.compile(r"(иями|ями|ами|ого|его|ому|ему|ыми|ими|ов|ев|ей|ый|ий|ой|ая|яя|ое|ее|ам|ям|ах|ях|ом|ем|а|я|ы|и|у|ю|е|о|ь)$")
 _QDRANT_ID_NAMESPACE = uuid.UUID("2f931f90-f82a-4ef6-8a49-310e6c4bd8d7")
 _CITATION_METADATA_KEYS = (
     "citation_id",
@@ -37,117 +42,14 @@ _CITATION_METADATA_KEYS = (
     "chunk_index",
     "start_index",
 )
-_QUERY_STOPWORDS = frozenset(
-    {
-        "а",
-        "без",
-        "в",
-        "во",
-        "где",
-        "для",
-        "до",
-        "есть",
-        "если",
-        "имеет",
-        "из",
-        "или",
-        "и",
-        "как",
-        "каки",
-        "каку",
-        "каков",
-        "когда",
-        "кто",
-        "к",
-        "ко",
-        "ли",
-        "на",
-        "не",
-        "но",
-        "об",
-        "о",
-        "от",
-        "по",
-        "почему",
-        "при",
-        "про",
-        "найт",
-        "с",
-        "со",
-        "что",
-    }
-)
-_MAX_RELAXED_QUERY_ATTEMPTS = 24
-_MAX_ONE_DROP_RELAXATION_TOKENS = 8
-
-
-def _stem_token(token: str) -> str:
-    token = token.casefold().replace("ё", "е")
-    while len(token) > 4:
-        shortened = _ENDING_RE.sub("", token)
-        if shortened == token:
-            break
-        token = shortened
-    return token
-
-
-def normalize_search_text(text: str) -> str:
-    return " ".join(_stem_token(token) for token in re.findall(r"\w+", text.casefold().replace("-", " "), flags=re.UNICODE))
 
 
 def build_fts_match_query(query: str) -> str:
-    return _build_fts_match_query(_keyword_query_tokens(query), operator="AND")
-
-
-def _keyword_query_tokens(query: str) -> list[str]:
-    tokens = [token for token in normalize_search_text(query).split() if token]
-    content_tokens = [token for token in tokens if token not in _QUERY_STOPWORDS and len(token) > 2]
-    return content_tokens or tokens
+    return _build_fts_match_query(keyword_query_tokens(query), operator="AND")
 
 
 def _build_fts_match_query(tokens: list[str], operator: str) -> str:
     return f" {operator} ".join(f'"{token}"' for token in tokens)
-
-
-def _relaxed_query_token_sets(tokens: list[str]) -> list[list[str]]:
-    if len(tokens) < 3:
-        return []
-    relaxed: list[list[str]] = []
-
-    if len(tokens) <= _MAX_ONE_DROP_RELAXATION_TOKENS:
-        for drop_index in range(len(tokens)):
-            relaxed.append([token for index, token in enumerate(tokens) if index != drop_index])
-            if len(relaxed) >= _MAX_RELAXED_QUERY_ATTEMPTS:
-                return relaxed
-
-    for pair in _bounded_adjacent_pairs(tokens, _MAX_RELAXED_QUERY_ATTEMPTS - len(relaxed)):
-        if pair not in relaxed:
-            relaxed.append(pair)
-        if len(relaxed) >= _MAX_RELAXED_QUERY_ATTEMPTS:
-            return relaxed
-    return relaxed
-
-
-def _bounded_adjacent_pairs(tokens: list[str], budget: int) -> list[list[str]]:
-    if budget <= 0:
-        return []
-    pairs = [tokens[index : index + 2] for index in range(len(tokens) - 1)]
-    if len(pairs) <= budget:
-        return pairs
-    head_count = budget // 2
-    tail_count = budget - head_count
-    return pairs[:head_count] + pairs[-tail_count:]
-
-
-def _relaxed_candidate_key(candidate: tuple[int, int, int, Any]) -> tuple[int, int, int]:
-    matched_token_count, query_order, row_order, _row = candidate
-    return (-matched_token_count, query_order, row_order)
-
-
-@dataclass(frozen=True)
-class KeywordHit:
-    document: Document
-    score: float
 
 
 class KeywordIndex:
@@ -173,7 +75,7 @@ class KeywordIndex:
             (
                 stable_chunk_id(document),
                 document.page_content,
-                normalize_search_text(_searchable_document_text(document)),
+                normalize_search_text(searchable_document_text(document)),
                 json.dumps(document.metadata, ensure_ascii=False),
             )
             for document in documents
@@ -194,7 +96,7 @@ class KeywordIndex:
 
     def search_with_scores(self, query: str, limit: int = 5, k: int | None = None) -> list[KeywordHit]:
         resolved_limit = k if k is not None else limit
-        query_tokens = _keyword_query_tokens(query)
+        query_tokens = keyword_query_tokens(query)
         if not query_tokens:
             return []
         if self._uses_fts:
@@ -241,16 +143,16 @@ class KeywordIndex:
 
     def _search_relaxed_fts(self, query_tokens: list[str], limit: int) -> list[tuple[str, str, float]]:
         candidates: dict[tuple[str, str], tuple[int, int, int, tuple[str, str, float]]] = {}
-        for query_order, relaxed_tokens in enumerate(_relaxed_query_token_sets(query_tokens)):
+        for query_order, relaxed_tokens in enumerate(relaxed_query_token_sets(query_tokens)):
             for row_order, row in enumerate(self._search_fts(relaxed_tokens, limit, operator="AND")):
                 key = (row[0], row[1])
                 candidate = (len(relaxed_tokens), query_order, row_order, row)
                 previous = candidates.get(key)
-                if previous is None or _relaxed_candidate_key(candidate) < _relaxed_candidate_key(previous):
+                if previous is None or relaxed_candidate_sort_key(candidate) < relaxed_candidate_sort_key(previous):
                     candidates[key] = candidate
         return [
             candidate[-1]
-            for candidate in sorted(candidates.values(), key=_relaxed_candidate_key)[:limit]
+            for candidate in sorted(candidates.values(), key=relaxed_candidate_sort_key)[:limit]
         ]
 
     def _search_like(self, query_tokens: list[str], limit: int, operator: str) -> list[tuple[str, str]]:
@@ -262,16 +164,16 @@ class KeywordIndex:
 
     def _search_relaxed_like(self, query_tokens: list[str], limit: int) -> list[tuple[str, str]]:
         candidates: dict[tuple[str, str], tuple[int, int, int, tuple[str, str]]] = {}
-        for query_order, relaxed_tokens in enumerate(_relaxed_query_token_sets(query_tokens)):
+        for query_order, relaxed_tokens in enumerate(relaxed_query_token_sets(query_tokens)):
             for row_order, row in enumerate(self._search_like(relaxed_tokens, limit, operator="AND")):
                 key = (row[0], row[1])
                 candidate = (len(relaxed_tokens), query_order, row_order, row)
                 previous = candidates.get(key)
-                if previous is None or _relaxed_candidate_key(candidate) < _relaxed_candidate_key(previous):
+                if previous is None or relaxed_candidate_sort_key(candidate) < relaxed_candidate_sort_key(previous):
                     candidates[key] = candidate
         return [
             candidate[-1]
-            for candidate in sorted(candidates.values(), key=_relaxed_candidate_key)[:limit]
+            for candidate in sorted(candidates.values(), key=relaxed_candidate_sort_key)[:limit]
         ]
 
     def _create_schema(self) -> None:
@@ -306,19 +208,6 @@ class KeywordIndex:
         except sqlite3.OperationalError:
             return False
         return True
-
-
-def _searchable_document_text(document: Document) -> str:
-    metadata = document.metadata
-    return " ".join(
-        [
-            document.page_content,
-            str(metadata.get("file_name", "")),
-            str(metadata.get("relative_path", "")),
-            str(metadata.get("section_heading", "")),
-            str(metadata.get("source_type", "")),
-        ]
-    )
 
 
 def stable_chunk_id(document: Document) -> str:
