@@ -94,9 +94,11 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
         "discovery.type: single-node",
         'xpack.security.enabled: "false"',
         'xpack.security.http.ssl.enabled: "false"',
+        "ES_JAVA_OPTS: -Xms512m -Xmx512m",
         "./documents:/app/documents:ro",
         "./.imperial_rag:/app/.imperial_rag",
         "elasticsearch_data:/usr/share/elasticsearch/data",
+        "  elasticsearch_data:\n    driver: local",
         "scripts/ingest.py",
         "--index-vectors",
     ]
