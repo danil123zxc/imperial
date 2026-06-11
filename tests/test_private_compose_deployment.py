@@ -32,8 +32,10 @@ def test_dockerfile_builds_uv_streamlit_runtime() -> None:
     dockerfile = _read("Dockerfile")
 
     assert "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in dockerfile
+    assert "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:" in dockerfile
     assert "WORKDIR /app" in dockerfile
-    assert "uv sync --frozen --no-dev" in dockerfile
+    assert "IMPERIAL_RAG_WORKSPACE_ROOT=/app" in dockerfile
+    assert "uv sync --frozen --no-dev --no-cache" in dockerfile
     assert "COPY pyproject.toml uv.lock ./" in dockerfile
     assert "COPY src ./src" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
