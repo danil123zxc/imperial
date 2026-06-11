@@ -9,6 +9,14 @@ services:
     volumes:
       - phoenix_data:/mnt/data
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: imperial-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - ./.imperial_rag/qdrant_storage:/qdrant/storage
+
 volumes:
   phoenix_data:
     driver: local
