@@ -24,6 +24,8 @@ def test_dockerignore_excludes_private_and_generated_data() -> None:
     assert ".imperial_rag/" in entries
     assert ".git/" in entries
     assert "__pycache__/" in entries
+    assert "**/__pycache__/" in entries
+    assert "**/*.py[cod]" in entries
     assert ".pytest_cache/" in entries
     assert ".venv/" in entries
 
