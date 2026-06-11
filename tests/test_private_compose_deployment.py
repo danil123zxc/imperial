@@ -117,12 +117,19 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
 
 def test_env_example_documents_compose_overrides() -> None:
     env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
 
     assert "Compose container overrides" in env_example
-    assert "ELASTICSEARCH_URL=http://elasticsearch:9200" in env_example
-    assert "QDRANT_URL=http://qdrant:6333" in env_example
-    assert "PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" in env_example
-    assert "PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" in env_example
+    assert "# IMPERIAL_RAG_WORKSPACE_ROOT=/app" in lines
+    assert "# ELASTICSEARCH_URL=http://elasticsearch:9200" in lines
+    assert "# QDRANT_URL=http://qdrant:6333" in lines
+    assert "# PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" in lines
+    assert "# PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" in lines
+    assert "IMPERIAL_RAG_WORKSPACE_ROOT=/app" not in lines
+    assert "ELASTICSEARCH_URL=http://elasticsearch:9200" not in lines
+    assert "QDRANT_URL=http://qdrant:6333" not in lines
+    assert "PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" not in lines
+    assert "PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" not in lines
 
 
 def test_readme_documents_private_compose_deployment() -> None:
