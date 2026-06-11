@@ -8,7 +8,7 @@ from imperial_rag.config import Settings
 from imperial_rag.keyword import (
     KeywordHit,
     build_elasticsearch_token_query,
-    keyword_query_tokens,
+    content_keyword_query_tokens,
     normalize_search_text,
     relaxed_query_token_sets,
     searchable_document_text,
@@ -67,10 +67,8 @@ class ElasticsearchKeywordIndex:
 
     def search_with_scores(self, query: str, limit: int = 5, k: int | None = None) -> list[KeywordHit]:
         resolved_limit = k if k is not None else limit
-        query_tokens = keyword_query_tokens(query)
+        query_tokens = content_keyword_query_tokens(query)
         if not query_tokens:
-            return []
-        if not any(len(token) > 2 for token in query_tokens):
             return []
 
         hits = self._search_tokens(query_tokens, resolved_limit)

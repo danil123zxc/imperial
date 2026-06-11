@@ -84,8 +84,16 @@ def normalize_search_text(text: str) -> str:
 
 def keyword_query_tokens(query: str) -> list[str]:
     tokens = [token for token in normalize_search_text(query).split() if token]
-    content_tokens = [token for token in tokens if token not in _QUERY_STOPWORDS and len(token) > 2]
+    content_tokens = _content_query_tokens(tokens)
     return content_tokens or tokens
+
+
+def content_keyword_query_tokens(query: str) -> list[str]:
+    return _content_query_tokens([token for token in normalize_search_text(query).split() if token])
+
+
+def _content_query_tokens(tokens: list[str]) -> list[str]:
+    return [token for token in tokens if token not in _QUERY_STOPWORDS and len(token) > 2]
 
 
 def relaxed_query_token_sets(tokens: list[str]) -> list[list[str]]:

@@ -168,7 +168,7 @@ def test_search_returns_empty_for_stopword_only_empty_query(tmp_path: Path) -> N
     client = FakeClient()
     index = make_index(tmp_path, client)
 
-    assert index.search("и в на", limit=5) == []
+    assert index.search("как что где", limit=5) == []
     assert client.search_calls == []
 
 
