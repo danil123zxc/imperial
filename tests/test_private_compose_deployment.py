@@ -113,3 +113,23 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     assert '"127.0.0.1:9200:9200"' in elasticsearch
     assert '"127.0.0.1:6006:6006"' in phoenix
     assert '"127.0.0.1:4317:4317"' in phoenix
+
+
+def test_env_example_documents_compose_overrides() -> None:
+    env_example = _read(".env.example")
+
+    assert "Compose container overrides" in env_example
+    assert "ELASTICSEARCH_URL=http://elasticsearch:9200" in env_example
+    assert "QDRANT_URL=http://qdrant:6333" in env_example
+    assert "PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" in env_example
+    assert "PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" in env_example
+
+
+def test_readme_documents_private_compose_deployment() -> None:
+    readme = _read("README.md")
+
+    assert "## Private Compose Deployment" in readme
+    assert "docker compose up -d elasticsearch qdrant phoenix app" in readme
+    assert "docker compose --profile ingest up ingest" in readme
+    assert "http://127.0.0.1:8501/_stcore/health" in readme
+    assert "http://127.0.0.1:9200" in readme

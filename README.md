@@ -79,6 +79,59 @@ uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.
 
 Then open `http://127.0.0.1:8501`.
 
+## Private Compose Deployment
+
+The private Compose stack runs the Streamlit app, Elasticsearch, Qdrant, and Phoenix on one machine with all published ports bound to `127.0.0.1`.
+
+Prepare the server checkout:
+
+```bash
+cp .env.example .env
+mkdir -p documents .imperial_rag/qdrant_storage
+```
+
+Fill `.env` with `DASHSCOPE_API_KEY` and any provider settings needed for the deployed machine. Host-local commands can keep the `localhost` defaults from `.env.example`; `compose.yaml` overrides service endpoints inside the app containers.
+
+Start the runtime stack:
+
+```bash
+docker compose up -d elasticsearch qdrant phoenix app
+```
+
+Verify the private endpoints from the host:
+
+```bash
+curl -fsS http://127.0.0.1:8501/_stcore/health
+curl -fsS http://127.0.0.1:9200
+curl -fsS http://127.0.0.1:6333/healthz
+curl -I --max-time 3 http://127.0.0.1:6006/
+```
+
+Open the app through the local machine or an SSH tunnel:
+
+```text
+http://127.0.0.1:8501
+```
+
+Run ingestion explicitly when documents change:
+
+```bash
+docker compose --profile ingest up ingest
+```
+
+Inspect logs:
+
+```bash
+docker compose logs -f app
+docker compose logs -f ingest
+```
+
+Stop the stack:
+
+```bash
+docker compose down
+```
+
 ## Local Services
 
 ### Elasticsearch
