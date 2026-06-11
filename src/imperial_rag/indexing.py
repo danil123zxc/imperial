@@ -304,3 +304,6 @@ def qdrant_is_healthy(qdrant_url: str) -> bool:
 
 def qdrant_health(settings: Settings) -> bool:
     return qdrant_is_healthy(settings.qdrant_url)
+
+
+from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex, elasticsearch_health  # noqa: E402
