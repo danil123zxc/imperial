@@ -50,6 +50,25 @@ _QUERY_STOPWORDS = frozenset(
 )
 _MAX_RELAXED_QUERY_ATTEMPTS = 24
 _MAX_ONE_DROP_RELAXATION_TOKENS = 8
+ELASTICSEARCH_REQUIRED_SEARCH_FIELDS = [
+    "content_text",
+    "file_name",
+    "relative_path",
+    "section_heading",
+    "source_type",
+    "sheet_name",
+    "page_number_text",
+    "normalized_text",
+]
+ELASTICSEARCH_BOOSTED_SEARCH_FIELDS = [
+    "file_name^6",
+    "section_heading^5",
+    "relative_path^4",
+    "sheet_name^3",
+    "source_type^2",
+    "content_text^1.5",
+    "normalized_text^1",
+]
 
 
 @dataclass(frozen=True)
@@ -93,7 +112,11 @@ def content_keyword_query_tokens(query: str) -> list[str]:
 
 
 def _content_query_tokens(tokens: list[str]) -> list[str]:
-    return [token for token in tokens if token not in _QUERY_STOPWORDS and len(token) > 2]
+    return [
+        token
+        for token in tokens
+        if token not in _QUERY_STOPWORDS and (len(token) > 2 or token.isdecimal())
+    ]
 
 
 def relaxed_query_token_sets(tokens: list[str]) -> list[list[str]]:
@@ -116,7 +139,28 @@ def relaxed_query_token_sets(tokens: list[str]) -> list[list[str]]:
 
 
 def build_elasticsearch_token_query(tokens: list[str]) -> dict:
-    return {"bool": {"must": [{"match": {"normalized_text": token}} for token in tokens]}}
+    query_text = " ".join(tokens)
+    return {
+        "bool": {
+            "must": [
+                {
+                    "multi_match": {
+                        "query": token,
+                        "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+                    }
+                }
+                for token in tokens
+            ],
+            "should": [
+                {
+                    "multi_match": {
+                        "query": query_text,
+                        "fields": ELASTICSEARCH_BOOSTED_SEARCH_FIELDS,
+                    }
+                }
+            ],
+        }
+    }
 
 
 def searchable_document_text(document: Document) -> str:

@@ -27,15 +27,46 @@ def test_live_elasticsearch_keyword_index_roundtrip() -> None:
     try:
         index.replace_all(
             [
-                Document(page_content="Регламент возврата брака из магазина", metadata={"citation_id": "store"}),
-                Document(page_content="Должностная инструкция водителя", metadata={"citation_id": "driver"}),
+                Document(
+                    page_content="Регламент возврата брака из магазина",
+                    metadata={
+                        "citation_id": "store",
+                        "file_name": "Регламент возврата брака.docx",
+                        "section_heading": "Возврат брака",
+                        "source_type": "body",
+                    },
+                ),
+                Document(
+                    page_content="Должностная инструкция водителя",
+                    metadata={
+                        "citation_id": "driver",
+                        "file_name": "drivers.docx",
+                        "section_heading": "Водители",
+                        "source_type": "body",
+                    },
+                ),
+                Document(
+                    page_content="Смена начинается в 09:00",
+                    metadata={
+                        "citation_id": "sheet",
+                        "file_name": "schedule.xlsx",
+                        "relative_path": "tables/schedule.xlsx",
+                        "source_type": "sheet",
+                        "sheet_name": "График",
+                        "page_number": 2,
+                    },
+                ),
             ]
         )
         strict_results = index.search("возврат брака", k=5)
         relaxed_results = index.search("Как оформить возврат брака из магазина?", k=5)
+        sheet_results = index.search("график", k=5)
+        page_results = index.search("2", k=5)
 
         assert [result.metadata["citation_id"] for result in strict_results[:1]] == ["store"]
         assert [result.metadata["citation_id"] for result in relaxed_results[:1]] == ["store"]
+        assert [result.metadata["citation_id"] for result in sheet_results[:1]] == ["sheet"]
+        assert [result.metadata["citation_id"] for result in page_results[:1]] == ["sheet"]
         assert relaxed_results[0].metadata["_keyword_rank"] == 0
         assert isinstance(relaxed_results[0].metadata["_keyword_score"], float)
     finally:

@@ -19,11 +19,25 @@ INDEX_MAPPINGS = {
     "properties": {
         "chunk_id": {"type": "keyword"},
         "text": {"type": "text", "index": False},
+        "content_text": {"type": "text"},
+        "file_name": {"type": "text"},
+        "relative_path": {"type": "text"},
+        "section_heading": {"type": "text"},
+        "source_type": {"type": "text"},
+        "sheet_name": {"type": "text"},
+        "page_number_text": {"type": "text"},
         "normalized_text": {"type": "text"},
         "metadata": {"type": "object", "enabled": False},
     }
 }
 INDEX_SETTINGS = {"number_of_shards": 1, "number_of_replicas": 0}
+_STRUCTURED_METADATA_SEARCH_FIELDS = (
+    "file_name",
+    "relative_path",
+    "section_heading",
+    "source_type",
+    "sheet_name",
+)
 
 
 class ElasticsearchKeywordIndex:
@@ -93,6 +107,7 @@ class ElasticsearchKeywordIndex:
                 "_source": {
                     "chunk_id": chunk_id,
                     "text": document.page_content,
+                    **_structured_search_fields(document),
                     "normalized_text": normalize_search_text(searchable_document_text(document)),
                     "metadata": dict(document.metadata or {}),
                 },
@@ -130,6 +145,20 @@ class ElasticsearchKeywordIndex:
             document=Document(page_content=str(source.get("text", "")), metadata=metadata),
             score=score,
         )
+
+
+def _structured_search_fields(document: Document) -> dict[str, str]:
+    metadata = document.metadata or {}
+    fields = {"content_text": document.page_content}
+    for field_name in _STRUCTURED_METADATA_SEARCH_FIELDS:
+        value = metadata.get(field_name)
+        if value is not None:
+            fields[field_name] = str(value)
+    page_number = metadata.get("page_number")
+    if page_number is not None:
+        fields["page_number_text"] = str(page_number)
+    return fields
+
 
 def elasticsearch_health(settings: Settings, *, client: Any | None = None) -> bool:
     if client is None:

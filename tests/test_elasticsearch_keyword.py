@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 from imperial_rag.config import Settings
 from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex, elasticsearch_health
 from imperial_rag.indexing import stable_chunk_id
+from imperial_rag.keyword import build_elasticsearch_token_query
 
 
 @dataclass
@@ -66,7 +67,18 @@ def test_replace_all_recreates_index_and_bulk_indexes_documents(tmp_path: Path) 
     client.existing_indices.add("test_keyword_chunks")
     index = make_index(tmp_path, client)
     docs = [
-        Document(page_content="Регламент возврата брака", metadata={"citation_id": "a"}),
+        Document(
+            page_content="Регламент возврата брака",
+            metadata={
+                "citation_id": "a",
+                "file_name": "Регламент возврата брака.docx",
+                "relative_path": "rules/Регламент возврата брака.docx",
+                "section_heading": "Возврат брака",
+                "source_type": "body",
+                "sheet_name": "График",
+                "page_number": 2,
+            },
+        ),
         Document(page_content="Должностная инструкция водителя", metadata={"citation_id": "b"}),
     ]
 
@@ -79,8 +91,16 @@ def test_replace_all_recreates_index_and_bulk_indexes_documents(tmp_path: Path) 
     assert [action["_id"] for action in actions] == [stable_chunk_id(doc) for doc in docs]
     assert actions[0]["_index"] == "test_keyword_chunks"
     assert actions[0]["_source"]["text"] == "Регламент возврата брака"
+    assert actions[0]["_source"]["content_text"] == "Регламент возврата брака"
+    assert actions[0]["_source"]["file_name"] == "Регламент возврата брака.docx"
+    assert actions[0]["_source"]["relative_path"] == "rules/Регламент возврата брака.docx"
+    assert actions[0]["_source"]["section_heading"] == "Возврат брака"
+    assert actions[0]["_source"]["source_type"] == "body"
+    assert actions[0]["_source"]["sheet_name"] == "График"
+    assert actions[0]["_source"]["page_number_text"] == "2"
     assert "регламент возврат брак" in actions[0]["_source"]["normalized_text"]
-    assert actions[0]["_source"]["metadata"] == {"citation_id": "a"}
+    assert actions[0]["_source"]["metadata"]["citation_id"] == "a"
+    assert actions[0]["_source"]["metadata"]["page_number"] == 2
 
 
 def test_replace_all_with_no_documents_still_clears_stale_index(tmp_path: Path) -> None:
@@ -118,14 +138,7 @@ def test_search_with_scores_uses_all_tokens_query_and_maps_hits(tmp_path: Path) 
     assert client.search_calls == [
         {
             "index": "test_keyword_chunks",
-            "query": {
-                "bool": {
-                    "must": [
-                        {"match": {"normalized_text": "возврат"}},
-                        {"match": {"normalized_text": "брак"}},
-                    ]
-                }
-            },
+            "query": build_elasticsearch_token_query(["возврат", "брак"]),
             "size": 5,
         }
     ]
@@ -162,6 +175,43 @@ def test_search_uses_relaxed_queries_when_strict_search_misses(tmp_path: Path) -
     assert [result.metadata["citation_id"] for result in results] == ["store"]
     assert len(client.search_calls) == 2
     assert client.search_calls[1]["query"]["bool"]["must"] != client.search_calls[0]["query"]["bool"]["must"]
+
+
+def test_search_with_scores_preserves_elasticsearch_metadata_boost_order(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.search_responses.append(
+        {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 9.0,
+                        "_source": {
+                            "text": "Общие условия",
+                            "metadata": {
+                                "citation_id": "filename",
+                                "file_name": "Регламент возврата брака.docx",
+                            },
+                        },
+                    },
+                    {
+                        "_score": 3.0,
+                        "_source": {
+                            "text": "Возврат брака описан в теле документа",
+                            "metadata": {"citation_id": "body"},
+                        },
+                    },
+                ]
+            }
+        }
+    )
+    index = make_index(tmp_path, client)
+
+    hits = index.search_with_scores("возврат брака", limit=5)
+
+    assert [hit.document.metadata["citation_id"] for hit in hits] == ["filename", "body"]
+    assert hits[0].document.metadata["_keyword_rank"] == 0
+    assert hits[0].document.metadata["_keyword_score"] == 9.0
+    assert hits[1].document.metadata["_keyword_rank"] == 1
 
 
 def test_search_relaxed_queries_continue_until_limit_is_filled(tmp_path: Path) -> None:
