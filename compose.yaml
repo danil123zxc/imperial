@@ -121,6 +121,24 @@ services:
       retries: 18
       start_period: 30s
 
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.15
+    ports:
+      - "127.0.0.1:5601:5601"
+    environment:
+      SERVER_NAME: kibana
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5601/api/status >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   phoenix_data:
     driver: local

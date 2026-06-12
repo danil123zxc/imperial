@@ -81,7 +81,7 @@ Then open `http://127.0.0.1:8501`.
 
 ## Private Compose Deployment
 
-The private Compose stack runs the Streamlit app, Elasticsearch, Qdrant, and Phoenix on one machine with all published ports bound to `127.0.0.1`.
+The private Compose stack runs the Streamlit app, Elasticsearch, Kibana, Qdrant, and Phoenix on one machine with all published ports bound to `127.0.0.1`.
 
 Prepare the server checkout:
 
@@ -95,7 +95,7 @@ Fill `.env` with `DASHSCOPE_API_KEY` and any provider settings needed for the de
 Start the runtime stack:
 
 ```bash
-docker compose up -d elasticsearch qdrant phoenix app
+docker compose up -d elasticsearch qdrant phoenix app kibana
 ```
 
 Verify the private endpoints from the host:
@@ -103,14 +103,16 @@ Verify the private endpoints from the host:
 ```bash
 curl -fsS http://127.0.0.1:8501/_stcore/health
 curl -fsS http://127.0.0.1:9200
+curl -fsS http://127.0.0.1:5601/api/status
 curl -fsS http://127.0.0.1:6333/healthz
 curl -I --max-time 3 http://127.0.0.1:6006/
 ```
 
-Open the app through the local machine or an SSH tunnel:
+Open the app and Kibana through the local machine or an SSH tunnel:
 
 ```text
 http://127.0.0.1:8501
+http://127.0.0.1:5601
 ```
 
 Run ingestion explicitly when documents change:

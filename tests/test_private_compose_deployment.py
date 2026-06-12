@@ -71,12 +71,14 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     phoenix = _service_block(compose, "phoenix")
     qdrant = _service_block(compose, "qdrant")
     elasticsearch = _service_block(compose, "elasticsearch")
+    kibana = _service_block(compose, "kibana")
 
     required_snippets = [
         "x-imperial-app-base:",
         "app:",
         "ingest:",
         "elasticsearch:",
+        "kibana:",
         "path: .env",
         "required: false",
         'profiles: ["ingest"]',
@@ -85,15 +87,19 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
         '"127.0.0.1:4317:4317"',
         '"127.0.0.1:6333:6333"',
         '"127.0.0.1:9200:9200"',
+        '"127.0.0.1:5601:5601"',
         "QDRANT_URL: http://qdrant:6333",
         "ELASTICSEARCH_URL: http://elasticsearch:9200",
         "ELASTICSEARCH_INDEX: imperial_keyword_chunks",
         "PHOENIX_CLIENT_ENDPOINT: http://phoenix:6006",
         "PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces",
         "docker.elastic.co/elasticsearch/elasticsearch:8.19.15",
+        "docker.elastic.co/kibana/kibana:8.19.15",
         "discovery.type: single-node",
         'xpack.security.enabled: "false"',
         'xpack.security.http.ssl.enabled: "false"',
+        "SERVER_NAME: kibana",
+        "ELASTICSEARCH_HOSTS: '[\"http://elasticsearch:9200\"]'",
         "ES_JAVA_OPTS: -Xms512m -Xmx512m",
         "./documents:/app/documents:ro",
         "./.imperial_rag:/app/.imperial_rag",
@@ -113,6 +119,8 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     assert '"127.0.0.1:9200:9200"' in elasticsearch
     assert '"127.0.0.1:6006:6006"' in phoenix
     assert '"127.0.0.1:4317:4317"' in phoenix
+    assert '"127.0.0.1:5601:5601"' in kibana
+    assert "http://elasticsearch:9200" in kibana
 
 
 def test_compose_pins_phoenix_and_qdrant_images() -> None:
@@ -149,7 +157,8 @@ def test_readme_documents_private_compose_deployment() -> None:
     readme = _read("README.md")
 
     assert "## Private Compose Deployment" in readme
-    assert "docker compose up -d elasticsearch qdrant phoenix app" in readme
+    assert "docker compose up -d elasticsearch qdrant phoenix app kibana" in readme
     assert "docker compose --profile ingest up ingest" in readme
     assert "http://127.0.0.1:8501/_stcore/health" in readme
     assert "http://127.0.0.1:9200" in readme
+    assert "http://127.0.0.1:5601" in readme
