@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from collections.abc import Mapping
@@ -13,6 +14,7 @@ from typing import Any
 
 DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
+DEFAULT_RETRIEVAL_METRIC_K = 5
 REFUSAL_FALLBACKS = (
     "I could not find this clearly in the indexed documents.",
     "не удалось найти",
@@ -135,6 +137,14 @@ def phoenix_source_hint_behavior(
     return bool(source_hint_behavior(input or {}, output, expected)["score"])
 
 
+def phoenix_retrieval_relevance(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return retrieval_relevance_metrics(input or {}, output or {}, expected)
+
+
 def phoenix_ragas_faithfulness(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
@@ -159,11 +169,22 @@ def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -
             "expected_source_hints": example.get("expected_source_hints", []),
         }
         outputs = run_target(inputs, runtime=resolved_runtime)
+        retrieval_metrics = retrieval_relevance_metrics(inputs, outputs, reference_outputs)
+        retrieval_metadata = retrieval_metrics.get("metadata", {})
         rows.append(
             {
                 "question": example["question"],
                 "citation_behavior": citation_behavior(inputs, outputs, reference_outputs)["score"],
                 "source_hint_behavior": source_hint_behavior(inputs, outputs, reference_outputs)["score"],
+                f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
+                    f"hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"retrieval_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
+                    f"precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"retrieval_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
+                    f"ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
             }
         )
     return rows
@@ -351,7 +372,7 @@ def _phoenix_evaluators(metric_names: list[str]) -> list[Any]:
             "Phoenix Ragas evaluators currently support only faithfulness. "
             "Run scripts/run_ragas_eval.py for reference-based Ragas metrics."
         )
-    evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior]
+    evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_retrieval_relevance]
     if "faithfulness" in metric_names:
         evaluators.append(phoenix_ragas_faithfulness)
     return evaluators
@@ -374,6 +395,8 @@ def _to_phoenix_dataset_rows(
             "expected_behavior": example["expected_behavior"],
             "expected_source_hints": example.get("expected_source_hints", []),
         }
+        if example.get("reference_answer"):
+            expected["reference_answer"] = example["reference_answer"]
         stable_payload = json.dumps(
             {"question": example["question"], "expected": expected},
             ensure_ascii=False,
@@ -384,6 +407,103 @@ def _to_phoenix_dataset_rows(
         outputs.append(expected)
         metadata.append({"id": example_id, "row_index": row_index, "source": str(DEFAULT_QUESTIONS_PATH)})
     return inputs, outputs, metadata
+
+
+def retrieval_relevance_metrics(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+    *,
+    k: int = DEFAULT_RETRIEVAL_METRIC_K,
+) -> dict[str, Any]:
+    hints = _reference_hints(reference_outputs or inputs)
+    if not hints:
+        return {
+            "score": None,
+            "label": "skipped",
+            "explanation": "Retrieval relevance requires expected_source_hints.",
+            "metadata": {"k": k, "reason": "missing_expected_source_hints", "document_scores": []},
+        }
+
+    documents = list(outputs.get("documents") or outputs.get("evidence") or [])
+    document_scores = [_document_relevance_score(document, hints) for document in documents]
+    ranked_scores = document_scores[:k]
+    hit = any(score > 0 for score in ranked_scores)
+    precision = sum(ranked_scores) / k if k > 0 else 0.0
+    ndcg = _ndcg(ranked_scores)
+    relevant_count = int(sum(1 for score in document_scores if score > 0))
+    return {
+        "score": precision,
+        "label": "hit" if hit else "miss",
+        "explanation": f"{relevant_count} of {len(document_scores)} retrieved documents matched expected source hints.",
+        "metadata": {
+            "k": k,
+            f"hit_at_{k}": hit,
+            f"precision_at_{k}": precision,
+            f"ndcg_at_{k}": ndcg,
+            "document_scores": document_scores,
+            "document_count": len(document_scores),
+            "relevant_document_count": relevant_count,
+        },
+    }
+
+
+def log_phoenix_eval_annotations(
+    client: Any,
+    *,
+    span_id: str | None = None,
+    retrieval_span_id: str | None = None,
+    answer_metrics: list[dict[str, Any]] | None = None,
+    retrieval_metrics: dict[str, Any] | None = None,
+    sync: bool = False,
+) -> None:
+    span_annotations: list[dict[str, Any]] = []
+    for metric in answer_metrics or []:
+        if not span_id:
+            continue
+        result = _annotation_result(metric)
+        if result:
+            span_annotations.append(
+                {
+                    "name": str(metric["name"]),
+                    "span_id": span_id,
+                    "annotator_kind": "CODE",
+                    "result": result,
+                }
+            )
+
+    retrieval_metadata = dict((retrieval_metrics or {}).get("metadata") or {})
+    if retrieval_span_id:
+        for metric_name in _retrieval_span_metric_names(retrieval_metadata):
+            span_annotations.append(
+                {
+                    "name": metric_name.replace("_at_", "@"),
+                    "span_id": retrieval_span_id,
+                    "annotator_kind": "CODE",
+                    "result": {"score": float(retrieval_metadata[metric_name])},
+                }
+            )
+    if span_annotations:
+        client.spans.log_span_annotations(span_annotations=span_annotations, sync=sync)
+
+    document_scores = retrieval_metadata.get("document_scores") or []
+    if retrieval_span_id and document_scores:
+        client.spans.log_document_annotations(
+            document_annotations=[
+                {
+                    "name": "relevance",
+                    "span_id": retrieval_span_id,
+                    "document_position": position,
+                    "annotator_kind": "CODE",
+                    "result": {
+                        "score": float(score),
+                        "label": "relevant" if float(score) > 0 else "not_relevant",
+                    },
+                }
+                for position, score in enumerate(document_scores)
+            ],
+            sync=sync,
+        )
 
 
 def _configure_tracing(settings: Any, enabled: bool) -> None:
@@ -462,6 +582,52 @@ def _document_search_text(document: dict[str, Any]) -> str:
             ),
         ]
     )
+
+
+def _reference_hints(reference: Mapping[str, Any]) -> list[str]:
+    return [str(hint).casefold() for hint in reference.get("expected_source_hints", []) if str(hint).strip()]
+
+
+def _document_relevance_score(document: Any, hints: list[str]) -> float:
+    if isinstance(document, Mapping):
+        haystack = _document_search_text(dict(document))
+    else:
+        haystack = _document_search_text(_document_payload(document))
+    normalized = haystack.casefold()
+    return 1.0 if any(hint in normalized for hint in hints) else 0.0
+
+
+def _ndcg(scores: list[float]) -> float:
+    if not scores:
+        return 0.0
+    ideal = sorted(scores, reverse=True)
+    ideal_dcg = _dcg(ideal)
+    if ideal_dcg == 0:
+        return 0.0
+    return _dcg(scores) / ideal_dcg
+
+
+def _dcg(scores: list[float]) -> float:
+    return sum(float(score) / math.log2(index + 2) for index, score in enumerate(scores))
+
+
+def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if metric.get("score") is not None:
+        result["score"] = float(metric["score"])
+    if metric.get("label") is not None:
+        result["label"] = str(metric["label"])
+    if metric.get("explanation") is not None:
+        result["explanation"] = str(metric["explanation"])
+    return result
+
+
+def _retrieval_span_metric_names(metadata: Mapping[str, Any]) -> list[str]:
+    return [
+        key
+        for key in metadata
+        if (key.startswith("precision_at_") or key.startswith("ndcg_at_")) and metadata.get(key) is not None
+    ]
 
 
 def _experiment_identifier(experiment: Any) -> str:
