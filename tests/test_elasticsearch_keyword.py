@@ -157,6 +157,40 @@ def test_keyword_retriever_async_invoke_accepts_limit() -> None:
     ]
 
 
+def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:
+    import time
+
+    class SlowClient(FakeClient):
+        def search(self, index, query, size):
+            self.search_calls.append({"index": index, "query": query, "size": size})
+            time.sleep(0.2)
+            return {
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": f"hit-{len(self.search_calls)}",
+                            "_score": 1.0,
+                            "_source": {"text": "Регламент", "metadata": {"citation_id": "return"}},
+                        }
+                    ]
+                }
+            }
+
+    async def run_two_calls() -> tuple[float, list[list[Document]]]:
+        retriever = ElasticsearchKeywordRetriever(client=SlowClient(), index_name="test_keyword_chunks")
+        started = time.perf_counter()
+        docs = await asyncio.gather(
+            retriever.ainvoke("возврат", limit=5),
+            retriever.ainvoke("возврат", limit=5),
+        )
+        return time.perf_counter() - started, docs
+
+    elapsed, docs = asyncio.run(run_two_calls())
+
+    assert elapsed < 0.35
+    assert [[doc.metadata["citation_id"] for doc in call_docs] for call_docs in docs] == [["return"], ["return"]]
+
+
 @pytest.mark.parametrize(
     ("hit", "expected_hit_id"),
     [

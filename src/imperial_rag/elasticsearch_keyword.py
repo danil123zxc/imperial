@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
@@ -75,7 +76,8 @@ class ElasticsearchKeywordRetriever(BaseRetriever):
         limit: int = 5,
         **_: Any,
     ) -> list[Document]:
-        return [hit.document for hit in self.search(query, limit=limit)]
+        hits = await asyncio.to_thread(self.search, query, limit=limit)
+        return [hit.document for hit in hits]
 
     def search(self, query: str, limit: int = 5) -> list[ElasticsearchRetrieverHit]:
         tokens = content_keyword_query_tokens(query)
