@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
@@ -71,7 +73,7 @@ def mark_index_exists(client: FakeClient) -> None:
     client.existing_indices.add("test_keyword_chunks")
 
 
-def test_keyword_retriever_is_langchain_retriever_and_preserves_scores(tmp_path: Path) -> None:
+def test_keyword_retriever_is_langchain_retriever_and_preserves_scores() -> None:
     client = FakeClient()
     response = {
         "hits": {
@@ -118,6 +120,93 @@ def test_keyword_retriever_is_langchain_retriever_and_preserves_scores(tmp_path:
             "size": 5,
         },
     ]
+
+
+def test_keyword_retriever_async_invoke_accepts_limit() -> None:
+    client = FakeClient()
+    client.search_responses.append(
+        {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "hit-1",
+                        "_score": 4.25,
+                        "_source": {
+                            "text": "Регламент возврата брака",
+                            "metadata": {"citation_id": "return"},
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    retriever = ElasticsearchKeywordRetriever(client=client, index_name="test_keyword_chunks")
+
+    async def invoke_retriever() -> list[Document]:
+        return await retriever.ainvoke("возврат брака", limit=5)
+
+    invoked_docs = asyncio.run(invoke_retriever())
+
+    assert [doc.metadata["citation_id"] for doc in invoked_docs] == ["return"]
+    assert client.search_calls == [
+        {
+            "index": "test_keyword_chunks",
+            "query": build_elasticsearch_token_query(["возврат", "брак"]),
+            "size": 5,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("hit", "expected_hit_id"),
+    [
+        (
+            {
+                "_source": {
+                    "chunk_id": "source-chunk",
+                    "text": "Регламент возврата брака",
+                    "metadata": {"chunk_id": "metadata-chunk", "citation_id": "return"},
+                }
+            },
+            "source-chunk",
+        ),
+        (
+            {
+                "_source": {
+                    "text": "Регламент возврата брака",
+                    "metadata": {"chunk_id": "metadata-chunk", "citation_id": "return"},
+                }
+            },
+            "metadata-chunk",
+        ),
+        (
+            {
+                "_source": {
+                    "text": "Регламент возврата брака",
+                    "metadata": {"citation_id": "return"},
+                }
+            },
+            "return",
+        ),
+        (
+            {
+                "_source": {
+                    "text": "Регламент возврата брака",
+                    "metadata": {},
+                }
+            },
+            "Регламент возврата брака",
+        ),
+    ],
+)
+def test_keyword_retriever_hit_id_fallback_order(hit: dict, expected_hit_id: str) -> None:
+    client = FakeClient()
+    client.search_responses.append({"hits": {"hits": [hit]}})
+    retriever = ElasticsearchKeywordRetriever(client=client, index_name="test_keyword_chunks")
+
+    hits = retriever.search_tokens(["возврат"], limit=1)
+
+    assert hits[0].hit_id == expected_hit_id
 
 
 def test_replace_all_recreates_index_and_bulk_indexes_documents(tmp_path: Path) -> None:

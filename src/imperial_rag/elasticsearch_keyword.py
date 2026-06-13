@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
+from langchain_core.callbacks import (
+    AsyncCallbackManagerForRetrieverRun,
+    CallbackManagerForRetrieverRun,
+)
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
@@ -53,7 +57,24 @@ class ElasticsearchKeywordRetriever(BaseRetriever):
     client: Any
     index_name: str
 
-    def _get_relevant_documents(self, query: str, *, limit: int = 5, **_: Any) -> list[Document]:
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun,
+        limit: int = 5,
+        **_: Any,
+    ) -> list[Document]:
+        return [hit.document for hit in self.search(query, limit=limit)]
+
+    async def _aget_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: AsyncCallbackManagerForRetrieverRun,
+        limit: int = 5,
+        **_: Any,
+    ) -> list[Document]:
         return [hit.document for hit in self.search(query, limit=limit)]
 
     def search(self, query: str, limit: int = 5) -> list[ElasticsearchRetrieverHit]:
