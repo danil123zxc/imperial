@@ -23,9 +23,11 @@ from imperial_rag.ragas_eval import (
     DEFAULT_RAGAS_METRICS,
     REFERENCE_REQUIRED_RAGAS_METRICS,
     SUPPORTED_RAGAS_METRICS,
+    evaluate_id_context_recall_rows,
     evaluate_faithfulness_rows,
     faithfulness_row_from_run_output,
     parse_ragas_metric_names,
+    retrieved_context_ids_from_output,
     retrieved_contexts_from_output,
     validate_ragas_metric_requirements,
 )
@@ -57,8 +59,13 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
             continue
         row["expected_behavior"] = example.get("expected_behavior")
         row["expected_source_hints"] = example.get("expected_source_hints", [])
+        row["retrieved_context_ids"] = retrieved_context_ids_from_output(outputs)
         if example.get("reference_answer"):
             row["reference"] = example["reference_answer"]
+        if "reference_context_ids" in example:
+            row["reference_context_ids"] = [
+                str(context_id).strip() for context_id in example.get("reference_context_ids") or []
+            ]
         rows.append(row)
     return PreparedRagasRows(rows=rows, skipped=skipped)
 
@@ -82,20 +89,27 @@ def evaluate_ragas_rows(
     evaluate_fn: Callable[..., Any] | None = None,
 ) -> Any:
     validate_metric_requirements(metric_names, rows)
-    faithfulness_records: list[dict[str, Any]] | None = None
-    reference_metric_names = [name for name in metric_names if name != "faithfulness"]
+    sidecar_records: list[dict[str, Any]] | None = None
+    reference_metric_names = [name for name in metric_names if name not in {"faithfulness", "id_context_recall"}]
     if "faithfulness" in metric_names:
-        faithfulness_records = evaluate_faithfulness_rows(rows)
-        if not reference_metric_names:
-            return faithfulness_records
+        sidecar_records = evaluate_faithfulness_rows(rows)
+    if "id_context_recall" in metric_names:
+        id_context_recall_records = evaluate_id_context_recall_rows(rows)
+        sidecar_records = (
+            _merge_records_by_position(sidecar_records, id_context_recall_records)
+            if sidecar_records is not None
+            else id_context_recall_records
+        )
+    if not reference_metric_names:
+        return sidecar_records or []
 
     evaluator_llm = build_evaluator_llm()
     dataset = build_ragas_dataset(rows)
     metrics = build_ragas_metrics(reference_metric_names, evaluator_llm)
     resolved_evaluate = evaluate_fn or _import_ragas_evaluate()
     reference_result = resolved_evaluate(dataset=dataset, metrics=metrics)
-    if faithfulness_records is not None:
-        return _merge_records_by_position(faithfulness_records, result_records(reference_result))
+    if sidecar_records is not None:
+        return _merge_records_by_position(sidecar_records, result_records(reference_result))
     return reference_result
 
 
@@ -118,9 +132,11 @@ def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
 
 
 def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any]:
-    unsupported_here = sorted(set(metric_names) & {"faithfulness"})
+    unsupported_here = sorted(set(metric_names) & {"faithfulness", "id_context_recall"})
     if unsupported_here:
-        raise SystemExit("Ragas Faithfulness is evaluated through imperial_rag.ragas_eval.")
+        raise SystemExit(
+            "Ragas Faithfulness and ID context recall are evaluated through imperial_rag.ragas_eval."
+        )
 
     _install_ragas_langchain_community_compat()
     try:

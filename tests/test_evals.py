@@ -78,6 +78,24 @@ def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords(monkeypatch):
         "scorer": "fake-scorer",
     }
 
+    def fake_score_id_context_recall_for_phoenix(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return {"score": 1.0, "label": "id_context_recall", "metadata": {"metric": "ragas_id_context_recall"}}
+
+    monkeypatch.setattr(ragas_eval, "score_id_context_recall_for_phoenix", fake_score_id_context_recall_for_phoenix)
+
+    assert module.phoenix_id_context_recall(
+        input={"question": "Что делать с браком?"},
+        output={"documents": [{"metadata": {"file_id": "file-a"}}]},
+        expected={"reference_context_ids": ["file-a"]},
+    ) == {"score": 1.0, "label": "id_context_recall", "metadata": {"metric": "ragas_id_context_recall"}}
+    assert captured == {
+        "input": {"question": "Что делать с браком?"},
+        "output": {"documents": [{"metadata": {"file_id": "file-a"}}]},
+        "expected": {"reference_context_ids": ["file-a"]},
+    }
+
 
 def test_source_hint_behavior_scans_citations_when_sources_are_non_empty():
     module = _load_eval_runner()
@@ -204,11 +222,34 @@ def test_phoenix_dataset_rows_have_stable_metadata_ids():
     assert metadata[0]["source"] == "evals/questions.jsonl"
 
 
+def test_phoenix_dataset_rows_preserve_reference_context_ids():
+    module = _load_eval_runner()
+    example = {
+        "question": "Что делать с браком?",
+        "expected_behavior": "cite_answer",
+        "expected_source_hints": ["брак"],
+        "reference_context_ids": ["file-a", "file-b"],
+    }
+
+    _, outputs, metadata = module._to_phoenix_dataset_rows([example])
+    _, _, repeated_metadata = module._to_phoenix_dataset_rows([example])
+
+    assert outputs == [
+        {
+            "expected_behavior": "cite_answer",
+            "expected_source_hints": ["брак"],
+            "reference_context_ids": ["file-a", "file-b"],
+        }
+    ]
+    assert metadata[0]["id"] == repeated_metadata[0]["id"]
+
+
 def test_parse_phoenix_ragas_metrics_supports_none_and_rejects_unknown():
     module = _load_eval_runner()
 
     assert module.parse_phoenix_ragas_metrics("none") == []
     assert module.parse_phoenix_ragas_metrics("faithfulness") == ["faithfulness"]
+    assert module.parse_phoenix_ragas_metrics("id-based-context-recall") == ["id_context_recall"]
     assert module.parse_phoenix_ragas_metrics("") == ["faithfulness"]
     assert module.parse_phoenix_ragas_metrics(" faithfulness , NONE ") == []
 
@@ -280,6 +321,59 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         module.phoenix_ragas_faithfulness,
     ]
     assert experiment_args["experiment_name"] == "imperial-rag-citation-grounding"
+
+
+def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(monkeypatch):
+    module = _load_eval_runner()
+    captured: dict[str, object] = {}
+
+    class FakeDatasets:
+        def create_dataset(self, **kwargs):
+            captured["dataset"] = kwargs
+            return {"dataset_id": "dataset-1"}
+
+    class FakeExperiments:
+        def run_experiment(self, **kwargs):
+            captured["experiment"] = kwargs
+            return SimpleNamespace(id="experiment-1")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.datasets = FakeDatasets()
+            self.experiments = FakeExperiments()
+
+    class FakeRuntime:
+        def query(self, question: str) -> dict[str, object]:
+            return {"answer": f"Ответ на {question}", "evidence": [{"metadata": {"file_id": "file-a"}}]}
+
+    fake_phoenix = types.ModuleType("phoenix")
+    fake_client_module = types.ModuleType("phoenix.client")
+    fake_client_module.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
+    monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
+
+    module._run_phoenix_experiment(
+        examples=[
+            {
+                "question": "Что делать с браком?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["брак"],
+                "reference_context_ids": ["file-a"],
+            }
+        ],
+        settings=SimpleNamespace(phoenix_client_endpoint="http://localhost:6006"),
+        dataset_name="imperial-rag-gold-questions",
+        experiment_name="imperial-rag-citation-grounding",
+        ragas_metric_names=["id_context_recall"],
+    )
+
+    assert captured["experiment"]["evaluators"] == [
+        module.phoenix_citation_behavior,
+        module.phoenix_source_hint_behavior,
+        module.phoenix_retrieval_relevance,
+        module.phoenix_id_context_recall,
+    ]
 
 
 def test_phoenix_annotation_hook_logs_span_and_document_metrics():

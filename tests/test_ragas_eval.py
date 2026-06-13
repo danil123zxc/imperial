@@ -139,6 +139,116 @@ def test_score_faithfulness_for_phoenix_skips_empty_response_or_contexts():
     assert result["metadata"]["reason"] == "missing_response_or_contexts"
 
 
+def test_retrieved_context_ids_from_output_extracts_unique_file_ids():
+    from imperial_rag import ragas_eval
+
+    output = {
+        "documents": [
+            {"page_content": "one", "metadata": {"file_id": "file-a", "chunk_id": "chunk-1"}},
+            {"page_content": "two", "metadata": {"file_id": "file-b"}},
+            {"page_content": "duplicate", "metadata": {"file_id": "file-a"}},
+            {"page_content": "missing", "metadata": {"chunk_id": "chunk-4"}},
+        ]
+    }
+
+    assert ragas_eval.retrieved_context_ids_from_output(output) == ["file-a", "file-b"]
+
+
+def test_score_id_context_recall_row_uses_ragas_single_turn_sample():
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeScorer:
+        def single_turn_ascore(self, sample):
+            captured["retrieved_context_ids"] = sample.retrieved_context_ids
+            captured["reference_context_ids"] = sample.reference_context_ids
+            return 0.5
+
+    result = ragas_eval.score_id_context_recall_row(
+        {
+            "user_input": "q",
+            "retrieved_context_ids": ["file-a", "file-b"],
+            "reference_context_ids": ["file-b", "file-c"],
+        },
+        scorer=FakeScorer(),
+    )
+
+    assert captured == {
+        "retrieved_context_ids": ["file-a", "file-b"],
+        "reference_context_ids": ["file-b", "file-c"],
+    }
+    assert result == {
+        "score": 0.5,
+        "label": "id_context_recall",
+        "explanation": None,
+        "metadata": {
+            "metric": "ragas_id_context_recall",
+            "retrieved_context_id_count": 2,
+            "reference_context_id_count": 2,
+        },
+    }
+
+
+def test_score_id_context_recall_row_skips_missing_ids():
+    from imperial_rag import ragas_eval
+
+    missing_reference = ragas_eval.score_id_context_recall_row(
+        {"user_input": "q", "retrieved_context_ids": ["file-a"], "reference_context_ids": []},
+        scorer=object(),
+    )
+    missing_retrieved = ragas_eval.score_id_context_recall_row(
+        {"user_input": "q", "retrieved_context_ids": [], "reference_context_ids": ["file-a"]},
+        scorer=object(),
+    )
+
+    assert missing_reference["score"] is None
+    assert missing_reference["label"] == "skipped"
+    assert missing_reference["metadata"]["reason"] == "missing_reference_context_ids"
+    assert missing_retrieved["score"] is None
+    assert missing_retrieved["label"] == "skipped"
+    assert missing_retrieved["metadata"]["reason"] == "missing_retrieved_context_ids"
+
+
+def test_parse_ragas_metric_names_accepts_id_context_recall_aliases():
+    from imperial_rag import ragas_eval
+
+    assert ragas_eval.parse_ragas_metric_names("id-context-recall") == ["id_context_recall"]
+    assert ragas_eval.parse_ragas_metric_names("id_based_context_recall") == ["id_context_recall"]
+
+
+def test_evaluate_id_context_recall_rows_returns_sidecar_records():
+    from imperial_rag import ragas_eval
+
+    class FakeScorer:
+        def single_turn_ascore(self, sample):
+            return 1.0 if sample.reference_context_ids == ["file-a"] else 0.0
+
+    rows = [
+        {"user_input": "q1", "retrieved_context_ids": ["file-a"], "reference_context_ids": ["file-a"]},
+        {"user_input": "q2", "retrieved_context_ids": ["file-b"], "reference_context_ids": []},
+    ]
+
+    assert ragas_eval.evaluate_id_context_recall_rows(rows, scorer=FakeScorer()) == [
+        {
+            "user_input": "q1",
+            "id_context_recall": 1.0,
+            "label": "id_context_recall",
+            "explanation": None,
+            "retrieved_context_id_count": 1,
+            "reference_context_id_count": 1,
+        },
+        {
+            "user_input": "q2",
+            "id_context_recall": None,
+            "label": "skipped",
+            "explanation": "Ragas ID context recall requires reference_context_ids.",
+            "retrieved_context_id_count": 1,
+            "reference_context_id_count": 0,
+        },
+    ]
+
+
 def test_evaluate_faithfulness_rows_returns_sidecar_records():
     from imperial_rag import ragas_eval
 
@@ -174,6 +284,7 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
             "expected_behavior": "cite_answer",
             "expected_source_hints": ["брак"],
             "reference_answer": "Возврат брака оформляется по регламенту.",
+            "reference_context_ids": ["file-a"],
         },
         {
             "question": "Какова столица Австралии?",
@@ -198,7 +309,7 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
                 "evidence": [
                     {
                         "page_content": "Возврат брака оформляется по регламенту.",
-                        "metadata": {"relative_path": "documents/reglament.docx"},
+                        "metadata": {"relative_path": "documents/reglament.docx", "file_id": "file-a"},
                     },
                     {"page_content": "   ", "metadata": {}},
                 ],
@@ -212,9 +323,11 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
             "user_input": "Как оформить возврат брака?",
             "response": "Возврат брака оформляется по регламенту. [doc#1]",
             "retrieved_contexts": ["Возврат брака оформляется по регламенту."],
+            "retrieved_context_ids": ["file-a"],
             "expected_behavior": "cite_answer",
             "expected_source_hints": ["брак"],
             "reference": "Возврат брака оформляется по регламенту.",
+            "reference_context_ids": ["file-a"],
         }
     ]
 
@@ -243,6 +356,24 @@ def test_evaluate_ragas_rows_delegates_default_faithfulness_to_shared_helper(mon
     result = module.evaluate_ragas_rows(rows, ["faithfulness"])
 
     assert result == [{"faithfulness": 1.0}]
+    assert captured == {"rows": rows}
+
+
+def test_evaluate_ragas_rows_merges_id_context_recall_without_llm(monkeypatch):
+    module = _load_ragas_runner()
+    captured: dict[str, object] = {}
+
+    def fake_evaluate_id_context_recall_rows(rows):
+        captured["rows"] = rows
+        return [{"user_input": "q", "id_context_recall": 0.5}]
+
+    monkeypatch.setattr(module, "evaluate_id_context_recall_rows", fake_evaluate_id_context_recall_rows)
+    monkeypatch.setattr(module, "build_evaluator_llm", lambda: pytest.fail("ID recall should not build an evaluator LLM"))
+
+    rows = [{"user_input": "q", "retrieved_context_ids": ["file-a"], "reference_context_ids": ["file-b"]}]
+    result = module.evaluate_ragas_rows(rows, ["id_context_recall"])
+
+    assert result == [{"user_input": "q", "id_context_recall": 0.5}]
     assert captured == {"rows": rows}
 
 

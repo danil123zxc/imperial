@@ -67,6 +67,34 @@ def test_all_evals_can_create_deterministic_only_phoenix_experiment(monkeypatch)
     assert captured["ragas_metric_names"] == []
 
 
+def test_all_evals_forwards_id_context_recall_metric(monkeypatch):
+    module = _load_all_evals_runner()
+    settings = SimpleNamespace(
+        phoenix_client_endpoint="http://localhost:6006",
+        phoenix_project_name="imperial-rag",
+    )
+    examples = [
+        {
+            "question": "Что делать?",
+            "expected_behavior": "cite_answer",
+            "reference_context_ids": ["file-a"],
+        }
+    ]
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(module.phoenix_eval, "_load_project_env", lambda workspace_root: None)
+    monkeypatch.setattr(module.phoenix_eval, "_build_settings", lambda workspace_root: settings)
+    monkeypatch.setattr(module.phoenix_eval, "load_questions", lambda path: examples)
+    monkeypatch.setattr(module.phoenix_eval, "_configure_tracing", lambda settings, enabled: None)
+    monkeypatch.setattr(module, "_assert_phoenix_reachable", lambda endpoint: None)
+    monkeypatch.setattr(module.phoenix_eval, "run_phoenix_experiment", lambda **kwargs: captured.update(kwargs))
+
+    module.main(["--ragas-metrics", "id_context_recall"])
+
+    assert captured["examples"] == examples
+    assert captured["ragas_metric_names"] == ["id_context_recall"]
+
+
 def test_all_evals_preflight_fails_with_phoenix_start_hint(monkeypatch):
     module = _load_all_evals_runner()
 

@@ -159,6 +159,20 @@ def phoenix_ragas_faithfulness(
     )
 
 
+def phoenix_id_context_recall(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import score_id_context_recall_for_phoenix
+
+    return score_id_context_recall_for_phoenix(
+        input=input or {},
+        output=output or {},
+        expected=expected or {},
+    )
+
+
 def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -> list[dict[str, Any]]:
     resolved_runtime = runtime or build_runtime()
     rows: list[dict[str, Any]] = []
@@ -366,21 +380,27 @@ def _validate_phoenix_ragas_metric_requirements(
 
 
 def _phoenix_evaluators(metric_names: list[str]) -> list[Any]:
-    unsupported = sorted(set(metric_names) - {"faithfulness"})
+    unsupported = sorted(set(metric_names) - {"faithfulness", "id_context_recall"})
     if unsupported:
         raise SystemExit(
-            "Phoenix Ragas evaluators currently support only faithfulness. "
+            "Phoenix Ragas evaluators currently support faithfulness and id_context_recall. "
             "Run scripts/run_ragas_eval.py for reference-based Ragas metrics."
         )
     evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_retrieval_relevance]
     if "faithfulness" in metric_names:
         evaluators.append(phoenix_ragas_faithfulness)
+    if "id_context_recall" in metric_names:
+        evaluators.append(phoenix_id_context_recall)
     return evaluators
 
 
 def _phoenix_experiment_description(metric_names: list[str]) -> str:
+    if "faithfulness" in metric_names and "id_context_recall" in metric_names:
+        return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness and ID context recall."
     if "faithfulness" in metric_names:
         return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness."
+    if "id_context_recall" in metric_names:
+        return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas ID context recall."
     return "Imperial RAG deterministic citation/refusal/source-hint checks."
 
 
@@ -397,6 +417,10 @@ def _to_phoenix_dataset_rows(
         }
         if example.get("reference_answer"):
             expected["reference_answer"] = example["reference_answer"]
+        if "reference_context_ids" in example:
+            expected["reference_context_ids"] = [
+                str(context_id).strip() for context_id in example.get("reference_context_ids") or []
+            ]
         stable_payload = json.dumps(
             {"question": example["question"], "expected": expected},
             ensure_ascii=False,

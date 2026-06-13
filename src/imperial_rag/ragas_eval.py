@@ -16,9 +16,12 @@ from imperial_rag.providers import MissingDashScopeKeyError, QwenProviderSetting
 
 FAITHFULNESS_LABEL = "faithfulness"
 FAITHFULNESS_METADATA_KEY = "ragas_faithfulness"
+ID_CONTEXT_RECALL_LABEL = "id_context_recall"
+ID_CONTEXT_RECALL_METADATA_KEY = "ragas_id_context_recall"
 DEFAULT_RAGAS_METRICS = ("faithfulness",)
 REFERENCE_REQUIRED_RAGAS_METRICS = {"context_recall", "factual_correctness"}
-SUPPORTED_RAGAS_METRICS = DEFAULT_RAGAS_METRICS + ("context_recall", "factual_correctness")
+SUPPORTED_RAGAS_METRICS = DEFAULT_RAGAS_METRICS + ("context_recall", "factual_correctness", ID_CONTEXT_RECALL_LABEL)
+RAGAS_METRIC_ALIASES = {"id_based_context_recall": ID_CONTEXT_RECALL_LABEL}
 NO_RAGAS_METRIC_ALIASES = {"none", "no", "off", "false", "0"}
 
 
@@ -30,7 +33,12 @@ def parse_ragas_metric_names(
 ) -> list[str]:
     if raw_metrics is None or not raw_metrics.strip():
         return list(default)
-    names = [name.strip().casefold().replace("-", "_") for name in raw_metrics.split(",") if name.strip()]
+    normalized_names = [
+        name.strip().casefold().replace("-", "_")
+        for name in raw_metrics.split(",")
+        if name.strip()
+    ]
+    names = [RAGAS_METRIC_ALIASES.get(name, name) for name in normalized_names]
     if allow_none and any(name in NO_RAGAS_METRIC_ALIASES for name in names):
         return []
     unsupported = sorted(set(names) - set(SUPPORTED_RAGAS_METRICS))
@@ -103,6 +111,23 @@ def retrieved_contexts_from_output(output: Mapping[str, Any]) -> list[str]:
     return contexts
 
 
+def retrieved_context_ids_from_output(output: Mapping[str, Any]) -> list[str]:
+    direct_ids = output.get("retrieved_context_ids")
+    if direct_ids:
+        return _clean_context_ids(direct_ids)
+
+    documents = output.get("documents") or output.get("evidence") or []
+    ids: list[str] = []
+    seen: set[str] = set()
+    for document in documents:
+        metadata = _document_metadata(document)
+        file_id = str(metadata.get("file_id") or "").strip()
+        if file_id and file_id not in seen:
+            seen.add(file_id)
+            ids.append(file_id)
+    return ids
+
+
 def build_faithfulness_scorer(provider_settings: QwenProviderSettings | None = None) -> Any:
     settings = provider_settings or QwenProviderSettings.from_env()
     try:
@@ -122,6 +147,10 @@ def build_faithfulness_scorer(provider_settings: QwenProviderSettings | None = N
     return Faithfulness(llm=llm)
 
 
+def build_id_context_recall_scorer() -> Any:
+    return _import_id_based_context_recall_metric()()
+
+
 def score_faithfulness_for_phoenix(
     input: Mapping[str, Any] | None = None,
     output: Mapping[str, Any] | None = None,
@@ -131,6 +160,23 @@ def score_faithfulness_for_phoenix(
     if row is None:
         return _skipped_result("missing_response_or_contexts")
     return score_faithfulness_row(row, scorer=scorer)
+
+
+def score_id_context_recall_for_phoenix(
+    input: Mapping[str, Any] | None = None,
+    output: Mapping[str, Any] | None = None,
+    expected: Mapping[str, Any] | None = None,
+    scorer: Any | None = None,
+) -> dict[str, Any]:
+    resolved_input = input or {}
+    resolved_output = output or {}
+    resolved_expected = expected or resolved_input
+    row = {
+        "user_input": str(resolved_input.get("question") or resolved_input.get("user_input") or ""),
+        "retrieved_context_ids": retrieved_context_ids_from_output(resolved_output),
+        "reference_context_ids": _clean_context_ids(resolved_expected.get("reference_context_ids") or []),
+    }
+    return score_id_context_recall_row(row, scorer=scorer)
 
 
 def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
@@ -159,6 +205,41 @@ def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) ->
     }
 
 
+def score_id_context_recall_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
+    retrieved_context_ids = _clean_context_ids(row.get("retrieved_context_ids") or [])
+    reference_context_ids = _clean_context_ids(row.get("reference_context_ids") or [])
+    if not reference_context_ids:
+        return _id_context_recall_skipped_result(
+            "missing_reference_context_ids",
+            retrieved_context_count=len(retrieved_context_ids),
+            reference_context_count=0,
+        )
+    if not retrieved_context_ids:
+        return _id_context_recall_skipped_result(
+            "missing_retrieved_context_ids",
+            retrieved_context_count=0,
+            reference_context_count=len(reference_context_ids),
+        )
+
+    resolved_scorer = scorer or build_id_context_recall_scorer()
+    raw_result = _score_id_context_recall_with_ragas(
+        resolved_scorer,
+        retrieved_context_ids=retrieved_context_ids,
+        reference_context_ids=reference_context_ids,
+    )
+    score = _coerce_score_value(raw_result)
+    return {
+        "score": score,
+        "label": ID_CONTEXT_RECALL_LABEL,
+        "explanation": _result_explanation(raw_result),
+        "metadata": {
+            "metric": ID_CONTEXT_RECALL_METADATA_KEY,
+            "retrieved_context_id_count": len(retrieved_context_ids),
+            "reference_context_id_count": len(reference_context_ids),
+        },
+    }
+
+
 def evaluate_faithfulness_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     resolved_scorer = scorer
@@ -173,6 +254,27 @@ def evaluate_faithfulness_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | 
                 "label": result["label"],
                 "explanation": result.get("explanation"),
                 "retrieved_context_count": result["metadata"].get("retrieved_context_count", 0),
+            }
+        )
+    return records
+
+
+def evaluate_id_context_recall_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    resolved_scorer = scorer
+    for row in rows:
+        if _has_scoreable_id_context_fields(row) and resolved_scorer is None:
+            resolved_scorer = build_id_context_recall_scorer()
+        result = score_id_context_recall_row(row, scorer=resolved_scorer)
+        metadata = result["metadata"]
+        records.append(
+            {
+                "user_input": str(row.get("user_input") or ""),
+                ID_CONTEXT_RECALL_LABEL: result["score"],
+                "label": result["label"],
+                "explanation": result.get("explanation"),
+                "retrieved_context_id_count": metadata.get("retrieved_context_id_count", 0),
+                "reference_context_id_count": metadata.get("reference_context_id_count", 0),
             }
         )
     return records
@@ -199,6 +301,23 @@ def _score_with_ragas(
         sample = _import_single_turn_sample()(**kwargs)
         return _run_coroutine(scorer.single_turn_ascore(sample))
     raise TypeError("Ragas Faithfulness scorer does not expose score/ascore methods.")
+
+
+def _score_id_context_recall_with_ragas(
+    scorer: Any,
+    *,
+    retrieved_context_ids: list[str],
+    reference_context_ids: list[str],
+) -> Any:
+    sample = _import_single_turn_sample()(
+        retrieved_context_ids=retrieved_context_ids,
+        reference_context_ids=reference_context_ids,
+    )
+    if hasattr(scorer, "single_turn_ascore"):
+        return _resolve_awaitable(scorer.single_turn_ascore(sample))
+    if hasattr(scorer, "score"):
+        return _resolve_awaitable(scorer.score(sample))
+    raise TypeError("Ragas IDBasedContextRecall scorer does not expose single_turn_ascore/score methods.")
 
 
 def _import_async_openai() -> Any:
@@ -241,6 +360,34 @@ def _import_faithfulness_metric() -> Any:
                 raise SystemExit("Ragas Faithfulness metric is not installed; run `uv sync --extra dev`.") from (
                     collections_exc
                 )
+
+
+def _import_id_based_context_recall_metric() -> Any:
+    _install_ragas_langchain_community_compat()
+    try:
+        from ragas.metrics.collections import IDBasedContextRecall
+
+        return IDBasedContextRecall
+    except ImportError as collections_exc:
+        try:
+            from ragas.metrics._context_recall import IDBasedContextRecall
+
+            return IDBasedContextRecall
+        except ImportError:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="Importing IDBasedContextRecall from 'ragas.metrics' is deprecated.*",
+                        category=DeprecationWarning,
+                    )
+                    from ragas.metrics import IDBasedContextRecall
+
+                return IDBasedContextRecall
+            except ImportError:
+                raise SystemExit(
+                    "Ragas IDBasedContextRecall metric is not installed; run `uv sync --extra dev`."
+                ) from collections_exc
 
 
 def _import_single_turn_sample() -> Any:
@@ -289,10 +436,41 @@ def _clean_texts(values: Any) -> list[str]:
     return texts
 
 
+def _clean_context_ids(values: Any) -> list[str]:
+    if values is None:
+        raw_values: list[Any] = []
+    elif isinstance(values, str) or not isinstance(values, Sequence):
+        raw_values = [values]
+    else:
+        raw_values = list(values)
+    ids: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        context_id = str(value).strip()
+        if context_id and context_id not in seen:
+            seen.add(context_id)
+            ids.append(context_id)
+    return ids
+
+
 def _has_scoreable_fields(row: Mapping[str, Any]) -> bool:
     return bool(str(row.get("user_input") or "").strip()) and bool(str(row.get("response") or "").strip()) and bool(
         _clean_texts(row.get("retrieved_contexts") or [])
     )
+
+
+def _has_scoreable_id_context_fields(row: Mapping[str, Any]) -> bool:
+    return bool(_clean_context_ids(row.get("retrieved_context_ids") or [])) and bool(
+        _clean_context_ids(row.get("reference_context_ids") or [])
+    )
+
+
+def _document_metadata(document: Any) -> Mapping[str, Any]:
+    if isinstance(document, Mapping):
+        metadata = document.get("metadata") or {}
+    else:
+        metadata = getattr(document, "metadata", {}) or {}
+    return metadata if isinstance(metadata, Mapping) else {}
 
 
 def _coerce_score_value(result: Any) -> float | None:
@@ -321,6 +499,29 @@ def _skipped_result(reason: str) -> dict[str, Any]:
         "label": "skipped",
         "explanation": "Ragas Faithfulness requires a non-empty response and retrieved contexts.",
         "metadata": {"metric": FAITHFULNESS_METADATA_KEY, "reason": reason, "retrieved_context_count": 0},
+    }
+
+
+def _id_context_recall_skipped_result(
+    reason: str,
+    *,
+    retrieved_context_count: int,
+    reference_context_count: int,
+) -> dict[str, Any]:
+    if reason == "missing_reference_context_ids":
+        explanation = "Ragas ID context recall requires reference_context_ids."
+    else:
+        explanation = "Ragas ID context recall requires retrieved_context_ids."
+    return {
+        "score": None,
+        "label": "skipped",
+        "explanation": explanation,
+        "metadata": {
+            "metric": ID_CONTEXT_RECALL_METADATA_KEY,
+            "reason": reason,
+            "retrieved_context_id_count": retrieved_context_count,
+            "reference_context_id_count": reference_context_count,
+        },
     }
 
 
