@@ -122,6 +122,36 @@ def test_keyword_retriever_is_langchain_retriever_and_preserves_scores() -> None
     ]
 
 
+def test_keyword_index_facade_uses_retriever_for_query_time_search(tmp_path: Path) -> None:
+    client = FakeClient()
+    mark_index_exists(client)
+    client.search_responses.append(
+        {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "hit-1",
+                        "_score": 8.0,
+                        "_source": {
+                            "text": "Регламент возврата брака",
+                            "metadata": {"citation_id": "return"},
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    index = make_index(tmp_path, client)
+
+    hits = index.search_with_scores("возврат брака", limit=5)
+
+    assert isinstance(index.retriever, ElasticsearchKeywordRetriever)
+    assert [hit.document.metadata["citation_id"] for hit in hits] == ["return"]
+    assert hits[0].score == 8.0
+    assert hits[0].document.metadata["_keyword_rank"] == 0
+    assert hits[0].document.metadata["_keyword_score"] == 8.0
+
+
 def test_keyword_retriever_async_invoke_accepts_limit() -> None:
     client = FakeClient()
     client.search_responses.append(

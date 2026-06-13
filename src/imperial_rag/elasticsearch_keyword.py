@@ -129,6 +129,7 @@ class ElasticsearchKeywordIndex:
             bulk = elasticsearch_bulk
         self.client = client
         self._bulk = bulk
+        self.retriever = ElasticsearchKeywordRetriever(client=self.client, index_name=self.index_name)
 
     def clear(self) -> None:
         self.client.indices.delete(index=self.index_name, ignore_unavailable=True)
@@ -187,37 +188,29 @@ class ElasticsearchKeywordIndex:
                 },
             }
 
-    def _search_tokens(self, tokens: list[str], limit: int) -> list[dict[str, Any]]:
-        response = self.client.search(
-            index=self.index_name,
-            query=build_elasticsearch_token_query(tokens),
-            size=limit,
-        )
-        return list(response.get("hits", {}).get("hits", []))
+    def _search_tokens(self, tokens: list[str], limit: int) -> list[ElasticsearchRetrieverHit]:
+        return self.retriever.search_tokens(tokens, limit=limit)
 
-    def _search_relaxed(self, tokens: list[str], limit: int) -> list[dict[str, Any]]:
+    def _search_relaxed(self, tokens: list[str], limit: int) -> list[ElasticsearchRetrieverHit]:
         seen: set[str] = set()
-        ordered_hits: list[dict[str, Any]] = []
+        ordered_hits: list[ElasticsearchRetrieverHit] = []
         for relaxed_tokens in relaxed_query_token_sets(tokens):
             for hit in self._search_tokens(relaxed_tokens, limit):
-                hit_id = str(hit.get("_id") or hit.get("_source", {}).get("chunk_id") or len(seen))
-                if hit_id in seen:
+                if hit.hit_id in seen:
                     continue
-                seen.add(hit_id)
+                seen.add(hit.hit_id)
                 ordered_hits.append(hit)
                 if len(ordered_hits) >= limit:
                     return ordered_hits
         return ordered_hits
 
-    def _keyword_hit(self, hit: dict[str, Any], rank: int) -> KeywordHit:
-        source = dict(hit.get("_source") or {})
-        metadata = dict(source.get("metadata") or {})
-        score = float(hit.get("_score") or 0.0)
+    def _keyword_hit(self, hit: ElasticsearchRetrieverHit, rank: int) -> KeywordHit:
+        metadata = dict(hit.document.metadata or {})
         metadata["_keyword_rank"] = rank
-        metadata["_keyword_score"] = score
+        metadata["_keyword_score"] = hit.score
         return KeywordHit(
-            document=Document(page_content=str(source.get("text", "")), metadata=metadata),
-            score=score,
+            document=Document(page_content=hit.document.page_content, metadata=metadata),
+            score=hit.score,
         )
 
 
