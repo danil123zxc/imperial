@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 import pytest
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableLambda
 
 from imperial_rag.answering import REFUSAL_TEXT
 from imperial_rag.workflows import (
@@ -48,6 +49,36 @@ def test_query_workflow_with_injected_retrieval_and_generator_happy_path():
     assert result["sources"] == ["[S1] unknown"]
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
+
+
+def test_query_workflow_default_generation_uses_lcel_prompt_chain():
+    docs = [
+        Document(
+            page_content="Возврат брака оформляется актом.",
+            metadata={"citation_id": "return-policy"},
+        )
+    ]
+    calls = []
+
+    def fake_model(prompt_value):
+        messages = prompt_value.to_messages()
+        calls.append(messages)
+        assert messages[0].type == "system"
+        assert "strict-citation RAG assistant" in messages[0].content
+        assert messages[1].type == "human"
+        assert "Возврат брака оформляется актом." in messages[1].content
+        return "Возврат брака оформляется актом. [S1]"
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        chat_model=RunnableLambda(fake_model),
+    )
+
+    result = workflow.invoke({"question": "Как оформить возврат брака?"})
+
+    assert result["answer"] == "Возврат брака оформляется актом. [S1]"
+    assert result["citations_valid"] is True
+    assert len(calls) == 1
 
 
 def test_query_workflow_traces_answer_generation(monkeypatch):

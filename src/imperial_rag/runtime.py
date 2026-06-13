@@ -48,9 +48,13 @@ class _ProviderMismatchVectorSearch:
 def build_query_dependencies(settings: Settings) -> QueryDependencies:
     vector_search: object
     semantic_search_enabled = _semantic_search_enabled()
+    retrieval_settings = RetrievalSettings.from_env()
     if semantic_search_enabled and vector_metadata_matches_config(settings):
         try:
-            vector_search = make_qdrant_store(settings.qdrant_url, settings.qdrant_collection)
+            vector_search = _as_mmr_retriever(
+                make_qdrant_store(settings.qdrant_url, settings.qdrant_collection),
+                retrieval_settings,
+            )
         except Exception:
             vector_search = _NoopVectorSearch()
     elif semantic_search_enabled:
@@ -61,6 +65,19 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
         vector_search=vector_search,
         keyword_search=ElasticsearchKeywordIndex(settings),
         chat_model=_DeferredProviderChatModel(),
+    )
+
+
+def _as_mmr_retriever(vector_store: object, settings: RetrievalSettings) -> object:
+    if not hasattr(vector_store, "as_retriever"):
+        return vector_store
+    return vector_store.as_retriever(
+        search_type="mmr",
+        search_kwargs={
+            "k": settings.vector_k,
+            "fetch_k": settings.vector_fetch_k,
+            "lambda_mult": settings.mmr_lambda_mult,
+        },
     )
 
 

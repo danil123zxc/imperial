@@ -5,11 +5,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypedDict
 
 from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 
 from imperial_rag.answering import (
     REFUSAL_TEXT,
-    build_strict_messages,
+    build_evidence_prompt,
     format_citations,
     format_sources,
     validate_citations,
@@ -118,22 +120,6 @@ def rank_hybrid_candidates(
     return sorted(candidates, key=score, reverse=True)[:limit]
 
 
-def _call_with_supported_args(callable_, *args):
-    try:
-        signature = inspect.signature(callable_)
-    except (TypeError, ValueError):
-        return callable_(*args)
-    if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in signature.parameters.values()):
-        return callable_(*args)
-    positional_count = sum(
-        1
-        for parameter in signature.parameters.values()
-        if parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    )
-    return callable_(*args[:positional_count])
-
-
 def _documents_from_first_key(
     retrieved: Mapping[str, Any],
     keys: Sequence[str],
@@ -179,6 +165,39 @@ def _coerce_answer(answer: Any) -> str:
     return str(answer)
 
 
+def _call_pipeline(run_pipeline, state: Mapping[str, Any]):
+    try:
+        signature = inspect.signature(run_pipeline)
+    except (TypeError, ValueError):
+        return run_pipeline(state)
+    positional_count = sum(
+        1
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    )
+    return run_pipeline(state) if positional_count else run_pipeline()
+
+
+def _strict_answer_chain(chat_model: ChatModel):
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                (
+                    "You are a strict-citation RAG assistant. Use only the provided context. "
+                    "Do not use general model knowledge. Answer only from context and "
+                    "cite every factual claim. Use concise bullets or short paragraphs. "
+                    "Do not include uncited introductions or summaries. "
+                    "Refuse when the documents do not support the answer."
+                ),
+            ),
+            ("human", "{evidence_prompt}"),
+        ]
+    )
+    return prompt | chat_model | StrOutputParser()
+
+
 def build_query_workflow(
     vector_search: VectorSearch | None = None,
     keyword_search: KeywordSearch | None = None,
@@ -194,7 +213,7 @@ def build_query_workflow(
     def retrieve_node(state: QueryState) -> QueryState:
         query = state["normalized_query"]
         if retrieve is not None:
-            retrieved = _call_with_supported_args(retrieve, query, state)
+            retrieved = retrieve(query)
             evidence = _coerce_retrieved_documents(retrieved, query)
             update: QueryState = {
                 "vector_candidates": (
@@ -252,11 +271,12 @@ def build_query_workflow(
                 _set_answer_trace_output(span, update, evidence_count=0, citation_count=0)
                 return update
             if generate is not None:
-                answer = _coerce_answer(_call_with_supported_args(generate, state["question"], evidence, build_strict_messages(state["question"], evidence), state))
+                answer = _coerce_answer(generate(state["question"], evidence))
             else:
                 resolved_model = model or _legacy_openai_chat_model()
-                response = resolved_model.invoke(build_strict_messages(state["question"], evidence))
-                answer = str(response.content)
+                answer = _strict_answer_chain(resolved_model).invoke(
+                    {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
+                )
             with trace_answer_step(
                 "answer.validate_citations",
                 state["question"],
@@ -330,7 +350,7 @@ class IngestionState(TypedDict, total=False):
 def build_ingestion_workflow(run_pipeline=None):
     def run_ingestion(state: IngestionState) -> IngestionState:
         if run_pipeline is not None:
-            summary = _call_with_supported_args(run_pipeline, state)
+            summary = _call_pipeline(run_pipeline, state)
         else:
             from imperial_rag.pipeline import ingest_corpus
 

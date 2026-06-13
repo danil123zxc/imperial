@@ -81,9 +81,11 @@ class ElasticsearchKeywordRetriever(BaseRetriever):
 
     def _documents_from_hits(self, hits: list[ElasticsearchRetrieverHit]) -> list[Document]:
         documents: list[Document] = []
-        for hit in hits:
+        for rank, hit in enumerate(hits):
             metadata = dict(hit.document.metadata or {})
+            metadata["_keyword_rank"] = rank
             metadata["_keyword_score"] = hit.score
+            metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
             documents.append(Document(page_content=hit.document.page_content, metadata=metadata))
         return documents
 
@@ -216,6 +218,7 @@ class ElasticsearchKeywordIndex:
         metadata = dict(hit.document.metadata or {})
         metadata["_keyword_rank"] = rank
         metadata["_keyword_score"] = hit.score
+        metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
         return KeywordHit(
             document=Document(page_content=hit.document.page_content, metadata=metadata),
             score=hit.score,
@@ -233,6 +236,11 @@ def _structured_search_fields(document: Document) -> dict[str, str]:
     if page_number is not None:
         fields["page_number_text"] = str(page_number)
     return fields
+
+
+def _retrieval_id(document: Document, *, hit_id: str | None = None) -> str:
+    metadata = document.metadata or {}
+    return str(metadata.get("citation_id") or metadata.get("chunk_id") or hit_id or document.page_content)
 
 
 def elasticsearch_health(settings: Settings, *, client: Any | None = None) -> bool:

@@ -213,6 +213,47 @@ def test_build_query_dependencies_skips_vector_search_on_metadata_mismatch(monke
     assert calls["settings"] is settings
 
 
+def test_build_query_dependencies_uses_qdrant_mmr_retriever(monkeypatch, tmp_path):
+    calls = {}
+    fake_chat_model = object()
+    fake_retriever = object()
+
+    class FakeQdrantStore:
+        def as_retriever(self, **kwargs):
+            calls["as_retriever"] = kwargs
+            return fake_retriever
+
+    class FakeElasticsearchKeywordIndex:
+        def __init__(self, settings):
+            calls["keyword_settings"] = settings
+
+    for name in (
+        "IMPERIAL_RAG_VECTOR_FETCH_K",
+        "IMPERIAL_RAG_VECTOR_K",
+        "IMPERIAL_RAG_MMR_LAMBDA_MULT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
+    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
+    monkeypatch.setattr("imperial_rag.runtime.vector_metadata_matches_config", lambda settings: True, raising=False)
+    monkeypatch.setattr(
+        "imperial_rag.runtime.make_qdrant_store",
+        lambda qdrant_url, collection_name: FakeQdrantStore(),
+        raising=False,
+    )
+
+    settings = Settings(workspace_root=tmp_path)
+    dependencies = build_query_dependencies(settings)
+
+    assert dependencies.vector_search is fake_retriever
+    assert calls["as_retriever"] == {
+        "search_type": "mmr",
+        "search_kwargs": {"k": 70, "fetch_k": 70, "lambda_mult": 0.4},
+    }
+    assert calls["keyword_settings"] is settings
+
+
 def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):
     calls = []
 

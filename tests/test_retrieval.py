@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from pydantic import Field
 
 import imperial_rag.retrieval as retrieval_module
 from imperial_rag.retrieval import CandidateMerger, FallbackRanker, RetrievalSettings, RrfCandidateFusion
@@ -48,6 +50,15 @@ class FakeKeywordSearchWithoutScores:
                 self.score = 0.0
 
         return [Hit(document) for document in self.docs[:limit]]
+
+
+class FakeBaseRetriever(BaseRetriever):
+    docs: list[Document]
+    calls: list[dict] = Field(default_factory=list)
+
+    def _get_relevant_documents(self, query, *, run_manager, **kwargs):
+        self.calls.append({"query": query, **kwargs})
+        return list(self.docs)
 
 
 def capture_retrieval_spans(monkeypatch):
@@ -200,6 +211,31 @@ def test_hybrid_retriever_uses_configured_candidate_counts():
     assert result.diagnostics["keyword_search_status"] == "ok"
     assert vector.calls == [{"query": "возврат брака", "k": 32, "fetch_k": 80, "lambda_mult": 0.4}]
     assert keyword.calls == [{"query": "возврат брака", "limit": 40}]
+
+
+def test_hybrid_retriever_invokes_langchain_retrievers_with_configured_limits():
+    vector_docs = [
+        Document(page_content=f"vector {index}", metadata={"citation_id": f"v{index}"})
+        for index in range(3)
+    ]
+    keyword_docs = [
+        Document(page_content=f"keyword {index}", metadata={"citation_id": f"k{index}", "_keyword_score": 4.0})
+        for index in range(4)
+    ]
+    vector = FakeBaseRetriever(docs=vector_docs)
+    keyword = FakeBaseRetriever(docs=keyword_docs)
+    settings = RetrievalSettings(vector_fetch_k=8, vector_k=2, keyword_limit=3, mmr_lambda_mult=0.25)
+
+    result = HybridRetriever(vector_search=vector, keyword_search=keyword, settings=settings).retrieve("возврат")
+
+    assert [doc.metadata["citation_id"] for doc in result.vector_docs] == ["v0", "v1", "v2"]
+    assert [doc.metadata["citation_id"] for doc in result.keyword_docs] == ["k0", "k1", "k2", "k3"]
+    assert vector.calls == [{"query": "возврат", "k": 2, "fetch_k": 8, "lambda_mult": 0.25}]
+    assert keyword.calls == [{"query": "возврат", "limit": 3}]
+    assert result.vector_docs[0].metadata["_vector_rank"] == 0
+    assert result.keyword_docs[0].metadata["_keyword_rank"] == 0
+    assert result.vector_docs[0].metadata["_retrieval_id"] == "v0"
+    assert result.keyword_docs[0].metadata["_retrieval_id"] == "k0"
 
 
 def test_hybrid_retriever_reports_keyword_scores_available_when_scores_are_present():
@@ -498,6 +534,22 @@ def test_rrf_candidate_fusion_prioritizes_overlap_documents():
     assert [doc.metadata["_fusion_rank"] for doc in fused] == [0, 1, 2]
 
 
+def test_rrf_candidate_fusion_deduplicates_by_retrieval_id_and_merges_metadata():
+    docs = [
+        Document(page_content="vector copy", metadata={"citation_id": "same", "_vector_rank": 0}),
+        Document(page_content="keyword copy", metadata={"citation_id": "same", "_keyword_rank": 0, "_keyword_score": 7.0}),
+        Document(page_content="keyword only", metadata={"citation_id": "keyword", "_keyword_rank": 1}),
+    ]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [doc.metadata["citation_id"] for doc in fused] == ["same", "keyword"]
+    assert fused[0].metadata["_retrieval_id"] == "same"
+    assert fused[0].metadata["_vector_rank"] == 0
+    assert fused[0].metadata["_keyword_rank"] == 0
+    assert fused[0].metadata["_keyword_score"] == 7.0
+
+
 def test_rrf_candidate_fusion_interleaves_equal_vector_and_keyword_ranks():
     docs = [
         Document(page_content=f"vector {index}", metadata={"citation_id": f"v{index}", "_vector_rank": index})
@@ -740,6 +792,48 @@ def test_reranker_uses_dashscope_provider_when_api_key_configured(monkeypatch):
     assert diagnostics["rerank_input"] == 2
     assert diagnostics["reranked_candidates"] == 2
     assert diagnostics["fallbacks"] == []
+
+
+def test_reranker_uses_contextual_compression_retriever(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    docs = [
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+        Document(page_content="Возврат оформляется актом.", metadata={"citation_id": "act", "_keyword_rank": 1}),
+    ]
+    diagnostics = {"fallbacks": []}
+    created = []
+
+    class FakeCompressor:
+        def compress_documents(self, documents, query):
+            return [documents[1]]
+
+    class FakeContextualCompressionRetriever:
+        def __init__(self, *, base_compressor, base_retriever):
+            self.base_compressor = base_compressor
+            self.base_retriever = base_retriever
+            created.append({"base_compressor": base_compressor, "base_retriever": base_retriever})
+
+        def invoke(self, query):
+            return self.base_compressor.compress_documents(self.base_retriever.invoke(query), query)
+
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n, settings: FakeCompressor(), raising=False)
+    monkeypatch.setattr(
+        retrieval_module,
+        "ContextualCompressionRetriever",
+        FakeContextualCompressionRetriever,
+        raising=False,
+    )
+
+    reranked = Reranker(settings=RetrievalSettings(rerank_input_limit=2, rerank_top_n=2)).rerank(
+        "возврат брака",
+        docs,
+        diagnostics,
+    )
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["act", "return"]
+    assert len(created) == 1
+    assert diagnostics["reranker"] == "dashscope:qwen3-rerank"
 
 
 def test_reranker_passes_explicit_dashscope_primary_model_to_provider(monkeypatch):

@@ -108,7 +108,9 @@ def test_keyword_retriever_is_langchain_retriever_and_preserves_scores() -> None
         "file_name": "Регламент возврата брака.docx",
     }
     assert [doc.metadata["citation_id"] for doc in invoked_docs] == ["return"]
+    assert invoked_docs[0].metadata["_keyword_rank"] == 0
     assert invoked_docs[0].metadata["_keyword_score"] == 4.25
+    assert invoked_docs[0].metadata["_retrieval_id"] == "return"
     assert client.search_calls == [
         {
             "index": "test_keyword_chunks",
@@ -179,7 +181,9 @@ def test_keyword_retriever_async_invoke_accepts_limit() -> None:
     invoked_docs = asyncio.run(invoke_retriever())
 
     assert [doc.metadata["citation_id"] for doc in invoked_docs] == ["return"]
+    assert invoked_docs[0].metadata["_keyword_rank"] == 0
     assert invoked_docs[0].metadata["_keyword_score"] == 4.25
+    assert invoked_docs[0].metadata["_retrieval_id"] == "return"
     assert client.search_calls == [
         {
             "index": "test_keyword_chunks",
