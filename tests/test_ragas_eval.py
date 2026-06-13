@@ -251,11 +251,17 @@ def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(module, "build_ragas_dataset", lambda rows: {"dataset": rows})
-    monkeypatch.setattr(module, "build_ragas_metrics", lambda names: [f"metric:{name}" for name in names])
-    monkeypatch.setattr(module, "build_evaluator_llm", lambda: "wrapped-llm")
+    monkeypatch.setattr(module, "build_evaluator_llm", lambda: "ragas-llm")
+
+    def fake_build_ragas_metrics(names, evaluator_llm):
+        captured["metric_names"] = names
+        captured["metric_llm"] = evaluator_llm
+        return [f"metric:{name}" for name in names]
+
+    monkeypatch.setattr(module, "build_ragas_metrics", fake_build_ragas_metrics)
 
     def fake_evaluate(**kwargs):
-        captured.update(kwargs)
+        captured["evaluate_kwargs"] = kwargs
         return {"scores": [{"context_recall": 1.0}]}
 
     rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"], "reference": "ref"}]
@@ -263,18 +269,61 @@ def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
 
     assert result == {"scores": [{"context_recall": 1.0}]}
     assert captured == {
-        "dataset": {"dataset": rows},
-        "metrics": ["metric:context_recall"],
-        "llm": "wrapped-llm",
+        "metric_names": ["context_recall"],
+        "metric_llm": "ragas-llm",
+        "evaluate_kwargs": {
+            "dataset": {"dataset": rows},
+            "metrics": ["metric:context_recall"],
+        },
     }
+
+
+def test_build_evaluator_llm_uses_modern_ragas_dashscope_client(monkeypatch):
+    module = _load_ragas_runner()
+    captured: dict[str, object] = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            captured["client"] = self
+
+    def fake_llm_factory(model, **kwargs):
+        captured["llm_factory_model"] = model
+        captured["llm_factory_kwargs"] = kwargs
+        return "modern-ragas-llm"
+
+    monkeypatch.setattr(module, "_import_async_openai", lambda: FakeAsyncOpenAI)
+    monkeypatch.setattr(module, "_import_llm_factory", lambda: fake_llm_factory)
+
+    evaluator_llm = module.build_evaluator_llm(
+        SimpleNamespace(
+            compat_base_url="https://dashscope.example/compatible-mode/v1",
+            chat_model="qwen-test",
+            require_api_key=lambda: "dashscope-key",
+        )
+    )
+
+    assert evaluator_llm == "modern-ragas-llm"
+    assert captured["client"].kwargs == {
+        "api_key": "dashscope-key",
+        "base_url": "https://dashscope.example/compatible-mode/v1",
+    }
+    assert captured["llm_factory_model"] == "qwen-test"
+    assert captured["llm_factory_kwargs"] == {"client": captured["client"], "provider": "openai"}
 
 
 def test_build_ragas_metrics_imports_installed_ragas_metrics():
     module = _load_ragas_runner()
 
-    metrics = module.build_ragas_metrics(["context_recall"])
+    from openai import AsyncOpenAI
+    from ragas.llms import llm_factory
 
-    assert [type(metric).__name__ for metric in metrics] == ["LLMContextRecall"]
+    client = AsyncOpenAI(api_key="test-key", base_url="https://dashscope.example/compatible-mode/v1")
+    evaluator_llm = llm_factory("qwen-test", client=client, provider="openai")
+    metrics = module.build_ragas_metrics(["context_recall", "factual_correctness"], evaluator_llm)
+
+    assert [type(metric).__name__ for metric in metrics] == ["ContextRecall", "FactualCorrectness"]
+    assert all(".collections." in type(metric).__module__ for metric in metrics)
 
 
 def test_result_records_support_scores_and_pandas_like_results():

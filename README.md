@@ -250,7 +250,7 @@ Run standalone Ragas quality checks over the same gold questions without creatin
 uv run python scripts/run_ragas_eval.py
 ```
 
-The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness` because the current gold rows do not yet include `reference_answer`. Metrics such as `context_recall` and `factual_correctness` are supported only for rows with `reference_answer` added to `evals/questions.jsonl`.
+The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness`; reference-based metrics such as `context_recall` and `factual_correctness` use the `reference_answer` values in `evals/questions.jsonl`.
 
 Write Ragas scores to JSONL:
 

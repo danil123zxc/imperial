@@ -89,11 +89,11 @@ def evaluate_ragas_rows(
         if not reference_metric_names:
             return faithfulness_records
 
-    dataset = build_ragas_dataset(rows)
-    metrics = build_ragas_metrics(reference_metric_names)
     evaluator_llm = build_evaluator_llm()
+    dataset = build_ragas_dataset(rows)
+    metrics = build_ragas_metrics(reference_metric_names, evaluator_llm)
     resolved_evaluate = evaluate_fn or _import_ragas_evaluate()
-    reference_result = resolved_evaluate(dataset=dataset, metrics=metrics, llm=evaluator_llm)
+    reference_result = resolved_evaluate(dataset=dataset, metrics=metrics)
     if faithfulness_records is not None:
         return _merge_records_by_position(faithfulness_records, result_records(reference_result))
     return reference_result
@@ -117,42 +117,38 @@ def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
     return Dataset.from_list(rows)
 
 
-def build_ragas_metrics(metric_names: list[str]) -> list[Any]:
+def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any]:
     unsupported_here = sorted(set(metric_names) & {"faithfulness"})
     if unsupported_here:
         raise SystemExit("Ragas Faithfulness is evaluated through imperial_rag.ragas_eval.")
 
     _install_ragas_langchain_community_compat()
     try:
-        from ragas.metrics._context_recall import LLMContextRecall
-        from ragas.metrics._factual_correctness import FactualCorrectness
+        from ragas.metrics.collections import ContextRecall, FactualCorrectness
     except ImportError as exc:
-        try:
-            from ragas.metrics import FactualCorrectness, LLMContextRecall
-        except ImportError:
-            raise SystemExit("Ragas metrics are not installed; run `uv sync --extra dev`.") from exc
+        raise SystemExit("Ragas collections metrics are not installed; run `uv sync --extra dev`.") from exc
 
-    factories: dict[str, Callable[[], Any]] = {
-        "context_recall": LLMContextRecall,
+    factories: dict[str, Callable[..., Any]] = {
+        "context_recall": ContextRecall,
         "factual_correctness": FactualCorrectness,
     }
-    return [factories[name]() for name in metric_names]
+    return [factories[name](llm=evaluator_llm) for name in metric_names]
 
 
-def build_evaluator_llm() -> Any:
-    _install_ragas_langchain_community_compat()
-    try:
-        from ragas.llms import LangchainLLMWrapper
-    except ImportError as exc:
-        raise SystemExit("Ragas LLM wrappers are not installed; run `uv sync --extra dev`.") from exc
+def build_evaluator_llm(provider_settings: Any | None = None) -> Any:
+    from imperial_rag.providers import MissingDashScopeKeyError, QwenProviderSettings
 
-    from imperial_rag.providers import MissingDashScopeKeyError, create_chat_model
+    settings = provider_settings or QwenProviderSettings.from_env()
 
     try:
-        model = create_chat_model()
+        api_key = settings.require_api_key()
     except MissingDashScopeKeyError as exc:
         raise SystemExit("DASHSCOPE_API_KEY is required to run Ragas evaluator metrics.") from exc
-    return LangchainLLMWrapper(model)
+
+    AsyncOpenAI = _import_async_openai()
+    llm_factory = _import_llm_factory()
+    client = AsyncOpenAI(api_key=api_key, base_url=settings.compat_base_url)
+    return llm_factory(settings.chat_model, client=client, provider="openai")
 
 
 def result_records(result: Any) -> list[dict[str, Any]]:
@@ -274,6 +270,23 @@ def _load_project_env(workspace_root: Path | None) -> None:
     from imperial_rag.env import load_project_env
 
     load_project_env(workspace_root)
+
+
+def _import_async_openai() -> Any:
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:
+        raise SystemExit("OpenAI client is not installed; run `uv sync --extra dev`.") from exc
+    return AsyncOpenAI
+
+
+def _import_llm_factory() -> Callable[..., Any]:
+    _install_ragas_langchain_community_compat()
+    try:
+        from ragas.llms import llm_factory
+    except ImportError as exc:
+        raise SystemExit("Ragas LLM factory is not installed; run `uv sync --extra dev`.") from exc
+    return llm_factory
 
 
 def _import_ragas_evaluate() -> Callable[..., Any]:
