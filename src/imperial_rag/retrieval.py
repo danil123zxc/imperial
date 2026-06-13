@@ -137,11 +137,19 @@ class HybridRetriever:
                 keyword_docs = []
             if not keyword_docs and keyword_status == "ok":
                 keyword_status = "empty"
+            if keyword_docs:
+                keyword_scores_available = all(
+                    "_keyword_score" in dict(document.metadata or {})
+                    for document in keyword_docs
+                )
+            else:
+                keyword_scores_available = False
             _set_documents_span_output(
                 span,
                 keyword_docs,
                 status=keyword_status,
                 fallbacks=fallbacks,
+                keyword_scores_available=keyword_scores_available,
             )
             span.set_retrieval_documents(keyword_docs)
 
@@ -153,6 +161,7 @@ class HybridRetriever:
                 "keyword_candidates": len(keyword_docs),
                 "vector_search_status": vector_status,
                 "keyword_search_status": keyword_status,
+                "keyword_scores_available": keyword_scores_available,
                 "fallbacks": fallbacks,
             },
         )

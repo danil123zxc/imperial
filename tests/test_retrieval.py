@@ -37,6 +37,19 @@ class FakeKeywordSearch:
         return [Hit(document) for document in self.docs[:limit]]
 
 
+class FakeKeywordSearchWithoutScores:
+    def __init__(self, docs):
+        self.docs = docs
+
+    def search_with_scores(self, query, limit):
+        class Hit:
+            def __init__(self, document):
+                self.document = document
+                self.score = 0.0
+
+        return [Hit(document) for document in self.docs[:limit]]
+
+
 def capture_retrieval_spans(monkeypatch):
     records = []
 
@@ -187,6 +200,42 @@ def test_hybrid_retriever_uses_configured_candidate_counts():
     assert result.diagnostics["keyword_search_status"] == "ok"
     assert vector.calls == [{"query": "возврат брака", "k": 32, "fetch_k": 80, "lambda_mult": 0.4}]
     assert keyword.calls == [{"query": "возврат брака", "limit": 40}]
+
+
+def test_hybrid_retriever_reports_keyword_scores_available_when_scores_are_present():
+    vector = FakeVectorSearch([])
+    keyword = FakeKeywordSearch(
+        [
+            Document(
+                page_content="Порядок возврата брака",
+                metadata={"citation_id": "return", "_keyword_rank": 0, "_keyword_score": 7.5},
+            )
+        ]
+    )
+
+    result = HybridRetriever(vector_search=vector, keyword_search=keyword, settings=RetrievalSettings()).retrieve(
+        "возврат брака"
+    )
+
+    assert result.diagnostics["keyword_scores_available"] is True
+
+
+def test_hybrid_retriever_reports_keyword_scores_unavailable_when_scores_are_absent():
+    vector = FakeVectorSearch([])
+    keyword = FakeKeywordSearchWithoutScores(
+        [
+            Document(
+                page_content="Порядок возврата брака",
+                metadata={"citation_id": "return", "_keyword_rank": 0},
+            )
+        ]
+    )
+
+    result = HybridRetriever(vector_search=vector, keyword_search=keyword, settings=RetrievalSettings()).retrieve(
+        "возврат брака"
+    )
+
+    assert result.diagnostics["keyword_scores_available"] is False
 
 
 def test_hybrid_retriever_degrades_when_vector_search_fails():
