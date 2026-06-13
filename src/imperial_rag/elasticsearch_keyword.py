@@ -84,6 +84,8 @@ class ElasticsearchKeywordIndex:
         query_tokens = content_keyword_query_tokens(query)
         if not query_tokens:
             return []
+        if not self._index_exists():
+            return []
 
         hits = self._search_tokens(query_tokens, resolved_limit)
         if not hits:
@@ -91,9 +93,12 @@ class ElasticsearchKeywordIndex:
         return [self._keyword_hit(hit, rank) for rank, hit in enumerate(hits[:resolved_limit])]
 
     def _create_index(self) -> None:
-        if self.client.indices.exists(index=self.index_name):
+        if self._index_exists():
             return
         self.client.indices.create(index=self.index_name, mappings=INDEX_MAPPINGS, settings=INDEX_SETTINGS)
+
+    def _index_exists(self) -> bool:
+        return bool(self.client.indices.exists(index=self.index_name))
 
     def _actions(self, documents: list[Document]) -> Iterable[dict[str, Any]]:
         from imperial_rag.indexing import stable_chunk_id

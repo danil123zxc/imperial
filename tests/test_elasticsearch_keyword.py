@@ -62,6 +62,10 @@ def make_index(tmp_path: Path, client: FakeClient) -> ElasticsearchKeywordIndex:
     return ElasticsearchKeywordIndex(FakeSettings(tmp_path), client=client, bulk=fake_bulk)
 
 
+def mark_index_exists(client: FakeClient) -> None:
+    client.existing_indices.add("test_keyword_chunks")
+
+
 def test_replace_all_recreates_index_and_bulk_indexes_documents(tmp_path: Path) -> None:
     client = FakeClient()
     client.existing_indices.add("test_keyword_chunks")
@@ -116,6 +120,7 @@ def test_replace_all_with_no_documents_still_clears_stale_index(tmp_path: Path) 
 
 def test_search_with_scores_uses_all_tokens_query_and_maps_hits(tmp_path: Path) -> None:
     client = FakeClient()
+    mark_index_exists(client)
     client.search_responses.append(
         {
             "hits": {
@@ -148,8 +153,17 @@ def test_search_with_scores_uses_all_tokens_query_and_maps_hits(tmp_path: Path) 
     assert hits[0].score == 3.5
 
 
+def test_search_with_scores_returns_empty_when_index_is_missing(tmp_path: Path) -> None:
+    client = FakeClient()
+    index = make_index(tmp_path, client)
+
+    assert index.search_with_scores("возврат брака", limit=5) == []
+    assert client.search_calls == []
+
+
 def test_search_uses_relaxed_queries_when_strict_search_misses(tmp_path: Path) -> None:
     client = FakeClient()
+    mark_index_exists(client)
     client.search_responses.extend(
         [
             {"hits": {"hits": []}},
@@ -179,6 +193,7 @@ def test_search_uses_relaxed_queries_when_strict_search_misses(tmp_path: Path) -
 
 def test_search_with_scores_preserves_elasticsearch_metadata_boost_order(tmp_path: Path) -> None:
     client = FakeClient()
+    mark_index_exists(client)
     client.search_responses.append(
         {
             "hits": {
@@ -216,6 +231,7 @@ def test_search_with_scores_preserves_elasticsearch_metadata_boost_order(tmp_pat
 
 def test_search_relaxed_queries_continue_until_limit_is_filled(tmp_path: Path) -> None:
     client = FakeClient()
+    mark_index_exists(client)
     client.search_responses.extend(
         [
             {"hits": {"hits": []}},
