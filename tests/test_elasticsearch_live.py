@@ -9,7 +9,11 @@ import pytest
 from langchain_core.documents import Document
 
 from imperial_rag.config import Settings
-from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex, elasticsearch_health
+from imperial_rag.elasticsearch_keyword import (
+    ElasticsearchKeywordIndex,
+    ElasticsearchKeywordRetriever,
+    elasticsearch_health,
+)
 
 
 @pytest.mark.skipif(
@@ -62,6 +66,7 @@ def test_live_elasticsearch_keyword_index_roundtrip() -> None:
         relaxed_results = index.search("Как оформить возврат брака из магазина?", k=5)
         sheet_results = index.search("график", k=5)
         page_results = index.search("2", k=5)
+        retriever_results = index.retriever.invoke("возврат брака", limit=5)
 
         assert [result.metadata["citation_id"] for result in strict_results[:1]] == ["store"]
         assert [result.metadata["citation_id"] for result in relaxed_results[:1]] == ["store"]
@@ -69,5 +74,7 @@ def test_live_elasticsearch_keyword_index_roundtrip() -> None:
         assert [result.metadata["citation_id"] for result in page_results[:1]] == ["sheet"]
         assert relaxed_results[0].metadata["_keyword_rank"] == 0
         assert isinstance(relaxed_results[0].metadata["_keyword_score"], float)
+        assert isinstance(index.retriever, ElasticsearchKeywordRetriever)
+        assert [result.metadata["citation_id"] for result in retriever_results[:1]] == ["store"]
     finally:
         index.client.indices.delete(index=settings.elasticsearch_index, ignore_unavailable=True)
