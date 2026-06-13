@@ -4,9 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
 
 from imperial_rag.config import Settings
-from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex, elasticsearch_health
+from imperial_rag.elasticsearch_keyword import (
+    ElasticsearchKeywordIndex,
+    ElasticsearchKeywordRetriever,
+    elasticsearch_health,
+)
 from imperial_rag.indexing import stable_chunk_id
 from imperial_rag.keyword import build_elasticsearch_token_query
 
@@ -64,6 +69,55 @@ def make_index(tmp_path: Path, client: FakeClient) -> ElasticsearchKeywordIndex:
 
 def mark_index_exists(client: FakeClient) -> None:
     client.existing_indices.add("test_keyword_chunks")
+
+
+def test_keyword_retriever_is_langchain_retriever_and_preserves_scores(tmp_path: Path) -> None:
+    client = FakeClient()
+    response = {
+        "hits": {
+            "hits": [
+                {
+                    "_id": "hit-1",
+                    "_score": 4.25,
+                    "_source": {
+                        "text": "Регламент возврата брака",
+                        "metadata": {
+                            "citation_id": "return",
+                            "file_name": "Регламент возврата брака.docx",
+                        },
+                    },
+                }
+            ]
+        }
+    }
+    client.search_responses.extend([response, response])
+    retriever = ElasticsearchKeywordRetriever(client=client, index_name="test_keyword_chunks")
+
+    scored_hits = retriever.search_tokens(["возврат", "брак"], limit=5)
+    invoked_docs = retriever.invoke("возврат брака", limit=5)
+
+    assert isinstance(retriever, BaseRetriever)
+    assert len(scored_hits) == 1
+    assert scored_hits[0].hit_id == "hit-1"
+    assert scored_hits[0].score == 4.25
+    assert scored_hits[0].document.page_content == "Регламент возврата брака"
+    assert scored_hits[0].document.metadata == {
+        "citation_id": "return",
+        "file_name": "Регламент возврата брака.docx",
+    }
+    assert [doc.metadata["citation_id"] for doc in invoked_docs] == ["return"]
+    assert client.search_calls == [
+        {
+            "index": "test_keyword_chunks",
+            "query": build_elasticsearch_token_query(["возврат", "брак"]),
+            "size": 5,
+        },
+        {
+            "index": "test_keyword_chunks",
+            "query": build_elasticsearch_token_query(["возврат", "брак"]),
+            "size": 5,
+        },
+    ]
 
 
 def test_replace_all_recreates_index_and_bulk_indexes_documents(tmp_path: Path) -> None:

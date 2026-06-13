@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
 
 from imperial_rag.config import Settings
 from imperial_rag.keyword import (
@@ -38,6 +40,50 @@ _STRUCTURED_METADATA_SEARCH_FIELDS = (
     "source_type",
     "sheet_name",
 )
+
+
+@dataclass(frozen=True)
+class ElasticsearchRetrieverHit:
+    document: Document
+    score: float
+    hit_id: str
+
+
+class ElasticsearchKeywordRetriever(BaseRetriever):
+    client: Any
+    index_name: str
+
+    def _get_relevant_documents(self, query: str, *, limit: int = 5, **_: Any) -> list[Document]:
+        return [hit.document for hit in self.search(query, limit=limit)]
+
+    def search(self, query: str, limit: int = 5) -> list[ElasticsearchRetrieverHit]:
+        tokens = content_keyword_query_tokens(query)
+        if not tokens:
+            return []
+        return self.search_tokens(tokens, limit=limit)
+
+    def search_tokens(self, tokens: list[str], limit: int) -> list[ElasticsearchRetrieverHit]:
+        response = self.client.search(
+            index=self.index_name,
+            query=build_elasticsearch_token_query(tokens),
+            size=limit,
+        )
+        hits = list(response.get("hits", {}).get("hits", []))
+        return [self._hit_from_elasticsearch(hit) for hit in hits]
+
+    def _hit_from_elasticsearch(self, hit: dict[str, Any]) -> ElasticsearchRetrieverHit:
+        source = dict(hit.get("_source") or {})
+        metadata = dict(source.get("metadata") or {})
+        document = Document(page_content=str(source.get("text", "")), metadata=metadata)
+        score = float(hit.get("_score") or 0.0)
+        hit_id = str(
+            hit.get("_id")
+            or source.get("chunk_id")
+            or metadata.get("chunk_id")
+            or metadata.get("citation_id")
+            or document.page_content
+        )
+        return ElasticsearchRetrieverHit(document=document, score=score, hit_id=hit_id)
 
 
 class ElasticsearchKeywordIndex:
