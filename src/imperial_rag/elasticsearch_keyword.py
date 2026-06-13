@@ -66,7 +66,7 @@ class ElasticsearchKeywordRetriever(BaseRetriever):
         limit: int = 5,
         **_: Any,
     ) -> list[Document]:
-        return [hit.document for hit in self.search(query, limit=limit)]
+        return self._documents_from_hits(self.search(query, limit=limit))
 
     async def _aget_relevant_documents(
         self,
@@ -77,7 +77,15 @@ class ElasticsearchKeywordRetriever(BaseRetriever):
         **_: Any,
     ) -> list[Document]:
         hits = await asyncio.to_thread(self.search, query, limit=limit)
-        return [hit.document for hit in hits]
+        return self._documents_from_hits(hits)
+
+    def _documents_from_hits(self, hits: list[ElasticsearchRetrieverHit]) -> list[Document]:
+        documents: list[Document] = []
+        for hit in hits:
+            metadata = dict(hit.document.metadata or {})
+            metadata["_keyword_score"] = hit.score
+            documents.append(Document(page_content=hit.document.page_content, metadata=metadata))
+        return documents
 
     def search(self, query: str, limit: int = 5) -> list[ElasticsearchRetrieverHit]:
         tokens = content_keyword_query_tokens(query)

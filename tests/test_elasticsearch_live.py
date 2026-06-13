@@ -76,5 +76,6 @@ def test_live_elasticsearch_keyword_index_roundtrip() -> None:
         assert isinstance(relaxed_results[0].metadata["_keyword_score"], float)
         assert isinstance(index.retriever, ElasticsearchKeywordRetriever)
         assert [result.metadata["citation_id"] for result in retriever_results[:1]] == ["store"]
+        assert isinstance(retriever_results[0].metadata["_keyword_score"], float)
     finally:
         index.client.indices.delete(index=settings.elasticsearch_index, ignore_unavailable=True)
