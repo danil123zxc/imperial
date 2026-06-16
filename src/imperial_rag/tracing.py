@@ -34,8 +34,12 @@ _DOCUMENT_SCORE = DocumentAttributes.DOCUMENT_SCORE
 _RETRIEVAL_PREVIEW_LIMIT = 3
 _TRACE_DOCUMENT_LIMIT = 10
 _TRACE_DOCUMENT_CONTENT_CHARS = 800
+_TRACE_SCHEMA_VERSION_VALUE = "rag-v2"
 _TEXT_MIME_TYPE = "text/plain"
 _JSON_MIME_TYPE = "application/json"
+_IMPERIAL_PHASE = "imperial.phase"
+_IMPERIAL_STEP = "imperial.step"
+_IMPERIAL_TRACE_SCHEMA_VERSION = "imperial.trace_schema_version"
 _TRACE_METADATA_ALLOWLIST = frozenset(
     {
         "citation_id",
@@ -85,8 +89,23 @@ class OpenInferenceTraceSpan:
     def set_reranker_output_documents(self, documents: Sequence[Any]) -> None:
         self._set_documents(_RERANKER_OUTPUT_DOCUMENTS, documents)
 
-    def _set_documents(self, key_prefix: str, documents: Sequence[Any]) -> None:
-        for key, value in openinference_document_attributes(key_prefix, documents).items():
+    def set_final_evidence_documents(self, documents: Sequence[Any]) -> None:
+        content_chars = 0 if _trace_full_final_evidence() else None
+        self._set_documents(_RETRIEVAL_DOCUMENTS, documents, content_chars=content_chars)
+
+    def _set_documents(
+        self,
+        key_prefix: str,
+        documents: Sequence[Any],
+        *,
+        content_chars: int | None = None,
+    ) -> None:
+        document_attributes = openinference_document_attributes(
+            key_prefix,
+            documents,
+            content_chars=content_chars,
+        )
+        for key, value in document_attributes.items():
             self._span.set_attribute(key, value)
 
 
@@ -186,6 +205,20 @@ def trace_retrieval_step(
         yield span
 
 
+def imperial_trace_attributes(
+    phase: str,
+    step: str,
+    attributes: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    trace_attributes: dict[str, Any] = {
+        _IMPERIAL_PHASE: phase,
+        _IMPERIAL_STEP: step,
+        _IMPERIAL_TRACE_SCHEMA_VERSION: _TRACE_SCHEMA_VERSION_VALUE,
+    }
+    trace_attributes.update(dict(attributes or {}))
+    return trace_attributes
+
+
 def retrieval_documents_preview(
     documents: Sequence[Any],
     *,
@@ -209,12 +242,26 @@ def retrieval_documents_preview(
     return previews
 
 
-def openinference_document_attributes(key_prefix: str, documents: Sequence[Any]) -> dict[str, Any]:
+def openinference_document_attributes(
+    key_prefix: str,
+    documents: Sequence[Any],
+    *,
+    document_limit: int | None = None,
+    content_chars: int | None = None,
+) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
-    document_limit = _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", _TRACE_DOCUMENT_LIMIT, minimum=0)
-    content_chars = _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", _TRACE_DOCUMENT_CONTENT_CHARS)
-    for index, document in enumerate(list(documents)[:document_limit]):
-        content = _compact_text(str(getattr(document, "page_content", "")), content_chars)
+    resolved_document_limit = (
+        _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", _TRACE_DOCUMENT_LIMIT, minimum=0)
+        if document_limit is None
+        else max(document_limit, 0)
+    )
+    resolved_content_chars = (
+        _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", _TRACE_DOCUMENT_CONTENT_CHARS)
+        if content_chars is None
+        else content_chars
+    )
+    for index, document in enumerate(list(documents)[:resolved_document_limit]):
+        content = _compact_text(str(getattr(document, "page_content", "")), resolved_content_chars)
         metadata = dict(getattr(document, "metadata", {}) or {})
         document_id = _document_id(metadata)
         score = _document_score(metadata)
@@ -371,6 +418,10 @@ def _hide_outputs() -> bool:
 
 def _hide_input_text() -> bool:
     return _hide_inputs() or _env_flag("OPENINFERENCE_HIDE_INPUT_TEXT")
+
+
+def _trace_full_final_evidence() -> bool:
+    return _env_flag("IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE")
 
 
 def _attribute_hidden(key: str) -> bool:

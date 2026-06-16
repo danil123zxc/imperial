@@ -116,6 +116,9 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
             "name": "answer.generate",
             "question": "Как оформить возврат брака?",
             "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "generate",
+                "imperial.trace_schema_version": "rag-v2",
                 "answer.evidence_count": 1,
                 "answer.citation_count": 1,
                 "answer.citation_ids": ["return-policy"],
@@ -123,9 +126,49 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
             },
         },
         {
+            "name": "answer.prepare_context",
+            "question": "Как оформить возврат брака?",
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "prepare_context",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+                "answer.citation_ids": ["return-policy"],
+                "answer.context_chars": 32,
+            },
+        },
+        {
+            "output": {
+                "evidence_count": 1,
+                "citation_count": 1,
+                "citation_ids": ["return-policy"],
+                "source_count": 1,
+                "context_chars": 32,
+            }
+        },
+        {
+            "name": "answer.call_model",
+            "question": "Как оформить возврат брака?",
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "call_model",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+            },
+        },
+        {"output": {"answer_chars": 37, "evidence_count": 1, "citation_count": 1}},
+        {
             "name": "answer.validate_citations",
             "question": "Как оформить возврат брака?",
-            "attributes": {"answer.evidence_count": 1, "answer.citation_count": 1},
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "validate_citations",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+            },
         },
         {
             "output": {
@@ -173,11 +216,36 @@ def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
             "name": "answer.generate",
             "question": "Что не найдено?",
             "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "generate",
+                "imperial.trace_schema_version": "rag-v2",
                 "answer.evidence_count": 0,
                 "answer.citation_count": 0,
                 "answer.citation_ids": [],
                 "answer.context_chars": 0,
             },
+        },
+        {
+            "name": "answer.prepare_context",
+            "question": "Что не найдено?",
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "prepare_context",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 0,
+                "answer.citation_count": 0,
+                "answer.citation_ids": [],
+                "answer.context_chars": 0,
+            },
+        },
+        {
+            "output": {
+                "evidence_count": 0,
+                "citation_count": 0,
+                "citation_ids": [],
+                "source_count": 0,
+                "context_chars": 0,
+            }
         },
         {
             "output": {
@@ -404,6 +472,9 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
             "name": "answer.generate",
             "question": "What is known?",
             "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "generate",
+                "imperial.trace_schema_version": "rag-v2",
                 "answer.evidence_count": 1,
                 "answer.citation_count": 1,
                 "answer.citation_ids": ["known"],
@@ -411,9 +482,49 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
             },
         },
         {
+            "name": "answer.prepare_context",
+            "question": "What is known?",
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "prepare_context",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+                "answer.citation_ids": ["known"],
+                "answer.context_chars": 11,
+            },
+        },
+        {
+            "output": {
+                "evidence_count": 1,
+                "citation_count": 1,
+                "citation_ids": ["known"],
+                "source_count": 1,
+                "context_chars": 11,
+            }
+        },
+        {
+            "name": "answer.call_model",
+            "question": "What is known?",
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "call_model",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+            },
+        },
+        {"output": {"answer_chars": 27, "evidence_count": 1, "citation_count": 1}},
+        {
             "name": "answer.validate_citations",
             "question": "What is known?",
-            "attributes": {"answer.evidence_count": 1, "answer.citation_count": 1},
+            "attributes": {
+                "imperial.phase": "answer",
+                "imperial.step": "validate_citations",
+                "imperial.trace_schema_version": "rag-v2",
+                "answer.evidence_count": 1,
+                "answer.citation_count": 1,
+            },
         },
         {
             "output": {

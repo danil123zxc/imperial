@@ -9,7 +9,7 @@ from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
 from imperial_rag.indexing import make_qdrant_store
 from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import RetrievalService, RetrievalSettings
-from imperial_rag.tracing import trace_agent_step
+from imperial_rag.tracing import imperial_trace_attributes, trace_agent_step
 from imperial_rag.workflows import build_query_workflow
 
 
@@ -91,7 +91,11 @@ class Runtime:
         with trace_agent_step(
             "imperial_rag.query",
             question,
-            attributes={"runtime.workspace_root": str(self.settings.workspace_root)},
+            attributes=imperial_trace_attributes(
+                "query",
+                "run",
+                {"runtime.workspace_root": str(self.settings.workspace_root)},
+            ),
         ) as span:
             result = self.query_workflow().invoke({"question": question})
             span.set_output(_query_trace_output(result))

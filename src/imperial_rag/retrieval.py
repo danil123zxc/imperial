@@ -9,7 +9,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_classic.retrievers import EnsembleRetriever
 
 from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
-from imperial_rag.tracing import retrieval_documents_preview, trace_retrieval_step
+from imperial_rag.tracing import imperial_trace_attributes, retrieval_documents_preview, trace_retrieval_step
 
 
 def _env_int(name: str, default: int) -> int:
@@ -100,11 +100,15 @@ class HybridRetriever:
         with trace_retrieval_step(
             "retrieve.vector_search",
             query,
-            attributes={
-                "retrieval.vector_k": self.settings.vector_k,
-                "retrieval.vector_fetch_k": self.settings.vector_fetch_k,
-                "retrieval.mmr_lambda_mult": self.settings.mmr_lambda_mult,
-            },
+            attributes=imperial_trace_attributes(
+                "retrieval",
+                "vector_search",
+                {
+                    "retrieval.vector_k": self.settings.vector_k,
+                    "retrieval.vector_fetch_k": self.settings.vector_fetch_k,
+                    "retrieval.mmr_lambda_mult": self.settings.mmr_lambda_mult,
+                },
+            ),
         ) as span:
             if getattr(self.vector_search, "provider_mismatch", False):
                 vector_status = "provider_mismatch"
@@ -124,12 +128,15 @@ class HybridRetriever:
                 status=vector_status,
                 fallbacks=fallbacks,
             )
-            span.set_retrieval_documents(vector_docs)
 
         with trace_retrieval_step(
             "retrieve.keyword_search",
             query,
-            attributes={"retrieval.keyword_limit": self.settings.keyword_limit},
+            attributes=imperial_trace_attributes(
+                "retrieval",
+                "keyword_search",
+                {"retrieval.keyword_limit": self.settings.keyword_limit},
+            ),
         ) as span:
             try:
                 keyword_docs = self._keyword_docs(query)
@@ -153,7 +160,6 @@ class HybridRetriever:
                 fallbacks=fallbacks,
                 keyword_scores_available=keyword_scores_available,
             )
-            span.set_retrieval_documents(keyword_docs)
 
         return RetrievalCandidateResult(
             vector_docs=vector_docs,
@@ -539,84 +545,121 @@ class RetrievalService:
         self.reranker = Reranker(settings=self.settings)
 
     def retrieve(self, query: str) -> RetrievalResult:
-        candidates = self.hybrid.retrieve(query)
-        diagnostics = dict(candidates.diagnostics)
         with trace_retrieval_step(
-            "retrieve.merge_candidates",
+            "retrieval",
             query,
-            kind="CHAIN",
-            attributes={
-                "retrieval.vector_candidates": len(candidates.vector_docs),
-                "retrieval.keyword_candidates": len(candidates.keyword_docs),
-            },
-        ) as span:
-            merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
-            diagnostics["merged_candidates"] = len(merged)
-            _set_documents_span_output(
-                span,
-                merged,
-                vector_candidates=len(candidates.vector_docs),
-                keyword_candidates=len(candidates.keyword_docs),
-            )
+            attributes=imperial_trace_attributes(
+                "retrieval",
+                "run",
+                {
+                    "retrieval.vector_k": self.settings.vector_k,
+                    "retrieval.keyword_limit": self.settings.keyword_limit,
+                    "retrieval.rerank_top_n": self.settings.rerank_top_n,
+                    "retrieval.primary_reranker": self.settings.primary_reranker,
+                },
+            ),
+        ) as parent_span:
+            candidates = self.hybrid.retrieve(query)
+            diagnostics = dict(candidates.diagnostics)
+            with trace_retrieval_step(
+                "retrieve.merge_candidates",
+                query,
+                kind="CHAIN",
+                attributes=imperial_trace_attributes(
+                    "retrieval",
+                    "merge_candidates",
+                    {
+                        "retrieval.vector_candidates": len(candidates.vector_docs),
+                        "retrieval.keyword_candidates": len(candidates.keyword_docs),
+                    },
+                ),
+            ) as span:
+                merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
+                diagnostics["merged_candidates"] = len(merged)
+                _set_documents_span_output(
+                    span,
+                    merged,
+                    vector_candidates=len(candidates.vector_docs),
+                    keyword_candidates=len(candidates.keyword_docs),
+                )
 
-        with trace_retrieval_step(
-            "retrieve.fuse_candidates",
-            query,
-            kind="CHAIN",
-            attributes={
-                "retrieval.fusion": "rrf",
-                "retrieval.fusion_rrf_k": self.settings.rrf_k,
-                "retrieval.input_count": len(merged),
-                "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
-            },
-        ) as span:
-            fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
-            rerank_input = fused[: self.settings.rerank_input_limit]
-            diagnostics["fusion"] = "rrf"
-            diagnostics["fusion_rrf_k"] = self.settings.rrf_k
-            diagnostics["fused_candidates"] = len(fused)
-            diagnostics["rerank_input_candidates"] = len(rerank_input)
-            _set_documents_span_output(
-                span,
-                fused,
-                fusion="rrf",
-                fusion_rrf_k=self.settings.rrf_k,
-                rerank_input_candidates=len(rerank_input),
-            )
+            with trace_retrieval_step(
+                "retrieve.fuse_candidates",
+                query,
+                kind="CHAIN",
+                attributes=imperial_trace_attributes(
+                    "retrieval",
+                    "fuse_candidates",
+                    {
+                        "retrieval.fusion": "rrf",
+                        "retrieval.fusion_rrf_k": self.settings.rrf_k,
+                        "retrieval.input_count": len(merged),
+                        "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
+                    },
+                ),
+            ) as span:
+                fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
+                rerank_input = fused[: self.settings.rerank_input_limit]
+                diagnostics["fusion"] = "rrf"
+                diagnostics["fusion_rrf_k"] = self.settings.rrf_k
+                diagnostics["fused_candidates"] = len(fused)
+                diagnostics["rerank_input_candidates"] = len(rerank_input)
+                _set_documents_span_output(
+                    span,
+                    fused,
+                    fusion="rrf",
+                    fusion_rrf_k=self.settings.rrf_k,
+                    rerank_input_candidates=len(rerank_input),
+                )
 
-        with trace_retrieval_step(
-            "retrieve.rerank",
-            query,
-            kind="RERANKER",
-            attributes={
-                "reranker.query": query,
-                "reranker.top_k": self.settings.rerank_top_n,
-                "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
-                "retrieval.rerank_top_n": self.settings.rerank_top_n,
-                "retrieval.primary_reranker": self.settings.primary_reranker,
-            },
-        ) as span:
-            span.set_reranker_input_documents(rerank_input)
-            reranked = self.reranker.rerank(query, rerank_input, diagnostics)
-            span.set_attribute("reranker.model_name", diagnostics.get("reranker"))
-            _set_documents_span_output(
-                span,
-                reranked,
-                reranker=diagnostics.get("reranker"),
-                rerank_input=diagnostics.get("rerank_input"),
-                reranked_candidates=diagnostics.get("reranked_candidates"),
-                fallbacks=diagnostics.get("fallbacks", []),
-            )
-            span.set_reranker_output_documents(reranked)
+            with trace_retrieval_step(
+                "retrieve.rerank",
+                query,
+                kind="RERANKER",
+                attributes=imperial_trace_attributes(
+                    "retrieval",
+                    "rerank",
+                    {
+                        "reranker.query": query,
+                        "reranker.top_k": self.settings.rerank_top_n,
+                        "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
+                        "retrieval.rerank_top_n": self.settings.rerank_top_n,
+                        "retrieval.primary_reranker": self.settings.primary_reranker,
+                    },
+                ),
+            ) as span:
+                reranked = self.reranker.rerank(query, rerank_input, diagnostics)
+                span.set_attribute("reranker.model_name", diagnostics.get("reranker"))
+                _set_documents_span_output(
+                    span,
+                    reranked,
+                    reranker=diagnostics.get("reranker"),
+                    rerank_input=diagnostics.get("rerank_input"),
+                    reranked_candidates=diagnostics.get("reranked_candidates"),
+                    fallbacks=diagnostics.get("fallbacks", []),
+                )
 
-        evidence = reranked
-        diagnostics["final_evidence"] = len(evidence)
-        return RetrievalResult(
-            evidence=evidence,
-            vector_docs=candidates.vector_docs,
-            keyword_docs=candidates.keyword_docs,
-            diagnostics=diagnostics,
-        )
+            evidence = reranked
+            diagnostics["final_evidence"] = len(evidence)
+            with trace_retrieval_step(
+                "retrieval.select_evidence",
+                query,
+                attributes=imperial_trace_attributes(
+                    "retrieval",
+                    "select_evidence",
+                    {"retrieval.final_evidence": len(evidence)},
+                ),
+            ) as span:
+                span.set_final_evidence_documents(evidence)
+                span.set_output(_final_evidence_span_output(evidence))
+
+            parent_span.set_output(_retrieval_summary_output(diagnostics))
+            return RetrievalResult(
+                evidence=evidence,
+                vector_docs=candidates.vector_docs,
+                keyword_docs=candidates.keyword_docs,
+                diagnostics=diagnostics,
+            )
 
 
 def _set_documents_span_output(span: Any, documents: list[Document], **metadata: Any) -> None:
@@ -628,6 +671,49 @@ def _set_documents_span_output(span: Any, documents: list[Document], **metadata:
     if previews:
         output["top_documents"] = previews
     span.set_output(output)
+
+
+def _final_evidence_span_output(documents: list[Document]) -> dict[str, Any]:
+    citation_ids: list[str] = []
+    files: list[str] = []
+    seen_files: set[str] = set()
+    context_chars = 0
+    for document in documents:
+        metadata = dict(document.metadata or {})
+        context_chars += len(str(document.page_content))
+        citation_id = metadata.get("citation_id")
+        if citation_id is not None:
+            citation_ids.append(str(citation_id))
+        file_name = metadata.get("file_name")
+        if file_name is not None and str(file_name) not in seen_files:
+            files.append(str(file_name))
+            seen_files.add(str(file_name))
+    return {
+        "count": len(documents),
+        "citation_ids": citation_ids,
+        "files": files,
+        "context_chars": context_chars,
+    }
+
+
+def _retrieval_summary_output(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    fallbacks = list(diagnostics.get("fallbacks") or [])
+    keys = (
+        "vector_candidates",
+        "keyword_candidates",
+        "merged_candidates",
+        "fused_candidates",
+        "rerank_input_candidates",
+        "reranked_candidates",
+        "final_evidence",
+        "vector_search_status",
+        "keyword_search_status",
+        "reranker",
+    )
+    output = {key: diagnostics[key] for key in keys if key in diagnostics}
+    output["fallbacks"] = fallbacks
+    output["degraded"] = bool(fallbacks)
+    return output
 
 
 def _trace_output_value(value: Any) -> Any:

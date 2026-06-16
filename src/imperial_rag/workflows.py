@@ -16,7 +16,7 @@ from imperial_rag.answering import (
     validate_citations,
 )
 from imperial_rag.retrieval import CandidateMerger
-from imperial_rag.tracing import trace_answer_step
+from imperial_rag.tracing import imperial_trace_attributes, trace_answer_step
 
 
 class VectorSearch(Protocol):
@@ -224,8 +224,22 @@ def build_query_workflow(
         with trace_answer_step(
             "answer.generate",
             state["question"],
-            attributes=_answer_trace_attributes(evidence, citations),
+            attributes=imperial_trace_attributes(
+                "answer",
+                "generate",
+                _answer_trace_attributes(evidence, citations),
+            ),
         ) as span:
+            with trace_answer_step(
+                "answer.prepare_context",
+                state["question"],
+                attributes=imperial_trace_attributes(
+                    "answer",
+                    "prepare_context",
+                    _answer_trace_attributes(evidence, citations),
+                ),
+            ) as context_span:
+                context_span.set_output(_answer_context_trace_output(evidence, citations, sources))
             if not evidence:
                 update: QueryState = {
                     "answer": REFUSAL_TEXT,
@@ -236,17 +250,37 @@ def build_query_workflow(
                 }
                 _set_answer_trace_output(span, update, evidence_count=0, citation_count=0)
                 return update
-            if generate is not None:
-                answer = _coerce_answer(generate(state["question"], evidence))
-            else:
-                resolved_model = model or _legacy_openai_chat_model()
-                answer = build_strict_answer_chain(resolved_model).invoke(
-                    {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
+            with trace_answer_step(
+                "answer.call_model",
+                state["question"],
+                attributes=imperial_trace_attributes(
+                    "answer",
+                    "call_model",
+                    {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+                ),
+            ) as model_span:
+                if generate is not None:
+                    answer = _coerce_answer(generate(state["question"], evidence))
+                else:
+                    resolved_model = model or _legacy_openai_chat_model()
+                    answer = build_strict_answer_chain(resolved_model).invoke(
+                        {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
+                    )
+                model_span.set_output(
+                    {
+                        "answer_chars": len(str(answer)),
+                        "evidence_count": len(evidence),
+                        "citation_count": len(citations),
+                    }
                 )
             with trace_answer_step(
                 "answer.validate_citations",
                 state["question"],
-                attributes={"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+                attributes=imperial_trace_attributes(
+                    "answer",
+                    "validate_citations",
+                    {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+                ),
             ) as validation_span:
                 valid, invalid = validate_citations(answer, evidence)
                 validation_span.set_output(
@@ -288,6 +322,24 @@ def _answer_trace_attributes(evidence: Sequence[Document], citations: Sequence[s
             if document.metadata.get("citation_id") is not None
         ],
         "answer.context_chars": sum(len(str(document.page_content)) for document in evidence),
+    }
+
+
+def _answer_context_trace_output(
+    evidence: Sequence[Document],
+    citations: Sequence[str],
+    sources: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "evidence_count": len(evidence),
+        "citation_count": len(citations),
+        "citation_ids": [
+            str(document.metadata.get("citation_id"))
+            for document in evidence
+            if document.metadata.get("citation_id") is not None
+        ],
+        "source_count": len(sources),
+        "context_chars": sum(len(str(document.page_content)) for document in evidence),
     }
 
 

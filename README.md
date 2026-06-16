@@ -198,6 +198,13 @@ uv run python scripts/query.py "question text" --trace-phoenix
 uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --trace-phoenix
 ```
 
+Query traces use a domain-first hierarchy: `imperial_rag.query` contains retrieval and answer phases,
+retrieval has child spans for vector search, keyword search, fusion, reranking, and final evidence selection,
+and answer generation has child spans for context preparation, model call, and citation validation. For rich local
+debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full final evidence documents to the
+Phoenix-native `retrieval.select_evidence` document panel. Candidate spans remain compact. `OPENINFERENCE_HIDE_*`
+redaction settings still override document text and outputs.
+
 ### Local Logs
 
 The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr, so they are captured wherever the process is launched. The current detached Streamlit run redirects stderr into `/tmp/imperial-streamlit-8501.log`.
@@ -337,6 +344,7 @@ Common settings:
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_SESSION_ID`: optional CLI Phoenix `session.id`; omitted values generate a per-run `cli_<uuid>`.
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
+- `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.select_evidence` when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.
 - `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.
 - `IMPERIAL_RAG_LOG_LEVEL`: local structured log level, defaulting to `INFO`.

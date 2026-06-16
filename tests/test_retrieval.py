@@ -91,6 +91,9 @@ def capture_retrieval_spans(monkeypatch):
             def set_reranker_output_documents(self, documents):
                 self._set_documents("reranker.output_documents", documents)
 
+            def set_final_evidence_documents(self, documents):
+                self._set_documents("retrieval.documents", documents)
+
             def _set_documents(self, prefix, documents):
                 for index, document in enumerate(documents):
                     metadata = dict(document.metadata or {})
@@ -366,36 +369,51 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     result = service.retrieve("возврат брака")
 
     assert [record["name"] for record in records] == [
+        "retrieval",
         "retrieve.vector_search",
         "retrieve.keyword_search",
         "retrieve.merge_candidates",
         "retrieve.fuse_candidates",
         "retrieve.rerank",
+        "retrieval.select_evidence",
     ]
-    assert [record["query"] for record in records] == ["возврат брака"] * 5
-    assert records[0]["output"]["status"] == "ok"
-    assert records[0]["output"]["count"] == 1
-    assert records[0]["output"]["top_documents"][0]["citation_id"] == "v"
-    assert records[0]["set_attributes"]["retrieval.documents.0.document.id"] == "v"
-    assert records[0]["set_attributes"]["retrieval.documents.0.document.content"] == "vector return"
+    assert [record["query"] for record in records] == ["возврат брака"] * 7
+    assert records[0]["kind"] == "RETRIEVER"
+    assert records[0]["attributes"]["imperial.phase"] == "retrieval"
+    assert records[0]["attributes"]["imperial.step"] == "run"
+    assert records[0]["attributes"]["imperial.trace_schema_version"] == "rag-v2"
     assert records[1]["output"]["status"] == "ok"
     assert records[1]["output"]["count"] == 1
-    assert records[1]["set_attributes"]["retrieval.documents.0.document.id"] == "k"
-    assert records[1]["set_attributes"]["retrieval.documents.0.document.content"] == "Порядок возврата брака"
-    assert records[2]["kind"] == "CHAIN"
-    assert records[2]["output"]["count"] == 2
+    assert records[1]["output"]["top_documents"][0]["citation_id"] == "v"
+    assert records[1]["set_attributes"] == {}
+    assert records[2]["output"]["status"] == "ok"
+    assert records[2]["output"]["count"] == 1
+    assert records[2]["set_attributes"] == {}
     assert records[3]["kind"] == "CHAIN"
-    assert records[3]["output"]["fusion"] == "rrf"
     assert records[3]["output"]["count"] == 2
-    assert records[4]["kind"] == "RERANKER"
-    assert records[4]["attributes"]["reranker.query"] == "возврат брака"
-    assert records[4]["attributes"]["reranker.top_k"] == 1
-    assert records[4]["set_attributes"]["reranker.model_name"] == "fallback:deterministic"
-    assert records[4]["output"]["reranker"] == "fallback:deterministic"
-    assert "reranker_missing_dashscope_api_key" in records[4]["output"]["fallbacks"]
-    assert records[4]["set_attributes"]["reranker.input_documents.0.document.id"] == "v"
-    assert records[4]["set_attributes"]["reranker.input_documents.1.document.id"] == "k"
-    assert records[4]["set_attributes"]["reranker.output_documents.0.document.id"] == "k"
+    assert records[4]["kind"] == "CHAIN"
+    assert records[4]["output"]["fusion"] == "rrf"
+    assert records[4]["output"]["count"] == 2
+    assert records[5]["kind"] == "RERANKER"
+    assert records[5]["attributes"]["imperial.phase"] == "retrieval"
+    assert records[5]["attributes"]["imperial.step"] == "rerank"
+    assert records[5]["attributes"]["reranker.query"] == "возврат брака"
+    assert records[5]["attributes"]["reranker.top_k"] == 1
+    assert records[5]["set_attributes"]["reranker.model_name"] == "fallback:deterministic"
+    assert records[5]["output"]["reranker"] == "fallback:deterministic"
+    assert "reranker_missing_dashscope_api_key" in records[5]["output"]["fallbacks"]
+    assert "reranker.input_documents.0.document.id" not in records[5]["set_attributes"]
+    assert "reranker.output_documents.0.document.id" not in records[5]["set_attributes"]
+    assert records[6]["name"] == "retrieval.select_evidence"
+    assert records[6]["kind"] == "RETRIEVER"
+    assert records[6]["attributes"]["imperial.step"] == "select_evidence"
+    assert records[6]["set_attributes"]["retrieval.documents.0.document.id"] == "k"
+    assert records[6]["set_attributes"]["retrieval.documents.0.document.content"] == "Порядок возврата брака"
+    assert records[6]["output"]["count"] == 1
+    assert records[6]["output"]["citation_ids"] == ["k"]
+    assert records[6]["output"]["context_chars"] == 22
+    assert records[0]["output"]["final_evidence"] == 1
+    assert records[0]["output"]["reranker"] == "fallback:deterministic"
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
     assert result.diagnostics["final_evidence"] == 1
 
@@ -422,17 +440,22 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
     result = service.retrieve("возврат")
 
     assert [record["name"] for record in records] == [
+        "retrieval",
         "retrieve.vector_search",
         "retrieve.keyword_search",
         "retrieve.merge_candidates",
         "retrieve.fuse_candidates",
         "retrieve.rerank",
+        "retrieval.select_evidence",
     ]
-    assert records[0]["output"]["status"] == "unavailable"
-    assert records[0]["output"]["fallbacks"] == ["vector_search_failed"]
     assert records[1]["output"]["status"] == "unavailable"
-    assert records[1]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
-    assert records[4]["output"]["reranker"] == "none"
+    assert records[1]["output"]["fallbacks"] == ["vector_search_failed"]
+    assert records[2]["output"]["status"] == "unavailable"
+    assert records[2]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
+    assert records[5]["output"]["reranker"] == "none"
+    assert records[6]["output"]["count"] == 0
+    assert records[0]["output"]["degraded"] is True
+    assert records[0]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
     assert result.evidence == []
     assert result.diagnostics["final_evidence"] == 0
 
@@ -457,9 +480,9 @@ def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
 
     result = service.retrieve("возврат")
 
-    assert records[4]["name"] == "retrieve.rerank"
-    assert records[4]["output"]["reranker"] == "fallback:deterministic"
-    assert "reranker_failed:dashscope:qwen3-rerank-test" in records[4]["output"]["fallbacks"]
+    assert records[5]["name"] == "retrieve.rerank"
+    assert records[5]["output"]["reranker"] == "fallback:deterministic"
+    assert "reranker_failed:dashscope:qwen3-rerank-test" in records[5]["output"]["fallbacks"]
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
 
 
@@ -608,9 +631,11 @@ def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypat
         Document(page_content=f"keyword {index}", metadata={"citation_id": f"k{index}", "_keyword_rank": index})
         for index in range(40)
     ]
+    compressor_inputs = []
 
     class EchoCompressor:
         def compress_documents(self, documents, query):
+            compressor_inputs.append([document.metadata["citation_id"] for document in documents])
             return list(documents[:2])
 
     monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
@@ -623,12 +648,9 @@ def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypat
 
     result = service.retrieve("возврат брака")
 
-    rerank_record = records[4]
+    rerank_record = records[5]
     assert rerank_record["name"] == "retrieve.rerank"
-    assert [
-        rerank_record["set_attributes"][f"reranker.input_documents.{index}.document.id"]
-        for index in range(6)
-    ] == ["v0", "k0", "v1", "k1", "v2", "k2"]
+    assert compressor_inputs == [["v0", "k0", "v1", "k1", "v2", "k2"]]
     assert rerank_record["output"]["rerank_input"] == 6
     assert result.diagnostics["rerank_input_candidates"] == 6
 
@@ -696,12 +718,15 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     assert result.diagnostics["final_evidence"] == 10
     assert len(result.evidence) == 10
     assert [record["name"] for record in records] == [
+        "retrieval",
         "retrieve.vector_search",
         "retrieve.keyword_search",
         "retrieve.merge_candidates",
         "retrieve.fuse_candidates",
         "retrieve.rerank",
+        "retrieval.select_evidence",
     ]
+    assert records[6]["output"]["count"] == 10
 
 
 def test_fallback_ranker_prioritizes_keyword_and_filename_matches():

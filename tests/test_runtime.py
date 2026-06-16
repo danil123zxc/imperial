@@ -55,7 +55,12 @@ def test_runtime_query_wraps_workflow_in_agent_span(monkeypatch):
         {
             "name": "imperial_rag.query",
             "input": "Что делать с браком?",
-            "attributes": {"runtime.workspace_root": "/Users/danil/Public/imperial"},
+            "attributes": {
+                "imperial.phase": "query",
+                "imperial.step": "run",
+                "imperial.trace_schema_version": "rag-v2",
+                "runtime.workspace_root": "/Users/danil/Public/imperial",
+            },
         },
         {
             "output": {

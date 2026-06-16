@@ -565,6 +565,46 @@ def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> N
     assert "retrieval.documents.1.document.content" not in recorded_span.attributes
 
 
+def test_final_evidence_documents_can_store_full_content_when_enabled(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __enter__(self):
+            span = FakeSpan()
+            records.append({"span": span})
+            return span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpanContext()
+
+    content = "final evidence " + ("x" * 900)
+    document = type("Document", (), {"page_content": content, "metadata": {"chunk_id": "final"}})()
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE", "true")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", "12")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieval.select_evidence", "возврат") as span:
+        span.set_final_evidence_documents([document])
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["retrieval.documents.0.document.content"] == content
+    assert recorded_span.attributes["retrieval.documents.0.document.id"] == "final"
+
+
 def test_trace_document_metadata_can_include_full_metadata_when_enabled(monkeypatch) -> None:
     document = type(
         "Document",
@@ -630,6 +670,7 @@ def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_te
     with tracing_module.trace_retrieval_step("retrieve.keyword_search", "private query") as span:
         span.set_output({"count": 1})
         span.set_retrieval_documents([document])
+        span.set_final_evidence_documents([document])
 
     assert records[0]["attributes"] == {"openinference.span.kind": "RETRIEVER"}
     recorded_span = records[0]["span"]
