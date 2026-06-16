@@ -5,17 +5,17 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypedDict
 
 from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 
 from imperial_rag.answering import (
     REFUSAL_TEXT,
     build_evidence_prompt,
+    build_strict_answer_chain,
     format_citations,
     format_sources,
     validate_citations,
 )
+from imperial_rag.retrieval import CandidateMerger
 from imperial_rag.tracing import trace_answer_step
 
 
@@ -70,21 +70,6 @@ def _content_key(document: Document) -> str:
     return " ".join(document.page_content.split()).casefold()
 
 
-def _merge_documents(vector_docs: list[Document], keyword_docs: list[Document]) -> list[Document]:
-    merged: list[Document] = []
-    seen_ids: set[str] = set()
-    seen_contents: set[str] = set()
-    for document in [*vector_docs, *keyword_docs]:
-        key = _document_key(document)
-        content_key = _content_key(document)
-        if key in seen_ids or content_key in seen_contents:
-            continue
-        seen_ids.add(key)
-        seen_contents.add(content_key)
-        merged.append(document)
-    return merged
-
-
 def _contains_query_terms(query: str, text: str) -> bool:
     normalized_text = text.casefold()
     return all(term in normalized_text for term in query.casefold().split() if term)
@@ -99,7 +84,7 @@ def rank_hybrid_candidates(
 ) -> list[Document]:
     if k is not None:
         limit = k
-    candidates = _merge_documents(vector_docs, keyword_docs)
+    candidates = CandidateMerger().merge(vector_docs, keyword_docs)
     keyword_keys = {_document_key(document) for document in keyword_docs}
     keyword_contents = {_content_key(document) for document in keyword_docs}
 
@@ -179,25 +164,6 @@ def _call_pipeline(run_pipeline, state: Mapping[str, Any]):
     return run_pipeline(state) if positional_count else run_pipeline()
 
 
-def _strict_answer_chain(chat_model: ChatModel):
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                (
-                    "You are a strict-citation RAG assistant. Use only the provided context. "
-                    "Do not use general model knowledge. Answer only from context and "
-                    "cite every factual claim. Use concise bullets or short paragraphs. "
-                    "Do not include uncited introductions or summaries. "
-                    "Refuse when the documents do not support the answer."
-                ),
-            ),
-            ("human", "{evidence_prompt}"),
-        ]
-    )
-    return prompt | chat_model | StrOutputParser()
-
-
 def build_query_workflow(
     vector_search: VectorSearch | None = None,
     keyword_search: KeywordSearch | None = None,
@@ -274,7 +240,7 @@ def build_query_workflow(
                 answer = _coerce_answer(generate(state["question"], evidence))
             else:
                 resolved_model = model or _legacy_openai_chat_model()
-                answer = _strict_answer_chain(resolved_model).invoke(
+                answer = build_strict_answer_chain(resolved_model).invoke(
                     {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
                 )
             with trace_answer_step(

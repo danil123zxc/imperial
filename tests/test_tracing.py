@@ -175,11 +175,13 @@ def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypat
     assert records[0]["name"] == "retrieve.vector_search"
     assert records[0]["attributes"]["openinference.span.kind"] == "RETRIEVER"
     assert records[0]["attributes"]["input.value"] == "возврат брака"
+    assert records[0]["attributes"]["input.mime_type"] == "text/plain"
     assert records[0]["attributes"]["retrieval.k"] == 8
     assert records[0]["attributes"]["retrieval.options"] == '{"fetch_k": 80}'
     recorded_span = records[0]["span"]
     assert recorded_span.attributes["retrieval.status"] == "ok"
     assert recorded_span.attributes["output.value"] == '{"count": 1, "top_documents": [{"citation_id": "S1"}]}'
+    assert recorded_span.attributes["output.mime_type"] == "application/json"
 
 
 def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypatch) -> None:
@@ -249,12 +251,16 @@ def test_trace_agent_step_records_errors(monkeypatch) -> None:
         def __init__(self) -> None:
             self.attributes: dict[str, object] = {}
             self.status = None
+            self.exceptions = []
 
         def set_attribute(self, key, value):
             self.attributes[key] = value
 
         def set_status(self, status):
             self.status = status
+
+        def record_exception(self, exc):
+            self.exceptions.append(exc)
 
     class FakeSpanContext:
         def __init__(self, span: FakeSpan) -> None:
@@ -280,6 +286,8 @@ def test_trace_agent_step_records_errors(monkeypatch) -> None:
 
     recorded_span = records[0]["span"]
     assert recorded_span.attributes["error.type"] == "RuntimeError"
+    assert len(recorded_span.exceptions) == 1
+    assert isinstance(recorded_span.exceptions[0], RuntimeError)
     assert recorded_span.status.status_code is tracing_module.StatusCode.ERROR
 
 
@@ -429,7 +437,13 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
                 "citation_id": "docs/return.docx#body:chunk-0",
                 "chunk_id": "chunk-0",
                 "file_name": "return.docx",
+                "relative_path": "docs/return.docx",
+                "page_number": 7,
+                "sheet_name": "Returns",
                 "_keyword_score": -2.5,
+                "file_path": "/private/docs/return.docx",
+                "file_hash": "secret-hash",
+                "parent_folder": "/private/docs",
             },
         },
     )()
@@ -445,6 +459,9 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
         "citation_id": "docs/return.docx#body:chunk-0",
         "chunk_id": "chunk-0",
         "file_name": "return.docx",
+        "relative_path": "docs/return.docx",
+        "page_number": 7,
+        "sheet_name": "Returns",
         "_keyword_score": -2.5,
     }
     assert recorded_span.attributes["retrieval.documents.0.document.score"] == -2.5
@@ -497,6 +514,128 @@ def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -
     assert recorded_span.attributes["retrieval.documents.9.document.id"] == "chunk-9"
     assert "retrieval.documents.10.document.content" not in recorded_span.attributes
     assert "retrieval.documents.10.document.id" not in recorded_span.attributes
+
+
+def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __enter__(self):
+            span = FakeSpan()
+            records.append({"span": span})
+            return span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpanContext()
+
+    documents = [
+        type(
+            "Document",
+            (),
+            {
+                "page_content": f"doc-{index} " + ("z" * 20),
+                "metadata": {"chunk_id": f"chunk-{index}"},
+            },
+        )()
+        for index in range(3)
+    ]
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", "1")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", "12")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieve.vector_search", "возврат") as span:
+        span.set_retrieval_documents(documents)
+
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["retrieval.documents.0.document.content"] == "doc-0 zzzzzz..."
+    assert "retrieval.documents.1.document.content" not in recorded_span.attributes
+
+
+def test_trace_document_metadata_can_include_full_metadata_when_enabled(monkeypatch) -> None:
+    document = type(
+        "Document",
+        (),
+        {
+            "page_content": "text",
+            "metadata": {
+                "chunk_id": "chunk-1",
+                "file_path": "/private/docs/source.docx",
+                "file_hash": "secret-hash",
+                "parent_folder": "/private/docs",
+            },
+        },
+    )()
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_METADATA", "1")
+
+    attrs = tracing_module.openinference_document_attributes("retrieval.documents", [document])
+
+    assert json.loads(attrs["retrieval.documents.0.document.metadata"]) == {
+        "chunk_id": "chunk-1",
+        "file_path": "/private/docs/source.docx",
+        "file_hash": "secret-hash",
+        "parent_folder": "/private/docs",
+    }
+
+
+def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_text(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    document = type("Document", (), {"page_content": "private corpus text", "metadata": {"chunk_id": "chunk-1"}})()
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUTS", "true")
+    monkeypatch.setenv("OPENINFERENCE_HIDE_OUTPUTS", "true")
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_TEXT", "true")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_retrieval_step("retrieve.keyword_search", "private query") as span:
+        span.set_output({"count": 1})
+        span.set_retrieval_documents([document])
+
+    assert records[0]["attributes"] == {"openinference.span.kind": "RETRIEVER"}
+    recorded_span = records[0]["span"]
+    assert "output.value" not in recorded_span.attributes
+    assert "retrieval.documents.0.document.content" not in recorded_span.attributes
+    assert recorded_span.attributes["retrieval.documents.0.document.id"] == "chunk-1"
 
 
 def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
@@ -617,3 +756,46 @@ def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:
             "preview": "Очень длинный текст документа Очень длин...",
         }
     ]
+
+
+def test_phoenix_trace_context_uses_session_context(monkeypatch) -> None:
+    calls = []
+    fake_phoenix = types.ModuleType("phoenix")
+    fake_otel = types.ModuleType("phoenix.otel")
+
+    class FakeAttributesContext:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            calls.append(("enter", self.kwargs))
+
+        def __exit__(self, exc_type, exc, traceback):
+            calls.append(("exit", self.kwargs))
+            return False
+
+    fake_otel.using_session = lambda **kwargs: FakeAttributesContext(**kwargs)
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
+
+    with tracing_module.phoenix_trace_context("session-123"):
+        calls.append(("body", {}))
+
+    assert calls == [
+        ("enter", {"session_id": "session-123"}),
+        ("body", {}),
+        ("exit", {"session_id": "session-123"}),
+    ]
+
+
+def test_phoenix_trace_context_ignores_empty_session(monkeypatch) -> None:
+    fake_phoenix = types.ModuleType("phoenix")
+    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel.using_session = lambda **kwargs: pytest.fail("empty session should not enter Phoenix context")
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
+
+    with tracing_module.phoenix_trace_context(None):
+        pass
+    with tracing_module.phoenix_trace_context("  "):
+        pass

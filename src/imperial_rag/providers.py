@@ -264,6 +264,7 @@ class DashScopeTextEmbeddings(Embeddings):
             text_type,
             attributes={
                 "embedding.model": self.model,
+                "embedding.model_name": self.model,
                 "embedding.dimensions": self.dimensions,
                 "embedding.text_type": text_type,
                 "embedding.batch_size": len(texts),

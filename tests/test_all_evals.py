@@ -43,7 +43,7 @@ def test_all_evals_default_creates_phoenix_experiment_with_faithfulness(monkeypa
         "settings": settings,
         "dataset_name": "imperial-rag-gold-questions",
         "experiment_name": "imperial-rag-all-evals",
-        "ragas_metric_names": ["faithfulness"],
+        "ragas_metric_names": ["faithfulness", "answer_relevancy"],
     }
 
 

@@ -22,8 +22,6 @@ x-imperial-app-base: &imperial-app-base
       condition: service_healthy
     elasticsearch:
       condition: service_healthy
-    phoenix:
-      condition: service_healthy
 
 services:
   app:

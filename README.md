@@ -51,7 +51,7 @@ Create a local environment file:
 cp .env.example .env
 ```
 
-Fill in local secrets such as `DASHSCOPE_API_KEY` in `.env` or your shell environment. Do not commit real keys.
+Fill in local secrets such as `DASHSCOPE_API_KEY` in `.env` or your shell environment. Set `IMPERIAL_RAG_ADMIN_EMAIL` and `IMPERIAL_RAG_ADMIN_PASSWORD` to bootstrap the first approved Streamlit admin account. Do not commit real keys or passwords.
 
 Start the required local Elasticsearch keyword service:
 
@@ -77,7 +77,7 @@ Run the local UI:
 uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-Then open `http://127.0.0.1:8501`.
+Then open `http://127.0.0.1:8501`. Sign in with the bootstrap admin account, then approve pending signup requests from the sidebar access panel. Auth state is stored locally in `.imperial_rag/auth.sqlite3`.
 
 ## Private Compose Deployment
 
@@ -90,7 +90,7 @@ cp .env.example .env
 mkdir -p documents .imperial_rag/qdrant_storage
 ```
 
-Fill `.env` with `DASHSCOPE_API_KEY` and any provider settings needed for the deployed machine. Host-local commands can keep the `localhost` defaults from `.env.example`; `compose.yaml` overrides service endpoints inside the app containers.
+Fill `.env` with `DASHSCOPE_API_KEY`, `IMPERIAL_RAG_ADMIN_EMAIL`, `IMPERIAL_RAG_ADMIN_PASSWORD`, and any provider settings needed for the deployed machine. Host-local commands can keep the `localhost` defaults from `.env.example`; `compose.yaml` overrides service endpoints inside the app containers.
 
 Start the runtime stack:
 
@@ -220,7 +220,7 @@ Phoenix must already be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults t
 docker compose up -d phoenix
 ```
 
-By default, the all-evals command stores deterministic citation/refusal/source-hint checks plus Ragas faithfulness in the same Phoenix experiment. To create a deterministic-only Phoenix experiment for troubleshooting:
+By default, the all-evals command stores deterministic citation/refusal/source-hint checks plus Ragas faithfulness and answer relevancy in the same Phoenix experiment. Answer relevancy uses both evaluator chat and embedding calls through the DashScope/OpenAI-compatible settings. To create a deterministic-only Phoenix experiment for troubleshooting:
 
 ```bash
 uv run python scripts/run_all_evals.py --ragas-metrics none
@@ -238,7 +238,7 @@ Store only the legacy Phoenix eval runner output in local Phoenix:
 uv run python scripts/run_phoenix_eval.py --use-phoenix
 ```
 
-By default, Phoenix experiments from `run_phoenix_eval.py` include deterministic citation/refusal/source-hint checks plus Ragas faithfulness. To store only deterministic scores:
+By default, Phoenix experiments from `run_phoenix_eval.py` include deterministic citation/refusal/source-hint checks plus Ragas faithfulness and answer relevancy. To store only deterministic scores:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py --use-phoenix --ragas-metrics none
@@ -250,7 +250,7 @@ Run standalone Ragas quality checks over the same gold questions without creatin
 uv run python scripts/run_ragas_eval.py
 ```
 
-The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness`; reference-based metrics such as `context_recall` and `factual_correctness` use the `reference_answer` values in `evals/questions.jsonl`.
+The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness,answer_relevancy`; reference-based metrics such as `context_recall` and `factual_correctness` use the `reference_answer` values in `evals/questions.jsonl`.
 
 Write Ragas scores to JSONL:
 
@@ -335,8 +335,13 @@ Common settings:
 - `PHOENIX_COLLECTOR_ENDPOINT`: Phoenix trace collector endpoint.
 - `PHOENIX_CLIENT_ENDPOINT`: Phoenix client/UI endpoint.
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
+- `IMPERIAL_RAG_TRACE_SESSION_ID`: optional CLI Phoenix `session.id`; omitted values generate a per-run `cli_<uuid>`.
+- `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
+- `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.
+- `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.
 - `IMPERIAL_RAG_LOG_LEVEL`: local structured log level, defaulting to `INFO`.
 - `IMPERIAL_RAG_LOG_FORMAT`: local structured log format; v1 supports `json`.
+- `IMPERIAL_RAG_ADMIN_EMAIL` and `IMPERIAL_RAG_ADMIN_PASSWORD`: bootstrap the first approved Streamlit admin account for granting chat access.
 - `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, and `COHERE_API_KEY`: legacy debugging compatibility only when `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE` is enabled.
 
 Retrieval and chunking tuning variables are also listed in `.env.example`, including chunk size, overlap, vector fetch limits, keyword limits, reranker choices, and final evidence limits.
@@ -347,6 +352,7 @@ Treat these paths as private:
 
 - `documents/`
 - `.imperial_rag/`
+- `.imperial_rag/auth.sqlite3`
 - Elasticsearch Docker volume `imperial_elasticsearch_data`
 - local Qdrant storage
 - Phoenix traces and experiment data

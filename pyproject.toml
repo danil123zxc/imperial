@@ -12,6 +12,7 @@ dependencies = [
   "langchain-openai",
   "langchain-qdrant",
   "langchain-cohere",
+  "langchain-elasticsearch",
   "langchain-qwq",
   "langchain-text-splitters",
   "langgraph",

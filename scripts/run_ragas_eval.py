@@ -23,9 +23,10 @@ from imperial_rag.ragas_eval import (
     DEFAULT_RAGAS_METRICS,
     REFERENCE_REQUIRED_RAGAS_METRICS,
     SUPPORTED_RAGAS_METRICS,
+    answer_relevancy_row_from_run_output,
+    evaluate_answer_relevancy_rows,
     evaluate_id_context_recall_rows,
     evaluate_faithfulness_rows,
-    faithfulness_row_from_run_output,
     parse_ragas_metric_names,
     retrieved_context_ids_from_output,
     retrieved_contexts_from_output,
@@ -53,10 +54,13 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
             skipped += 1
             continue
         outputs = run_target({"question": example["question"]}, runtime=resolved_runtime)
-        row = faithfulness_row_from_run_output({"question": example["question"]}, outputs)
+        row = answer_relevancy_row_from_run_output({"question": example["question"]}, outputs)
         if row is None:
             skipped += 1
             continue
+        retrieved_contexts = retrieved_contexts_from_output(outputs)
+        if retrieved_contexts:
+            row["retrieved_contexts"] = retrieved_contexts
         row["expected_behavior"] = example.get("expected_behavior")
         row["expected_source_hints"] = example.get("expected_source_hints", [])
         row["retrieved_context_ids"] = retrieved_context_ids_from_output(outputs)
@@ -90,9 +94,18 @@ def evaluate_ragas_rows(
 ) -> Any:
     validate_metric_requirements(metric_names, rows)
     sidecar_records: list[dict[str, Any]] | None = None
-    reference_metric_names = [name for name in metric_names if name not in {"faithfulness", "id_context_recall"}]
+    reference_metric_names = [
+        name for name in metric_names if name not in {"faithfulness", "answer_relevancy", "id_context_recall"}
+    ]
     if "faithfulness" in metric_names:
         sidecar_records = evaluate_faithfulness_rows(rows)
+    if "answer_relevancy" in metric_names:
+        answer_relevancy_records = evaluate_answer_relevancy_rows(rows)
+        sidecar_records = (
+            _merge_records_by_position(sidecar_records, answer_relevancy_records)
+            if sidecar_records is not None
+            else answer_relevancy_records
+        )
     if "id_context_recall" in metric_names:
         id_context_recall_records = evaluate_id_context_recall_rows(rows)
         sidecar_records = (
@@ -132,10 +145,10 @@ def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
 
 
 def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any]:
-    unsupported_here = sorted(set(metric_names) & {"faithfulness", "id_context_recall"})
+    unsupported_here = sorted(set(metric_names) & {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported_here:
         raise SystemExit(
-            "Ragas Faithfulness and ID context recall are evaluated through imperial_rag.ragas_eval."
+            "Ragas Faithfulness, Answer Relevancy, and ID context recall are evaluated through imperial_rag.ragas_eval."
         )
 
     _install_ragas_langchain_community_compat()

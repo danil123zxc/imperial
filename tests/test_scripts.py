@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,8 @@ def test_phoenix_eval_script_imports_and_defines_main():
 def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/ingest.py").read_text(encoding="utf-8")
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")
+    assert "--trace-session-id" in Path("scripts/ingest.py").read_text(encoding="utf-8")
+    assert "--trace-session-id" in Path("scripts/query.py").read_text(encoding="utf-8")
 
 
 def test_entrypoint_scripts_configure_observability():
@@ -51,6 +54,7 @@ def test_query_script_logs_safe_completion_fields(monkeypatch, capsys):
     config_module.Settings = lambda **kwargs: types.SimpleNamespace(log_level="INFO", log_format="json")
     tracing_module = types.ModuleType("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
+    tracing_module.phoenix_trace_context = _null_trace_context
     observability_module = types.ModuleType("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
     observability_module.log_event = lambda event, **fields: events.append((event, fields))
@@ -100,6 +104,7 @@ def test_ingest_script_logs_failed_file_completion(monkeypatch, capsys):
     config_module.Settings = lambda **kwargs: types.SimpleNamespace(log_level="INFO", log_format="json")
     tracing_module = types.ModuleType("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
+    tracing_module.phoenix_trace_context = _null_trace_context
     observability_module = types.ModuleType("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
     observability_module.log_event = lambda event, **fields: events.append((event, fields))
@@ -198,6 +203,66 @@ def test_ingest_vector_store_disabled_does_not_require_dashscope_key(monkeypatch
     monkeypatch.setitem(sys.modules, "imperial_rag.indexing", indexing)
 
     assert module._build_vector_store(object(), index_vectors=False) is None
+
+
+def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
+    module = _load_script("scripts/query.py", "query_script_trace_session")
+    sessions = []
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda workspace_root=None: None
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = lambda **kwargs: types.SimpleNamespace(log_level="INFO", log_format="json")
+    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
+
+    @contextmanager
+    def trace_context(session_id):
+        sessions.append(session_id)
+        yield
+
+    tracing_module.phoenix_trace_context = trace_context
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+    observability_module.log_event = lambda *args, **kwargs: None
+    observability_module.log_failure = lambda *args, **kwargs: pytest.fail("query should not fail")
+
+    class FakeRuntime:
+        def query(self, question):
+            return {"answer": "ok", "sources": []}
+
+    runtime_module = types.ModuleType("imperial_rag.runtime")
+    runtime_module.create_runtime = lambda settings: FakeRuntime()
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.runtime", runtime_module)
+
+    module.main(["private question", "--trace-session-id", "session-explicit"])
+
+    assert capsys.readouterr().out == "ok\n"
+    assert sessions == ["session-explicit"]
+
+
+def test_entrypoint_trace_session_id_prefers_env_then_generated(monkeypatch):
+    query_module = _load_script("scripts/query.py", "query_script_session_id")
+    ingest_module = _load_script("scripts/ingest.py", "ingest_script_session_id")
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_SESSION_ID", "session-env")
+    assert query_module._trace_session_id(None) == "session-env"
+    assert ingest_module._trace_session_id(None) == "session-env"
+    assert query_module._trace_session_id("session-cli") == "session-cli"
+
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_SESSION_ID", raising=False)
+    monkeypatch.setattr(query_module.uuid, "uuid4", lambda: "generated")
+    assert query_module._trace_session_id(None) == "cli_generated"
+
+
+@contextmanager
+def _null_trace_context(session_id):
+    yield
 
 
 def _load_script(path: str, name: str):

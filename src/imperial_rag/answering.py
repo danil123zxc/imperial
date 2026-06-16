@@ -4,9 +4,19 @@ import re
 import unicodedata
 
 from langchain_core.documents import Document
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
 
 REFUSAL_TEXT = "I could not find this clearly in the indexed documents."
+
+STRICT_SYSTEM_PROMPT = (
+    "You are a strict-citation RAG assistant. Use only the provided context. "
+    "Do not use general model knowledge. Answer only from context and "
+    "cite every factual claim. Use concise bullets or short paragraphs. "
+    "Do not include uncited introductions or summaries. "
+    "Refuse when the documents do not support the answer."
+)
 
 
 def _short_citation_marker(index: int) -> str:
@@ -100,18 +110,22 @@ Evidence:
 
 def build_strict_messages(question: str, documents: list[Document]) -> list[dict[str, str]]:
     return [
-        {
-            "role": "system",
-            "content": (
-                "You are a strict-citation RAG assistant. Use only the provided context. "
-                "Do not use general model knowledge. Answer only from context and "
-                "cite every factual claim. Use concise bullets or short paragraphs. "
-                "Do not include uncited introductions or summaries. "
-                "Refuse when the documents do not support the answer."
-            ),
-        },
+        {"role": "system", "content": STRICT_SYSTEM_PROMPT},
         {"role": "user", "content": build_evidence_prompt(question, documents)},
     ]
+
+
+STRICT_ANSWER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", STRICT_SYSTEM_PROMPT),
+        ("human", "{evidence_prompt}"),
+    ]
+)
+
+
+def build_strict_answer_chain(chat_model):
+    """LCEL chain that renders the strict-citation prompt, calls the model, and returns text."""
+    return STRICT_ANSWER_PROMPT | chat_model | StrOutputParser()
 
 
 def citation_marker(citation: str) -> str:

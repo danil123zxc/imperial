@@ -388,6 +388,9 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[3]["output"]["fusion"] == "rrf"
     assert records[3]["output"]["count"] == 2
     assert records[4]["kind"] == "RERANKER"
+    assert records[4]["attributes"]["reranker.query"] == "возврат брака"
+    assert records[4]["attributes"]["reranker.top_k"] == 1
+    assert records[4]["set_attributes"]["reranker.model_name"] == "fallback:deterministic"
     assert records[4]["output"]["reranker"] == "fallback:deterministic"
     assert "reranker_missing_dashscope_api_key" in records[4]["output"]["fallbacks"]
     assert records[4]["set_attributes"]["reranker.input_documents.0.document.id"] == "v"
@@ -587,7 +590,10 @@ def test_rrf_candidate_fusion_places_unranked_documents_last():
 
     fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
 
-    assert [doc.metadata["citation_id"] for doc in fused] == ["k", "v", "unranked"]
+    # Standard Reciprocal Rank Fusion scores on list position, so a lone top-of-list
+    # vector doc and a lone top-of-list keyword doc tie and resolve to source order
+    # (vector list first); unranked candidates always sort to the tail with score 0.
+    assert [doc.metadata["citation_id"] for doc in fused] == ["v", "k", "unranked"]
     assert fused[-1].metadata["_rrf_score"] == 0.0
 
 
@@ -794,36 +800,22 @@ def test_reranker_uses_dashscope_provider_when_api_key_configured(monkeypatch):
     assert diagnostics["fallbacks"] == []
 
 
-def test_reranker_uses_contextual_compression_retriever(monkeypatch):
+def test_reranker_calls_compressor_compress_documents_directly(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
     docs = [
         Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
         Document(page_content="Возврат оформляется актом.", metadata={"citation_id": "act", "_keyword_rank": 1}),
     ]
     diagnostics = {"fallbacks": []}
-    created = []
+    calls = []
 
     class FakeCompressor:
         def compress_documents(self, documents, query):
+            calls.append({"documents": list(documents), "query": query})
             return [documents[1]]
-
-    class FakeContextualCompressionRetriever:
-        def __init__(self, *, base_compressor, base_retriever):
-            self.base_compressor = base_compressor
-            self.base_retriever = base_retriever
-            created.append({"base_compressor": base_compressor, "base_retriever": base_retriever})
-
-        def invoke(self, query):
-            return self.base_compressor.compress_documents(self.base_retriever.invoke(query), query)
 
     monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
     monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n, settings: FakeCompressor(), raising=False)
-    monkeypatch.setattr(
-        retrieval_module,
-        "ContextualCompressionRetriever",
-        FakeContextualCompressionRetriever,
-        raising=False,
-    )
 
     reranked = Reranker(settings=RetrievalSettings(rerank_input_limit=2, rerank_top_n=2)).rerank(
         "возврат брака",
@@ -832,7 +824,7 @@ def test_reranker_uses_contextual_compression_retriever(monkeypatch):
     )
 
     assert [doc.metadata["citation_id"] for doc in reranked] == ["act", "return"]
-    assert len(created) == 1
+    assert calls == [{"documents": docs[:2], "query": "возврат брака"}]
     assert diagnostics["reranker"] == "dashscope:qwen3-rerank"
 
 

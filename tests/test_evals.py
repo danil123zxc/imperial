@@ -78,6 +78,24 @@ def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords(monkeypatch):
         "scorer": "fake-scorer",
     }
 
+    def fake_score_answer_relevancy_for_phoenix(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return {"score": 0.8, "label": "answer_relevancy", "metadata": {"metric": "ragas_answer_relevancy"}}
+
+    monkeypatch.setattr(module, "_get_ragas_answer_relevancy_scorer", lambda: "fake-answer-scorer")
+    monkeypatch.setattr(ragas_eval, "score_answer_relevancy_for_phoenix", fake_score_answer_relevancy_for_phoenix)
+
+    assert module.phoenix_ragas_answer_relevancy(
+        input={"question": "Что делать с браком?"},
+        output={"answer": "Ответ", "documents": []},
+    ) == {"score": 0.8, "label": "answer_relevancy", "metadata": {"metric": "ragas_answer_relevancy"}}
+    assert captured == {
+        "input": {"question": "Что делать с браком?"},
+        "output": {"answer": "Ответ", "documents": []},
+        "scorer": "fake-answer-scorer",
+    }
+
     def fake_score_id_context_recall_for_phoenix(**kwargs):
         captured.clear()
         captured.update(kwargs)
@@ -249,12 +267,13 @@ def test_parse_phoenix_ragas_metrics_supports_none_and_rejects_unknown():
 
     assert module.parse_phoenix_ragas_metrics("none") == []
     assert module.parse_phoenix_ragas_metrics("faithfulness") == ["faithfulness"]
+    assert module.parse_phoenix_ragas_metrics("answer_relevance") == ["answer_relevancy"]
     assert module.parse_phoenix_ragas_metrics("id-based-context-recall") == ["id_context_recall"]
-    assert module.parse_phoenix_ragas_metrics("") == ["faithfulness"]
+    assert module.parse_phoenix_ragas_metrics("") == ["faithfulness", "answer_relevancy"]
     assert module.parse_phoenix_ragas_metrics(" faithfulness , NONE ") == []
 
     with pytest.raises(SystemExit, match="Unsupported Ragas metrics"):
-        module.parse_phoenix_ragas_metrics("answer_relevancy")
+        module.parse_phoenix_ragas_metrics("answer_correctness")
 
 
 def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch):
@@ -288,6 +307,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
     monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
     monkeypatch.setattr(module, "_get_ragas_faithfulness_scorer", lambda: object())
+    monkeypatch.setattr(module, "_get_ragas_answer_relevancy_scorer", lambda: object())
 
     module._run_phoenix_experiment(
         examples=[
@@ -319,6 +339,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         module.phoenix_source_hint_behavior,
         module.phoenix_retrieval_relevance,
         module.phoenix_ragas_faithfulness,
+        module.phoenix_ragas_answer_relevancy,
     ]
     assert experiment_args["experiment_name"] == "imperial-rag-citation-grounding"
 
@@ -476,6 +497,7 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
     monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
     monkeypatch.setattr(module, "_get_ragas_faithfulness_scorer", lambda: pytest.fail("Ragas scorer was built"))
+    monkeypatch.setattr(module, "_get_ragas_answer_relevancy_scorer", lambda: pytest.fail("Ragas scorer was built"))
 
     module._run_phoenix_experiment(
         examples=[

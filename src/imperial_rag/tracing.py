@@ -22,6 +22,8 @@ _TRACER_NAME = "imperial_rag.tracing"
 _SPAN_KIND = SpanAttributes.OPENINFERENCE_SPAN_KIND
 _INPUT_VALUE = SpanAttributes.INPUT_VALUE
 _OUTPUT_VALUE = SpanAttributes.OUTPUT_VALUE
+_INPUT_MIME_TYPE = getattr(SpanAttributes, "INPUT_MIME_TYPE", "input.mime_type")
+_OUTPUT_MIME_TYPE = getattr(SpanAttributes, "OUTPUT_MIME_TYPE", "output.mime_type")
 _RETRIEVAL_DOCUMENTS = SpanAttributes.RETRIEVAL_DOCUMENTS
 _RERANKER_INPUT_DOCUMENTS = RerankerAttributes.RERANKER_INPUT_DOCUMENTS
 _RERANKER_OUTPUT_DOCUMENTS = RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS
@@ -32,6 +34,29 @@ _DOCUMENT_SCORE = DocumentAttributes.DOCUMENT_SCORE
 _RETRIEVAL_PREVIEW_LIMIT = 3
 _TRACE_DOCUMENT_LIMIT = 10
 _TRACE_DOCUMENT_CONTENT_CHARS = 800
+_TEXT_MIME_TYPE = "text/plain"
+_JSON_MIME_TYPE = "application/json"
+_TRACE_METADATA_ALLOWLIST = frozenset(
+    {
+        "citation_id",
+        "chunk_id",
+        "chunk_index",
+        "file_name",
+        "relative_path",
+        "source_type",
+        "section_heading",
+        "page_number",
+        "sheet_name",
+        "image_index",
+        "relevance_score",
+        "_keyword_score",
+        "_keyword_rank",
+        "_vector_rank",
+        "_fusion_rank",
+        "_rrf_score",
+        "_fallback_score",
+    }
+)
 
 
 class OpenInferenceTraceSpan:
@@ -41,10 +66,15 @@ class OpenInferenceTraceSpan:
     def set_attribute(self, key: str, value: Any) -> None:
         if value is None:
             return
+        if _attribute_hidden(key):
+            return
         self._span.set_attribute(key, _attribute_value(value))
 
     def set_output(self, value: Any) -> None:
+        if _hide_outputs():
+            return
         self._span.set_attribute(_OUTPUT_VALUE, _json_value(value))
+        self._span.set_attribute(_OUTPUT_MIME_TYPE, _JSON_MIME_TYPE)
 
     def set_retrieval_documents(self, documents: Sequence[Any]) -> None:
         self._set_documents(_RETRIEVAL_DOCUMENTS, documents)
@@ -76,10 +106,12 @@ def trace_openinference_step(
     tracer = trace.get_tracer(_TRACER_NAME)
     span_attributes: dict[str, Any] = {
         _SPAN_KIND: kind,
-        _INPUT_VALUE: input_value,
     }
+    if not _hide_inputs():
+        span_attributes[_INPUT_VALUE] = input_value
+        span_attributes[_INPUT_MIME_TYPE] = _TEXT_MIME_TYPE
     for key, value in (attributes or {}).items():
-        if value is not None:
+        if value is not None and not _attribute_hidden(key):
             span_attributes[key] = _attribute_value(value)
 
     with tracer.start_as_current_span(name, attributes=span_attributes) as span:
@@ -87,6 +119,8 @@ def trace_openinference_step(
         try:
             yield trace_span
         except Exception as exc:
+            if hasattr(span, "record_exception"):
+                span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, str(exc)))
             trace_span.set_attribute("error.type", type(exc).__name__)
             raise
@@ -177,21 +211,35 @@ def retrieval_documents_preview(
 
 def openinference_document_attributes(key_prefix: str, documents: Sequence[Any]) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
-    for index, document in enumerate(list(documents)[:_TRACE_DOCUMENT_LIMIT]):
-        content = _compact_text(str(getattr(document, "page_content", "")), _TRACE_DOCUMENT_CONTENT_CHARS)
+    document_limit = _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", _TRACE_DOCUMENT_LIMIT, minimum=0)
+    content_chars = _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", _TRACE_DOCUMENT_CONTENT_CHARS)
+    for index, document in enumerate(list(documents)[:document_limit]):
+        content = _compact_text(str(getattr(document, "page_content", "")), content_chars)
         metadata = dict(getattr(document, "metadata", {}) or {})
         document_id = _document_id(metadata)
         score = _document_score(metadata)
         prefix = f"{key_prefix}.{index}"
 
-        attributes[f"{prefix}.{_DOCUMENT_CONTENT}"] = content
+        if not _hide_input_text():
+            attributes[f"{prefix}.{_DOCUMENT_CONTENT}"] = content
         if document_id is not None:
             attributes[f"{prefix}.{_DOCUMENT_ID}"] = document_id
-        if metadata:
-            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = _json_value(metadata)
+        trace_metadata = _trace_document_metadata(metadata)
+        if trace_metadata:
+            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = _json_value(trace_metadata)
         if score is not None:
             attributes[f"{prefix}.{_DOCUMENT_SCORE}"] = score
     return attributes
+
+
+def _trace_document_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    if _env_flag("IMPERIAL_RAG_TRACE_FULL_METADATA"):
+        return dict(metadata)
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key in _TRACE_METADATA_ALLOWLIST and value is not None
+    }
 
 
 def _document_id(metadata: Mapping[str, Any]) -> str | None:
@@ -237,6 +285,24 @@ def _json_value(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+@contextmanager
+def phoenix_trace_context(session_id: str | None = None) -> Iterator[None]:
+    """Propagate Phoenix session context to all child spans when available."""
+
+    resolved_session_id = str(session_id).strip() if session_id is not None else ""
+    if not resolved_session_id:
+        yield
+        return
+    try:
+        from phoenix.otel import using_session
+    except ImportError:
+        yield
+        return
+
+    with using_session(session_id=resolved_session_id):
+        yield
+
+
 def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | None = None) -> object | None:
     """Configure Phoenix OpenTelemetry tracing once for the current process."""
 
@@ -280,6 +346,41 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if minimum is not None:
+        return max(value, minimum)
+    return value
+
+
+def _hide_inputs() -> bool:
+    return _env_flag("OPENINFERENCE_HIDE_INPUTS")
+
+
+def _hide_outputs() -> bool:
+    return _env_flag("OPENINFERENCE_HIDE_OUTPUTS")
+
+
+def _hide_input_text() -> bool:
+    return _hide_inputs() or _env_flag("OPENINFERENCE_HIDE_INPUT_TEXT")
+
+
+def _attribute_hidden(key: str) -> bool:
+    if _hide_inputs() and (key == _INPUT_VALUE or key == _INPUT_MIME_TYPE or key.startswith("input.")):
+        return True
+    if _hide_outputs() and (key == _OUTPUT_VALUE or key == _OUTPUT_MIME_TYPE or key.startswith("output.")):
+        return True
+    if _hide_input_text() and key.endswith(f".{_DOCUMENT_CONTENT}"):
+        return True
+    return False
 
 
 def _collector_endpoint_reachable(endpoint: str, timeout: float = 0.2) -> bool:

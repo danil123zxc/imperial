@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import uuid
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -15,15 +16,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--enable-ocr", action="store_true", help="Use the configured paid OCR client.")
     parser.add_argument("--index-vectors", action="store_true", help="Index chunks into the configured vector store.")
     parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
+    parser.add_argument("--trace-session-id", help="Phoenix session.id for grouping traces.")
     args = parser.parse_args(argv)
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     _configure_observability(settings)
     _configure_tracing(settings, args.trace_phoenix)
+    trace_session_id = _trace_session_id(args.trace_session_id)
     started_at = perf_counter()
     try:
-        summary = _run(settings=settings, enable_ocr=args.enable_ocr, index_vectors=args.index_vectors)
+        with _trace_context(trace_session_id):
+            summary = _run(settings=settings, enable_ocr=args.enable_ocr, index_vectors=args.index_vectors)
     except (Exception, SystemExit) as exc:
         _log_failure(
             "ingest",
@@ -57,6 +61,21 @@ def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
     from imperial_rag.tracing import configure_phoenix_tracing
 
     configure_phoenix_tracing(settings, enabled=True if trace_phoenix else None)
+
+
+def _trace_context(session_id: str):
+    from imperial_rag.tracing import phoenix_trace_context
+
+    return phoenix_trace_context(session_id)
+
+
+def _trace_session_id(explicit: str | None) -> str:
+    if explicit is not None and explicit.strip():
+        return explicit.strip()
+    env_value = os.environ.get("IMPERIAL_RAG_TRACE_SESSION_ID", "").strip()
+    if env_value:
+        return env_value
+    return f"cli_{uuid.uuid4()}"
 
 
 def _configure_observability(settings: Any) -> None:

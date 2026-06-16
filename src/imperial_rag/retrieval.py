@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import inspect
 import os
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from langchain_core.documents.compressor import BaseDocumentCompressor
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_classic.retrievers import EnsembleRetriever
-from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
-from pydantic import ConfigDict
 
 from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
 from imperial_rag.tracing import retrieval_documents_preview, trace_retrieval_step
@@ -292,38 +288,49 @@ class CandidateMerger:
         return merged
 
 
-class _EmptyRetriever(BaseRetriever):
+class _StaticDocumentRetriever(BaseRetriever):
+    documents: list[Document]
+
     def _get_relevant_documents(self, query: str, *, run_manager, **kwargs: Any) -> list[Document]:
-        return []
+        return list(self.documents)
 
 
 class RrfCandidateFusion:
+    """Fuse vector and keyword candidates with LangChain's Ensemble RRF.
+
+    Ordering is delegated to ``EnsembleRetriever`` (Reciprocal Rank Fusion over the
+    two rank-ordered candidate lists); ``_rrf_score``/``_fusion_rank`` are derived
+    from the same list positions the retriever scores on.
+    """
+
     def fuse(self, documents: list[Document], rrf_k: int) -> list[Document]:
         normalized = [self._with_retrieval_id(document) for document in documents]
-        vector_docs = [document for document in normalized if self._rank_value(document, "_vector_rank") is not None]
-        keyword_docs = [document for document in normalized if self._rank_value(document, "_keyword_rank") is not None]
+        vector_docs = [doc for doc in normalized if self._rank_value(doc, "_vector_rank") is not None]
+        keyword_docs = [doc for doc in normalized if self._rank_value(doc, "_keyword_rank") is not None]
         unranked_docs = [
-            document
-            for document in normalized
-            if self._rank_value(document, "_vector_rank") is None
-            and self._rank_value(document, "_keyword_rank") is None
+            doc
+            for doc in normalized
+            if self._rank_value(doc, "_vector_rank") is None
+            and self._rank_value(doc, "_keyword_rank") is None
         ]
-        ranked = CandidateMerger().merge(vector_docs, keyword_docs)
-        vector_ranked = self._ranked_documents(ranked, "_vector_rank")
-        keyword_ranked = self._ranked_documents(ranked, "_keyword_rank")
-        ordered = self._ensemble(rrf_k).weighted_reciprocal_rank([vector_ranked, keyword_ranked])
-        ordered = [document for document in ordered if not document.metadata.get("_rrf_placeholder")]
 
+        ranked = CandidateMerger().merge(vector_docs, keyword_docs)
+        vector_list = self._rank_ordered(ranked, "_vector_rank")
+        keyword_list = self._rank_ordered(ranked, "_keyword_rank")
+        positions = self._positions([vector_list, keyword_list])
+
+        ordered = self._rrf_order(vector_list, keyword_list, rrf_k)
         ordered_ids = {_retrieval_id(document) for document in ordered}
-        tail = [document for document in CandidateMerger().merge([], unranked_docs) if _retrieval_id(document) not in ordered_ids]
-        score_by_id = {
-            _retrieval_id(document): self._score(document, rrf_k)
-            for document in [*ranked, *tail]
-        }
+        tail = [
+            document
+            for document in CandidateMerger().merge([], unranked_docs)
+            if _retrieval_id(document) not in ordered_ids
+        ]
+
         fused: list[Document] = []
         for fusion_rank, document in enumerate([*ordered, *tail]):
             metadata = dict(document.metadata or {})
-            metadata["_rrf_score"] = score_by_id.get(_retrieval_id(document), 0.0)
+            metadata["_rrf_score"] = self._score(positions, _retrieval_id(document), rrf_k)
             metadata["_fusion_rank"] = fusion_rank
             fused.append(Document(page_content=document.page_content, metadata=metadata))
         return fused
@@ -333,37 +340,34 @@ class RrfCandidateFusion:
         metadata.setdefault("_retrieval_id", _retrieval_id(document))
         return Document(page_content=document.page_content, metadata=metadata)
 
-    def _ensemble(self, rrf_k: int) -> EnsembleRetriever:
-        return EnsembleRetriever(
-            retrievers=[_EmptyRetriever(), _EmptyRetriever()],
+    def _rrf_order(self, vector_list: list[Document], keyword_list: list[Document], rrf_k: int) -> list[Document]:
+        if not vector_list and not keyword_list:
+            return []
+        ensemble = EnsembleRetriever(
+            retrievers=[
+                _StaticDocumentRetriever(documents=vector_list),
+                _StaticDocumentRetriever(documents=keyword_list),
+            ],
             weights=[1.0, 1.0],
             c=rrf_k,
             id_key="_retrieval_id",
         )
+        return list(ensemble.invoke(""))
 
-    def _ranked_documents(self, documents: list[Document], rank_key: str) -> list[Document]:
+    def _rank_ordered(self, documents: list[Document], rank_key: str) -> list[Document]:
         ranked = [
             (rank, index, document)
             for index, document in enumerate(documents)
             if (rank := self._rank_value(document, rank_key)) is not None
         ]
-        if not ranked:
-            return []
+        return [document for _rank, _index, document in sorted(ranked, key=lambda item: (item[0], item[1]))]
 
-        expanded: list[Document] = []
-        next_rank = 0
-        for rank, _index, document in sorted(ranked, key=lambda item: (item[0], item[1])):
-            while next_rank < rank:
-                expanded.append(
-                    Document(
-                        page_content="",
-                        metadata={"_retrieval_id": f"__placeholder__:{rank_key}:{next_rank}", "_rrf_placeholder": True},
-                    )
-                )
-                next_rank += 1
-            expanded.append(document)
-            next_rank = rank + 1
-        return expanded
+    def _positions(self, ranked_lists: list[list[Document]]) -> dict[str, list[int]]:
+        positions: dict[str, list[int]] = {}
+        for ranked in ranked_lists:
+            for index, document in enumerate(ranked, start=1):
+                positions.setdefault(_retrieval_id(document), []).append(index)
+        return positions
 
     def _rank_value(self, document: Document, rank_key: str) -> int | None:
         value = (document.metadata or {}).get(rank_key)
@@ -371,17 +375,8 @@ class RrfCandidateFusion:
             return None
         return int(value)
 
-    def _score(self, document: Document, rrf_k: int) -> float:
-        metadata = document.metadata or {}
-        return self._rank_score(metadata.get("_vector_rank"), rrf_k) + self._rank_score(
-            metadata.get("_keyword_rank"),
-            rrf_k,
-        )
-
-    def _rank_score(self, rank: Any, rrf_k: int) -> float:
-        if isinstance(rank, bool) or not isinstance(rank, (int, float)) or rank < 0:
-            return 0.0
-        return 1.0 / (rrf_k + rank + 1.0)
+    def _score(self, positions: dict[str, list[int]], retrieval_id: str, rrf_k: int) -> float:
+        return sum(1.0 / (rrf_k + position) for position in positions.get(retrieval_id, []))
 
 
 class FallbackRanker:
@@ -465,41 +460,6 @@ class FallbackRanker:
         return min(max(value, lower), upper)
 
 
-class _StaticDocumentRetriever(BaseRetriever):
-    documents: list[Document]
-
-    def _get_relevant_documents(self, query: str, *, run_manager, **kwargs: Any) -> list[Document]:
-        return list(self.documents)
-
-
-class _CompressorAdapter(BaseDocumentCompressor):
-    compressor: Any
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    def compress_documents(self, documents, query: str, callbacks=None):
-        return _compress_documents(self.compressor, list(documents), query, callbacks=callbacks)
-
-
-def _compress_documents(compressor: Any, documents: list[Document], query: str, callbacks: Any = None):
-    method = compressor.compress_documents
-    try:
-        signature = inspect.signature(method)
-    except (TypeError, ValueError):
-        return method(documents=documents, query=query, callbacks=callbacks)
-
-    parameters = signature.parameters
-    has_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
-    kwargs: dict[str, Any] = {}
-    if "callbacks" in parameters or has_var_kwargs:
-        kwargs["callbacks"] = callbacks
-    if "documents" in parameters and "query" in parameters:
-        return method(documents=documents, query=query, **kwargs)
-    if "query" in parameters:
-        return method(documents, query=query, **kwargs)
-    return method(documents, query, **kwargs)
-
-
 class Reranker:
     def __init__(self, settings: RetrievalSettings | None = None, fallback: FallbackRanker | None = None) -> None:
         self.settings = settings or RetrievalSettings.from_env()
@@ -536,11 +496,7 @@ class Reranker:
     def _dashscope_rerank(self, query: str, documents: list[Document], model_name: str) -> list[Document]:
         provider_settings = replace(QwenProviderSettings.from_env(), rerank_model=model_name)
         compressor = create_reranker(top_n=self.settings.rerank_top_n, settings=provider_settings)
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=_CompressorAdapter(compressor=compressor),
-            base_retriever=_StaticDocumentRetriever(documents=documents),
-        )
-        return list(compression_retriever.invoke(query))
+        return list(compressor.compress_documents(documents, query))
 
     def _fallback_rerank(self, query: str, documents: list[Document], diagnostics: dict[str, Any]) -> list[Document]:
         if self.settings.fallback_reranker != "fallback:deterministic":
@@ -633,6 +589,8 @@ class RetrievalService:
             query,
             kind="RERANKER",
             attributes={
+                "reranker.query": query,
+                "reranker.top_k": self.settings.rerank_top_n,
                 "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
                 "retrieval.rerank_top_n": self.settings.rerank_top_n,
                 "retrieval.primary_reranker": self.settings.primary_reranker,
@@ -640,6 +598,7 @@ class RetrievalService:
         ) as span:
             span.set_reranker_input_documents(rerank_input)
             reranked = self.reranker.rerank(query, rerank_input, diagnostics)
+            span.set_attribute("reranker.model_name", diagnostics.get("reranker"))
             _set_documents_span_output(
                 span,
                 reranked,

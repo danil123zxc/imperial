@@ -69,6 +69,12 @@ ELASTICSEARCH_BOOSTED_SEARCH_FIELDS = [
     "content_text^1.5",
     "normalized_text^1",
 ]
+_FUZZY_TOKEN_MATCH_OPTIONS = {
+    "fuzziness": "AUTO",
+    "prefix_length": 1,
+    "max_expansions": 25,
+    "fuzzy_transpositions": True,
+}
 
 
 @dataclass(frozen=True)
@@ -142,15 +148,7 @@ def build_elasticsearch_token_query(tokens: list[str]) -> dict:
     query_text = " ".join(tokens)
     return {
         "bool": {
-            "must": [
-                {
-                    "multi_match": {
-                        "query": token,
-                        "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
-                    }
-                }
-                for token in tokens
-            ],
+            "must": [_token_match_clause(token) for token in tokens],
             "should": [
                 {
                     "multi_match": {
@@ -161,6 +159,23 @@ def build_elasticsearch_token_query(tokens: list[str]) -> dict:
             ],
         }
     }
+
+
+def _token_match_clause(token: str) -> dict:
+    exact_match = {
+        "multi_match": {
+            "query": token,
+            "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+        }
+    }
+    fuzzy_match = {
+        "multi_match": {
+            "query": token,
+            "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+            **_FUZZY_TOKEN_MATCH_OPTIONS,
+        }
+    }
+    return {"bool": {"should": [exact_match, fuzzy_match], "minimum_should_match": 1}}
 
 
 def searchable_document_text(document: Document) -> str:

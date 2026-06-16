@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
     parser.add_argument(
         "--ragas-metrics",
-        default="faithfulness",
+        default="faithfulness,answer_relevancy",
         help="Comma-separated Ragas metrics to attach, or 'none' for deterministic-only.",
     )
     args = parser.parse_args(argv)

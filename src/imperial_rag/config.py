@@ -52,5 +52,9 @@ class Settings:
         return self.processed_root / "manifest.sqlite3"
 
     @property
+    def auth_db_path(self) -> Path:
+        return self.processed_root / "auth.sqlite3"
+
+    @property
     def extraction_root(self) -> Path:
         return self.processed_root / "extracted"

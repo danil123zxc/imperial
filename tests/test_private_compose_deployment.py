@@ -66,6 +66,7 @@ def test_dockerfile_builds_uv_streamlit_runtime() -> None:
 
 def test_compose_defines_private_app_and_ingest_services() -> None:
     compose = _read("compose.yaml")
+    app_base = compose.split("services:", maxsplit=1)[0]
     app = _service_block(compose, "app")
     ingest = _service_block(compose, "ingest")
     phoenix = _service_block(compose, "phoenix")
@@ -112,7 +113,8 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     for snippet in required_snippets:
         assert snippet in compose
 
-    assert compose.count("condition: service_healthy") >= 3
+    assert compose.count("condition: service_healthy") >= 2
+    assert "phoenix:\n      condition: service_healthy" not in app_base
     assert "ports:" not in ingest
     assert '"127.0.0.1:8501:8501"' in app
     assert '"127.0.0.1:6333:6333"' in qdrant
@@ -151,6 +153,26 @@ def test_env_example_documents_compose_overrides() -> None:
     assert "QDRANT_URL=http://qdrant:6333" not in lines
     assert "PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" not in lines
     assert "PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" not in lines
+
+
+def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
+    env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
+
+    assert "OPENINFERENCE_HIDE_INPUTS=false" in lines
+    assert "OPENINFERENCE_HIDE_OUTPUTS=false" in lines
+    assert "OPENINFERENCE_HIDE_INPUT_MESSAGES=false" in lines
+    assert "OPENINFERENCE_HIDE_OUTPUT_MESSAGES=false" in lines
+    assert "OPENINFERENCE_HIDE_INPUT_IMAGES=true" in lines
+    assert "OPENINFERENCE_HIDE_INPUT_TEXT=false" in lines
+    assert "OPENINFERENCE_HIDE_LLM_TOOLS=false" in lines
+    assert "OPENINFERENCE_BASE64_IMAGE_MAX_LENGTH=10000" in lines
+    assert "OTEL_BSP_SCHEDULE_DELAY=5000" in lines
+    assert "OTEL_BSP_MAX_QUEUE_SIZE=2048" in lines
+    assert "OTEL_BSP_MAX_EXPORT_BATCH_SIZE=512" in lines
+    assert "IMPERIAL_RAG_TRACE_FULL_METADATA=false" in lines
+    assert "IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT=10" in lines
+    assert "IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS=800" in lines
 
 
 def test_readme_documents_private_compose_deployment() -> None:

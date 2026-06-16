@@ -13,6 +13,32 @@ from imperial_rag.keyword import (
 )
 
 
+def expected_token_clause(token: str) -> dict:
+    return {
+        "bool": {
+            "should": [
+                {
+                    "multi_match": {
+                        "query": token,
+                        "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+                    }
+                },
+                {
+                    "multi_match": {
+                        "query": token,
+                        "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+                        "fuzziness": "AUTO",
+                        "prefix_length": 1,
+                        "max_expansions": 25,
+                        "fuzzy_transpositions": True,
+                    }
+                },
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+
+
 def test_normalize_search_text_handles_case_hyphen_and_russian_suffixes() -> None:
     assert normalize_search_text("ВОДИТЕЛЬ-ЭКСПЕДИТОРА") == "водител экспедитор"
 
@@ -56,32 +82,50 @@ def test_searchable_document_text_includes_metadata_fields() -> None:
 
 
 def test_build_elasticsearch_token_query_requires_all_tokens() -> None:
-    assert build_elasticsearch_token_query(["возврат", "брак"]) == {
+    query = build_elasticsearch_token_query(["возврт", "брка"])
+
+    assert query == {
         "bool": {
             "must": [
-                {
-                    "multi_match": {
-                        "query": "возврат",
-                        "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
-                    }
-                },
-                {
-                    "multi_match": {
-                        "query": "брак",
-                        "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
-                    }
-                },
+                expected_token_clause("возврт"),
+                expected_token_clause("брка"),
             ],
             "should": [
                 {
                     "multi_match": {
-                        "query": "возврат брак",
+                        "query": "возврт брка",
                         "fields": ELASTICSEARCH_BOOSTED_SEARCH_FIELDS,
                     }
                 }
             ],
         }
     }
+
+
+def test_elasticsearch_token_query_adds_exact_and_fuzzy_alternatives_per_token() -> None:
+    query = build_elasticsearch_token_query(["return", "defect"])
+
+    token_clauses = query["bool"]["must"]
+    assert len(token_clauses) == 2
+    for token, clause in zip(["return", "defect"], token_clauses, strict=True):
+        alternatives = clause["bool"]["should"]
+        assert clause["bool"]["minimum_should_match"] == 1
+        assert alternatives[0] == {
+            "multi_match": {
+                "query": token,
+                "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+            }
+        }
+        assert alternatives[1] == {
+            "multi_match": {
+                "query": token,
+                "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+                "fuzziness": "AUTO",
+                "prefix_length": 1,
+                "max_expansions": 25,
+                "fuzzy_transpositions": True,
+            }
+        }
 
 
 def test_boosted_elasticsearch_fields_prioritize_metadata_over_body_text() -> None:

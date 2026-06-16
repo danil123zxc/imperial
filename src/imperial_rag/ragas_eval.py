@@ -16,12 +16,23 @@ from imperial_rag.providers import MissingDashScopeKeyError, QwenProviderSetting
 
 FAITHFULNESS_LABEL = "faithfulness"
 FAITHFULNESS_METADATA_KEY = "ragas_faithfulness"
+ANSWER_RELEVANCY_LABEL = "answer_relevancy"
+ANSWER_RELEVANCY_METADATA_KEY = "ragas_answer_relevancy"
 ID_CONTEXT_RECALL_LABEL = "id_context_recall"
 ID_CONTEXT_RECALL_METADATA_KEY = "ragas_id_context_recall"
-DEFAULT_RAGAS_METRICS = ("faithfulness",)
+DEFAULT_RAGAS_METRICS = (FAITHFULNESS_LABEL, ANSWER_RELEVANCY_LABEL)
 REFERENCE_REQUIRED_RAGAS_METRICS = {"context_recall", "factual_correctness"}
-SUPPORTED_RAGAS_METRICS = DEFAULT_RAGAS_METRICS + ("context_recall", "factual_correctness", ID_CONTEXT_RECALL_LABEL)
-RAGAS_METRIC_ALIASES = {"id_based_context_recall": ID_CONTEXT_RECALL_LABEL}
+SUPPORTED_RAGAS_METRICS = DEFAULT_RAGAS_METRICS + (
+    "context_recall",
+    "factual_correctness",
+    ID_CONTEXT_RECALL_LABEL,
+)
+RAGAS_METRIC_ALIASES = {
+    "answer_relevance": ANSWER_RELEVANCY_LABEL,
+    "response_relevance": ANSWER_RELEVANCY_LABEL,
+    "response_relevancy": ANSWER_RELEVANCY_LABEL,
+    "id_based_context_recall": ID_CONTEXT_RECALL_LABEL,
+}
 NO_RAGAS_METRIC_ALIASES = {"none", "no", "off", "false", "0"}
 
 
@@ -74,6 +85,22 @@ def faithfulness_row_from_run_output(
     input: Mapping[str, Any] | None,
     output: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
+    row = answer_relevancy_row_from_run_output(input, output)
+    if row is None:
+        return None
+    retrieved_contexts = retrieved_contexts_from_output(output or {})
+    if not retrieved_contexts:
+        return None
+    return {
+        **row,
+        "retrieved_contexts": retrieved_contexts,
+    }
+
+
+def answer_relevancy_row_from_run_output(
+    input: Mapping[str, Any] | None,
+    output: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
     resolved_input = input or {}
     resolved_output = output or {}
     user_input = str(
@@ -84,13 +111,11 @@ def faithfulness_row_from_run_output(
         or ""
     ).strip()
     response = str(resolved_output.get("answer") or resolved_output.get("response") or "").strip()
-    retrieved_contexts = retrieved_contexts_from_output(resolved_output)
-    if not user_input or not response or not retrieved_contexts:
+    if not user_input or not response:
         return None
     return {
         "user_input": user_input,
         "response": response,
-        "retrieved_contexts": retrieved_contexts,
     }
 
 
@@ -147,6 +172,27 @@ def build_faithfulness_scorer(provider_settings: QwenProviderSettings | None = N
     return Faithfulness(llm=llm)
 
 
+def build_answer_relevancy_scorer(provider_settings: QwenProviderSettings | None = None) -> Any:
+    settings = provider_settings or QwenProviderSettings.from_env()
+    try:
+        api_key = settings.require_api_key()
+    except MissingDashScopeKeyError as exc:
+        raise SystemExit(
+            "DASHSCOPE_API_KEY is required to run Ragas Answer Relevancy. "
+            "Set DASHSCOPE_API_KEY and rerun the eval command."
+        ) from exc
+
+    AsyncOpenAI = _import_async_openai()
+    llm_factory = _import_llm_factory()
+    embedding_factory = _import_embedding_factory()
+    AnswerRelevancy = _import_answer_relevancy_metric()
+
+    client = AsyncOpenAI(api_key=api_key, base_url=settings.compat_base_url)
+    llm = llm_factory(settings.chat_model, client=client, provider="openai")
+    embeddings = embedding_factory("openai", model=settings.embedding_model, client=client)
+    return AnswerRelevancy(llm=llm, embeddings=embeddings)
+
+
 def build_id_context_recall_scorer() -> Any:
     return _import_id_based_context_recall_metric()()
 
@@ -160,6 +206,17 @@ def score_faithfulness_for_phoenix(
     if row is None:
         return _skipped_result("missing_response_or_contexts")
     return score_faithfulness_row(row, scorer=scorer)
+
+
+def score_answer_relevancy_for_phoenix(
+    input: Mapping[str, Any] | None = None,
+    output: Mapping[str, Any] | None = None,
+    scorer: Any | None = None,
+) -> dict[str, Any]:
+    row = answer_relevancy_row_from_run_output(input, output)
+    if row is None:
+        return _answer_relevancy_skipped_result("missing_user_input_or_response")
+    return score_answer_relevancy_row(row, scorer=scorer)
 
 
 def score_id_context_recall_for_phoenix(
@@ -202,6 +259,27 @@ def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) ->
             "metric": FAITHFULNESS_METADATA_KEY,
             "retrieved_context_count": len(retrieved_contexts),
         },
+    }
+
+
+def score_answer_relevancy_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
+    user_input = str(row.get("user_input") or "").strip()
+    response = str(row.get("response") or "").strip()
+    if not user_input or not response:
+        return _answer_relevancy_skipped_result("missing_user_input_or_response")
+
+    resolved_scorer = scorer or build_answer_relevancy_scorer()
+    raw_result = _score_answer_relevancy_with_ragas(
+        resolved_scorer,
+        user_input=user_input,
+        response=response,
+    )
+    score = _coerce_score_value(raw_result)
+    return {
+        "score": score,
+        "label": ANSWER_RELEVANCY_LABEL,
+        "explanation": _result_explanation(raw_result),
+        "metadata": {"metric": ANSWER_RELEVANCY_METADATA_KEY},
     }
 
 
@@ -259,6 +337,24 @@ def evaluate_faithfulness_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | 
     return records
 
 
+def evaluate_answer_relevancy_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    resolved_scorer = scorer
+    for row in rows:
+        if _has_scoreable_answer_relevancy_fields(row) and resolved_scorer is None:
+            resolved_scorer = build_answer_relevancy_scorer()
+        result = score_answer_relevancy_row(row, scorer=resolved_scorer)
+        records.append(
+            {
+                "user_input": str(row.get("user_input") or ""),
+                ANSWER_RELEVANCY_LABEL: result["score"],
+                "label": result["label"],
+                "explanation": result.get("explanation"),
+            }
+        )
+    return records
+
+
 def evaluate_id_context_recall_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     resolved_scorer = scorer
@@ -303,6 +399,27 @@ def _score_with_ragas(
     raise TypeError("Ragas Faithfulness scorer does not expose score/ascore methods.")
 
 
+def _score_answer_relevancy_with_ragas(
+    scorer: Any,
+    *,
+    user_input: str,
+    response: str,
+) -> Any:
+    kwargs = {
+        "user_input": user_input,
+        "response": response,
+    }
+    if hasattr(scorer, "score"):
+        result = scorer.score(**kwargs)
+        return _resolve_awaitable(result)
+    if hasattr(scorer, "ascore"):
+        return _run_coroutine(scorer.ascore(**kwargs))
+    if hasattr(scorer, "single_turn_ascore"):
+        sample = _import_single_turn_sample()(**kwargs)
+        return _run_coroutine(scorer.single_turn_ascore(sample))
+    raise TypeError("Ragas AnswerRelevancy scorer does not expose score/ascore methods.")
+
+
 def _score_id_context_recall_with_ragas(
     scorer: Any,
     *,
@@ -340,6 +457,15 @@ def _import_llm_factory() -> Any:
     return llm_factory
 
 
+def _import_embedding_factory() -> Any:
+    _install_ragas_langchain_community_compat()
+    try:
+        from ragas.embeddings.base import embedding_factory
+    except ImportError as exc:
+        raise SystemExit("Ragas embedding factory is not installed; run `uv sync --extra dev`.") from exc
+    return embedding_factory
+
+
 def _import_faithfulness_metric() -> Any:
     _install_ragas_langchain_community_compat()
     try:
@@ -360,6 +486,23 @@ def _import_faithfulness_metric() -> Any:
                 raise SystemExit("Ragas Faithfulness metric is not installed; run `uv sync --extra dev`.") from (
                     collections_exc
                 )
+
+
+def _import_answer_relevancy_metric() -> Any:
+    _install_ragas_langchain_community_compat()
+    try:
+        from ragas.metrics.collections import AnswerRelevancy
+
+        return AnswerRelevancy
+    except ImportError as collections_exc:
+        try:
+            from ragas.metrics import AnswerRelevancy
+
+            return AnswerRelevancy
+        except ImportError:
+            raise SystemExit("Ragas AnswerRelevancy metric is not installed; run `uv sync --extra dev`.") from (
+                collections_exc
+            )
 
 
 def _import_id_based_context_recall_metric() -> Any:
@@ -459,6 +602,10 @@ def _has_scoreable_fields(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _has_scoreable_answer_relevancy_fields(row: Mapping[str, Any]) -> bool:
+    return bool(str(row.get("user_input") or "").strip()) and bool(str(row.get("response") or "").strip())
+
+
 def _has_scoreable_id_context_fields(row: Mapping[str, Any]) -> bool:
     return bool(_clean_context_ids(row.get("retrieved_context_ids") or [])) and bool(
         _clean_context_ids(row.get("reference_context_ids") or [])
@@ -499,6 +646,15 @@ def _skipped_result(reason: str) -> dict[str, Any]:
         "label": "skipped",
         "explanation": "Ragas Faithfulness requires a non-empty response and retrieved contexts.",
         "metadata": {"metric": FAITHFULNESS_METADATA_KEY, "reason": reason, "retrieved_context_count": 0},
+    }
+
+
+def _answer_relevancy_skipped_result(reason: str) -> dict[str, Any]:
+    return {
+        "score": None,
+        "label": "skipped",
+        "explanation": "Ragas Answer Relevancy requires a non-empty user input and response.",
+        "metadata": {"metric": ANSWER_RELEVANCY_METADATA_KEY, "reason": reason},
     }
 
 

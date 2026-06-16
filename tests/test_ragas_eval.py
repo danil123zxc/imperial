@@ -83,6 +83,59 @@ def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monke
     assert captured["metric"] == {"llm": "ragas-llm"}
 
 
+def test_build_answer_relevancy_scorer_uses_qwen_llm_and_embeddings(monkeypatch):
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            captured["client"] = self
+
+    class FakeAnswerRelevancy:
+        def __init__(self, **kwargs):
+            captured["metric"] = kwargs
+
+    def fake_llm_factory(model, **kwargs):
+        captured["llm_factory_model"] = model
+        captured["llm_factory_kwargs"] = kwargs
+        return "ragas-llm"
+
+    def fake_embedding_factory(provider, **kwargs):
+        captured["embedding_factory_provider"] = provider
+        captured["embedding_factory_kwargs"] = kwargs
+        return "ragas-embeddings"
+
+    monkeypatch.setattr(ragas_eval, "_import_async_openai", lambda: FakeAsyncOpenAI)
+    monkeypatch.setattr(ragas_eval, "_import_llm_factory", lambda: fake_llm_factory)
+    monkeypatch.setattr(ragas_eval, "_import_embedding_factory", lambda: fake_embedding_factory)
+    monkeypatch.setattr(ragas_eval, "_import_answer_relevancy_metric", lambda: FakeAnswerRelevancy)
+
+    scorer = ragas_eval.build_answer_relevancy_scorer(
+        SimpleNamespace(
+            compat_base_url="https://dashscope.example/compatible-mode/v1",
+            chat_model="qwen-test",
+            embedding_model="text-embedding-v4",
+            require_api_key=lambda: "dashscope-key",
+        )
+    )
+
+    assert isinstance(scorer, FakeAnswerRelevancy)
+    assert captured["client"].kwargs == {
+        "api_key": "dashscope-key",
+        "base_url": "https://dashscope.example/compatible-mode/v1",
+    }
+    assert captured["llm_factory_model"] == "qwen-test"
+    assert captured["llm_factory_kwargs"] == {"client": captured["client"], "provider": "openai"}
+    assert captured["embedding_factory_provider"] == "openai"
+    assert captured["embedding_factory_kwargs"] == {
+        "model": "text-embedding-v4",
+        "client": captured["client"],
+    }
+    assert captured["metric"] == {"llm": "ragas-llm", "embeddings": "ragas-embeddings"}
+
+
 def test_import_faithfulness_metric_prefers_ragas_collections_api():
     from imperial_rag import ragas_eval
 
@@ -137,6 +190,52 @@ def test_score_faithfulness_for_phoenix_skips_empty_response_or_contexts():
     assert result["score"] is None
     assert result["label"] == "skipped"
     assert result["metadata"]["reason"] == "missing_response_or_contexts"
+
+
+def test_score_answer_relevancy_for_phoenix_uses_question_and_response_without_contexts():
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeResult:
+        value = 0.7
+        reason = "response addresses the question"
+
+    class FakeScorer:
+        def score(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResult()
+
+    result = ragas_eval.score_answer_relevancy_for_phoenix(
+        input={"question": "Что делать с браком?"},
+        output={"answer": "Оформить возврат по регламенту.", "documents": []},
+        scorer=FakeScorer(),
+    )
+
+    assert captured == {
+        "user_input": "Что делать с браком?",
+        "response": "Оформить возврат по регламенту.",
+    }
+    assert result == {
+        "score": 0.7,
+        "label": "answer_relevancy",
+        "explanation": "response addresses the question",
+        "metadata": {"metric": "ragas_answer_relevancy"},
+    }
+
+
+def test_score_answer_relevancy_for_phoenix_skips_empty_question_or_response():
+    from imperial_rag import ragas_eval
+
+    result = ragas_eval.score_answer_relevancy_for_phoenix(
+        input={"question": "Что делать с браком?"},
+        output={"answer": ""},
+        scorer=object(),
+    )
+
+    assert result["score"] is None
+    assert result["label"] == "skipped"
+    assert result["metadata"]["reason"] == "missing_user_input_or_response"
 
 
 def test_retrieved_context_ids_from_output_extracts_unique_file_ids():
@@ -215,6 +314,9 @@ def test_parse_ragas_metric_names_accepts_id_context_recall_aliases():
 
     assert ragas_eval.parse_ragas_metric_names("id-context-recall") == ["id_context_recall"]
     assert ragas_eval.parse_ragas_metric_names("id_based_context_recall") == ["id_context_recall"]
+    assert ragas_eval.parse_ragas_metric_names("answer-relevancy") == ["answer_relevancy"]
+    assert ragas_eval.parse_ragas_metric_names("answer_relevance") == ["answer_relevancy"]
+    assert ragas_eval.parse_ragas_metric_names("response_relevancy") == ["answer_relevancy"]
 
 
 def test_evaluate_id_context_recall_rows_returns_sidecar_records():
@@ -246,6 +348,25 @@ def test_evaluate_id_context_recall_rows_returns_sidecar_records():
             "retrieved_context_id_count": 1,
             "reference_context_id_count": 0,
         },
+    ]
+
+
+def test_evaluate_answer_relevancy_rows_returns_sidecar_records():
+    from imperial_rag import ragas_eval
+
+    class FakeScorer:
+        def score(self, **kwargs):
+            return SimpleNamespace(value=0.9, reason="relevant")
+
+    rows = [{"user_input": "q", "response": "a"}]
+
+    assert ragas_eval.evaluate_answer_relevancy_rows(rows, scorer=FakeScorer()) == [
+        {
+            "user_input": "q",
+            "answer_relevancy": 0.9,
+            "label": "answer_relevancy",
+            "explanation": "relevant",
+        }
     ]
 
 
@@ -359,6 +480,28 @@ def test_evaluate_ragas_rows_delegates_default_faithfulness_to_shared_helper(mon
     assert captured == {"rows": rows}
 
 
+def test_evaluate_ragas_rows_merges_faithfulness_and_answer_relevancy(monkeypatch):
+    module = _load_ragas_runner()
+    captured: dict[str, object] = {}
+
+    def fake_evaluate_faithfulness_rows(rows):
+        captured["faithfulness_rows"] = rows
+        return [{"user_input": "q", "faithfulness": 1.0}]
+
+    def fake_evaluate_answer_relevancy_rows(rows):
+        captured["answer_rows"] = rows
+        return [{"user_input": "q", "answer_relevancy": 0.8}]
+
+    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]}]
+    monkeypatch.setattr(module, "evaluate_faithfulness_rows", fake_evaluate_faithfulness_rows)
+    monkeypatch.setattr(module, "evaluate_answer_relevancy_rows", fake_evaluate_answer_relevancy_rows)
+
+    result = module.evaluate_ragas_rows(rows, ["faithfulness", "answer_relevancy"])
+
+    assert result == [{"user_input": "q", "faithfulness": 1.0, "answer_relevancy": 0.8}]
+    assert captured == {"faithfulness_rows": rows, "answer_rows": rows}
+
+
 def test_evaluate_ragas_rows_merges_id_context_recall_without_llm(monkeypatch):
     module = _load_ragas_runner()
     captured: dict[str, object] = {}
@@ -455,6 +598,15 @@ def test_build_ragas_metrics_imports_installed_ragas_metrics():
 
     assert [type(metric).__name__ for metric in metrics] == ["ContextRecall", "FactualCorrectness"]
     assert all(".collections." in type(metric).__module__ for metric in metrics)
+
+
+def test_import_answer_relevancy_metric_prefers_ragas_collections_api():
+    from imperial_rag import ragas_eval
+
+    metric_cls = ragas_eval._import_answer_relevancy_metric()
+
+    assert metric_cls.__name__ == "AnswerRelevancy"
+    assert ".collections." in metric_cls.__module__
 
 
 def test_result_records_support_scores_and_pandas_like_results():

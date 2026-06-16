@@ -22,6 +22,7 @@ REFUSAL_FALLBACKS = (
     "нет в проиндексированных документах",
 )
 _RAGAS_FAITHFULNESS_SCORER: Any | None = None
+_RAGAS_ANSWER_RELEVANCY_SCORER: Any | None = None
 
 
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
@@ -159,6 +160,20 @@ def phoenix_ragas_faithfulness(
     )
 
 
+def phoenix_ragas_answer_relevancy(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import score_answer_relevancy_for_phoenix
+
+    return score_answer_relevancy_for_phoenix(
+        input=input or {},
+        output=output or {},
+        scorer=_get_ragas_answer_relevancy_scorer(),
+    )
+
+
 def phoenix_id_context_recall(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
@@ -215,7 +230,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
     parser.add_argument(
         "--ragas-metrics",
-        default="faithfulness",
+        default="faithfulness,answer_relevancy",
         help="Comma-separated Ragas metrics to attach in Phoenix mode, or 'none'.",
     )
     args = parser.parse_args(argv)
@@ -279,7 +294,12 @@ def run_phoenix_experiment(
     experiment_name: str,
     ragas_metric_names: list[str] | None = None,
 ) -> None:
-    resolved_ragas_metric_names = list(ragas_metric_names if ragas_metric_names is not None else ["faithfulness"])
+    if ragas_metric_names is None:
+        from imperial_rag.ragas_eval import DEFAULT_RAGAS_METRICS
+
+        resolved_ragas_metric_names = list(DEFAULT_RAGAS_METRICS)
+    else:
+        resolved_ragas_metric_names = list(ragas_metric_names)
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
     evaluators = _phoenix_evaluators(resolved_ragas_metric_names)
 
@@ -290,6 +310,8 @@ def run_phoenix_experiment(
 
     if "faithfulness" in resolved_ragas_metric_names:
         _get_ragas_faithfulness_scorer()
+    if "answer_relevancy" in resolved_ragas_metric_names:
+        _get_ragas_answer_relevancy_scorer()
     client = Client(base_url=settings.phoenix_client_endpoint)
     inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
     dataset = client.datasets.create_dataset(
@@ -360,9 +382,9 @@ def _duration_ms(started_at: float) -> int:
 
 
 def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:
-    from imperial_rag.ragas_eval import parse_ragas_metric_names
+    from imperial_rag.ragas_eval import DEFAULT_RAGAS_METRICS, parse_ragas_metric_names
 
-    return parse_ragas_metric_names(raw_metrics, default=("faithfulness",), allow_none=True)
+    return parse_ragas_metric_names(raw_metrics, default=DEFAULT_RAGAS_METRICS, allow_none=True)
 
 
 def _validate_phoenix_ragas_metric_requirements(
@@ -380,25 +402,44 @@ def _validate_phoenix_ragas_metric_requirements(
 
 
 def _phoenix_evaluators(metric_names: list[str]) -> list[Any]:
-    unsupported = sorted(set(metric_names) - {"faithfulness", "id_context_recall"})
+    unsupported = sorted(set(metric_names) - {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported:
         raise SystemExit(
-            "Phoenix Ragas evaluators currently support faithfulness and id_context_recall. "
+            "Phoenix Ragas evaluators currently support faithfulness, answer_relevancy, and id_context_recall. "
             "Run scripts/run_ragas_eval.py for reference-based Ragas metrics."
         )
     evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_retrieval_relevance]
     if "faithfulness" in metric_names:
         evaluators.append(phoenix_ragas_faithfulness)
+    if "answer_relevancy" in metric_names:
+        evaluators.append(phoenix_ragas_answer_relevancy)
     if "id_context_recall" in metric_names:
         evaluators.append(phoenix_id_context_recall)
     return evaluators
 
 
 def _phoenix_experiment_description(metric_names: list[str]) -> str:
+    if "faithfulness" in metric_names and "answer_relevancy" in metric_names and "id_context_recall" in metric_names:
+        return (
+            "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness, "
+            "Answer Relevancy, and ID context recall."
+        )
+    if "faithfulness" in metric_names and "answer_relevancy" in metric_names:
+        return (
+            "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness "
+            "and Answer Relevancy."
+        )
+    if "answer_relevancy" in metric_names and "id_context_recall" in metric_names:
+        return (
+            "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Answer Relevancy "
+            "and ID context recall."
+        )
     if "faithfulness" in metric_names and "id_context_recall" in metric_names:
         return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness and ID context recall."
     if "faithfulness" in metric_names:
         return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness."
+    if "answer_relevancy" in metric_names:
+        return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Answer Relevancy."
     if "id_context_recall" in metric_names:
         return "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas ID context recall."
     return "Imperial RAG deterministic citation/refusal/source-hint checks."
@@ -543,6 +584,15 @@ def _get_ragas_faithfulness_scorer() -> Any:
 
         _RAGAS_FAITHFULNESS_SCORER = build_faithfulness_scorer()
     return _RAGAS_FAITHFULNESS_SCORER
+
+
+def _get_ragas_answer_relevancy_scorer() -> Any:
+    global _RAGAS_ANSWER_RELEVANCY_SCORER
+    if _RAGAS_ANSWER_RELEVANCY_SCORER is None:
+        from imperial_rag.ragas_eval import build_answer_relevancy_scorer
+
+        _RAGAS_ANSWER_RELEVANCY_SCORER = build_answer_relevancy_scorer()
+    return _RAGAS_ANSWER_RELEVANCY_SCORER
 
 
 def _build_settings(workspace_root: Path | None) -> Any:

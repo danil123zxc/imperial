@@ -20,6 +20,7 @@ def test_settings_defaults_to_workspace_documents():
     assert settings.log_level == "INFO"
     assert settings.log_format == "json"
     assert settings.manifest_db_path == Path("/Users/danil/Public/imperial/.imperial_rag/manifest.sqlite3")
+    assert settings.auth_db_path == Path("/Users/danil/Public/imperial/.imperial_rag/auth.sqlite3")
     assert settings.extraction_root == Path("/Users/danil/Public/imperial/.imperial_rag/extracted")
 
 

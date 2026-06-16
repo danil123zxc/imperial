@@ -3,6 +3,7 @@ import subprocess
 import sys
 import textwrap
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from langchain_core.documents import Document
@@ -245,7 +246,7 @@ def test_build_retrieved_file_groups_returns_empty_list_without_evidence(tmp_pat
     assert build_retrieved_file_groups([], settings) == []
 
 
-def test_main_loads_project_env_before_creating_settings(monkeypatch):
+def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
     from imperial_rag import web_app
 
     calls = []
@@ -256,12 +257,14 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch):
     class FakeSettings:
         def __init__(self):
             calls.append("settings")
+            self.auth_db_path = tmp_path / "auth.sqlite3"
 
     config_module = types.ModuleType("imperial_rag.config")
     config_module.Settings = FakeSettings
 
     tracing_module = types.ModuleType("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: calls.append("tracing")
+    tracing_module.phoenix_trace_context = _null_trace_context
 
     observability_module = types.ModuleType("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: calls.append("observability")
@@ -287,6 +290,15 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch):
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
         session_state=SessionState(),
+        subheader=lambda *args, **kwargs: None,
+        radio=lambda *args, **kwargs: "Log in",
+        form=lambda *args, **kwargs: Sidebar(),
+        text_input=lambda *args, **kwargs: "",
+        form_submit_button=lambda *args, **kwargs: False,
+        error=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
         chat_input=lambda *args, **kwargs: None,
     )
 
@@ -301,22 +313,311 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch):
     assert calls[:3] == ["env", "settings", "observability"]
 
 
-def test_main_logs_web_query_failure_without_private_question(monkeypatch):
+def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_path):
     from imperial_rag import web_app
-
-    calls = []
 
     env_module = types.ModuleType("imperial_rag.env")
     env_module.load_project_env = lambda: None
 
     class FakeSettings:
-        pass
+        def __init__(self):
+            self.auth_db_path = tmp_path / "auth.sqlite3"
 
     config_module = types.ModuleType("imperial_rag.config")
     config_module.Settings = FakeSettings
 
     tracing_module = types.ModuleType("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+
+    class SessionState(dict):
+        def __getattr__(self, key):
+            return self[key]
+
+        def __setattr__(self, key, value):
+            self[key] = value
+
+    class Sidebar:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class Form:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    chat_inputs = []
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        sidebar=Sidebar(),
+        header=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        session_state=SessionState(),
+        subheader=lambda *args, **kwargs: None,
+        radio=lambda *args, **kwargs: "Log in",
+        form=lambda *args, **kwargs: Form(),
+        text_input=lambda *args, **kwargs: "",
+        form_submit_button=lambda *args, **kwargs: False,
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+        chat_input=lambda *args, **kwargs: chat_inputs.append(args),
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+
+    web_app.main()
+
+    assert chat_inputs == []
+
+
+def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path):
+    from imperial_rag import web_app
+    from imperial_rag.auth import AuthStore
+
+    auth_db_path = tmp_path / "auth.sqlite3"
+    store = AuthStore(auth_db_path)
+    store.initialize()
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("user@example.com", "user-password", "Test User", "Needs access")
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_db_path = auth_db_path
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+
+    class SessionState(dict):
+        def __getattr__(self, key):
+            return self[key]
+
+        def __setattr__(self, key, value):
+            self[key] = value
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    warnings = []
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        sidebar=Context(),
+        header=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        session_state=SessionState(auth_user_email="admin@example.com"),
+        caption=lambda *args, **kwargs: None,
+        warning=lambda message, *args, **kwargs: warnings.append(message),
+        button=lambda *args, **kwargs: False,
+        markdown=lambda *args, **kwargs: None,
+        container=lambda *args, **kwargs: Context(),
+        chat_input=lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+
+    web_app.main()
+
+    assert warnings == ["1 pending access request"]
+
+
+def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
+    from imperial_rag import web_app
+    from imperial_rag.auth import AuthStore
+
+    auth_db_path = tmp_path / "auth.sqlite3"
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_db_path = auth_db_path
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+
+    class SessionState(dict):
+        def __getattr__(self, key):
+            return self[key]
+
+        def __setattr__(self, key, value):
+            self[key] = value
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    values = {
+        "auth-signup-full-name": "Test User",
+        "auth-signup-email": "user@example.com",
+        "auth-signup-password": "user-password",
+        "auth-signup-reason": "Needs document access",
+    }
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        session_state=SessionState(),
+        subheader=lambda *args, **kwargs: None,
+        radio=lambda *args, **kwargs: "Sign up",
+        form=lambda *args, **kwargs: Context(),
+        text_input=lambda *args, **kwargs: values[kwargs["key"]],
+        text_area=lambda *args, **kwargs: values[kwargs["key"]],
+        form_submit_button=lambda *args, **kwargs: True,
+        error=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+
+    web_app.main()
+
+    pending = AuthStore(auth_db_path).list_pending_users()
+    assert [user.email for user in pending] == ["user@example.com"]
+    assert pending[0].reason == "Needs document access"
+
+
+def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
+    from imperial_rag import web_app
+    from imperial_rag.auth import AuthStore, AuthenticationStatus
+
+    auth_db_path = tmp_path / "auth.sqlite3"
+    store = AuthStore(auth_db_path)
+    store.initialize()
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("user@example.com", "user-password", "Test User", "Needs access")
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_db_path = auth_db_path
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+
+    class SessionState(dict):
+        def __getattr__(self, key):
+            return self[key]
+
+        def __setattr__(self, key, value):
+            self[key] = value
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        sidebar=Context(),
+        header=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        session_state=SessionState(auth_user_email="admin@example.com"),
+        caption=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: kwargs.get("key") == "auth-approve-user@example.com",
+        markdown=lambda *args, **kwargs: None,
+        container=lambda *args, **kwargs: Context(),
+        success=lambda *args, **kwargs: None,
+        rerun=lambda: None,
+        chat_input=lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+
+    web_app.main()
+
+    assert AuthStore(auth_db_path).authenticate("user@example.com", "user-password").status == AuthenticationStatus.AUTHENTICATED
+
+
+def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_path):
+    from imperial_rag import web_app
+    from imperial_rag.auth import AuthStore
+
+    calls = []
+    auth_db_path = tmp_path / "auth.sqlite3"
+    store = AuthStore(auth_db_path)
+    store.initialize()
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("user@example.com", "user-password", "User", "Testing")
+    store.approve_user("admin@example.com", "user@example.com")
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_db_path = auth_db_path
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
 
     observability_module = types.ModuleType("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
@@ -351,7 +652,9 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch):
         sidebar=Sidebar(),
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
-        session_state=SessionState(),
+        session_state=SessionState(auth_user_email="user@example.com"),
+        caption=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: False,
         chat_input=lambda *args, **kwargs: "private question",
         chat_message=lambda *args, **kwargs: ChatMessage(),
         write=lambda *args, **kwargs: None,
@@ -376,14 +679,17 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch):
 def test_main_bootstraps_src_path_for_streamlit_script_launch():
     script = textwrap.dedent(
         """
+        import os
         import runpy
         import sys
+        import tempfile
         import types
 
         sys.path = [entry for entry in sys.path if not entry.endswith('/src')]
         for name in list(sys.modules):
             if name.startswith('imperial_rag'):
                 del sys.modules[name]
+        os.environ['IMPERIAL_RAG_WORKSPACE_ROOT'] = tempfile.mkdtemp()
 
         class SessionState(dict):
             def __getattr__(self, key):
@@ -406,6 +712,15 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
             header=lambda *args, **kwargs: None,
             text=lambda *args, **kwargs: None,
             session_state=SessionState(),
+            subheader=lambda *args, **kwargs: None,
+            radio=lambda *args, **kwargs: "Log in",
+            form=lambda *args, **kwargs: Sidebar(),
+            text_input=lambda *args, **kwargs: "",
+            form_submit_button=lambda *args, **kwargs: False,
+            error=lambda *args, **kwargs: None,
+            warning=lambda *args, **kwargs: None,
+            success=lambda *args, **kwargs: None,
+            info=lambda *args, **kwargs: None,
             chat_input=lambda *args, **kwargs: None,
         )
         namespace = runpy.run_path('src/imperial_rag/web_app.py', run_name='imperial_web_app_test')
@@ -421,3 +736,8 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@contextmanager
+def _null_trace_context(session_id):
+    yield

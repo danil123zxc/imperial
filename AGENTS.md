@@ -16,13 +16,17 @@ This is a Python 3.12+ local RAG project for the Imperial document corpus. Core 
 
 To run the server locally, use the Streamlit command above from the repository root, then open `http://127.0.0.1:8501`. If port `8501` is already in use, choose another local port with `--server.port <port>` and report the final URL. Verify startup with `curl -fsS -I http://127.0.0.1:<port>/` or a browser smoke check before telling the user it is running.
 
+The main query and UI entrypoints (`scripts/query.py` and `src/imperial_rag/web_app.py`) call `load_project_env()` and automatically load the repository `.env` without overriding already-exported shell variables. Vector search still requires Qdrant to be running and `DASHSCOPE_API_KEY` to be present in `.env` or the process environment. For ad hoc Python probes that import runtime/provider modules directly, call `from imperial_rag.env import load_project_env; load_project_env()` before creating `Settings()` or checking provider state.
+
 ## Coding Style & Naming Conventions
 
-Use Python type hints, `from __future__ import annotations`, `pathlib.Path`, and dataclasses where they match existing code. Keep four-space indentation, `snake_case` for modules/functions, `PascalCase` for classes/dataclasses, and uppercase constants. No formatter or linter is configured, so match the existing concise style and run pytest before handing off.
+Use Python type hints, `from __future__ import annotations`, `pathlib.Path`, and dataclasses where they match existing code. Keep four-space indentation, `snake_case` for modules/functions, `PascalCase` for classes/dataclasses, and uppercase constants. Always try to reuse the project's implemented LangChain flows, adapters, and other existing integrations when they fit the task before adding bespoke code. Prefer well-maintained existing libraries, SDKs, and framework integrations over custom implementations, especially for service APIs, storage, parsing, retrieval, orchestration, and evaluation. No formatter or linter is configured, so match the existing concise style and run pytest before handing off.
 
 ## Testing Guidelines
 
 The project uses pytest with `pythonpath = ["src"]` and `testpaths = ["tests"]`. Add focused tests beside related subsystem tests, name files `test_<module>.py`, and name test functions `test_<behavior>()`. Prefer `tmp_path`, fakes, and `monkeypatch` for local state. Live Qdrant checks are opt-in: `IMPERIAL_RAG_LIVE_QDRANT=1 uv run python -m pytest tests/test_qdrant_health.py -q`.
+
+Evaluation workflows should be async-first: write eval runners, provider calls, and eval tests with async-compatible code paths instead of blocking synchronous loops when touching retrieval, model, tracing, or Phoenix-backed evaluation behavior.
 
 ## Commit & Pull Request Guidelines
 

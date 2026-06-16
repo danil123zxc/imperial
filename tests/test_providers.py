@@ -441,6 +441,7 @@ def test_dashscope_text_embeddings_traces_embedding_batches(monkeypatch):
     assert records[0]["attributes"]["openinference.span.kind"] == "EMBEDDING"
     assert records[0]["attributes"]["input.value"] == "document"
     assert records[0]["attributes"]["embedding.model"] == "text-embedding-v4"
+    assert records[0]["attributes"]["embedding.model_name"] == "text-embedding-v4"
     assert records[0]["attributes"]["embedding.dimensions"] == 2048
     assert records[0]["attributes"]["embedding.batch_size"] == 2
     assert records[0]["attributes"]["embedding.offset"] == 0

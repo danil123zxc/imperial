@@ -3,14 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import mimetypes
+import os
 from pathlib import Path
 import sys
 from time import perf_counter
 from typing import Any
+import uuid
 
 
 APP_TITLE = "Imperial RAG"
 PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
+AUTH_SESSION_EMAIL_KEY = "auth_user_email"
 
 
 @dataclass(frozen=True)
@@ -144,17 +147,33 @@ def main() -> None:
     st.title(APP_TITLE)
     settings = Settings()
     from imperial_rag.observability import configure_observability
-    from imperial_rag.tracing import configure_phoenix_tracing
+    from imperial_rag.tracing import configure_phoenix_tracing, phoenix_trace_context
 
     configure_observability(settings)
     configure_phoenix_tracing(settings)
 
+    auth_store = _prepare_auth_store(settings)
+    current_user = _current_authenticated_user(st, auth_store)
+    if current_user is None:
+        _render_auth_gate(st, auth_store)
+        return
+
     with st.sidebar:
+        st.caption(f"Signed in as {current_user.email}")
+        if st.button("Log out", key="auth-logout", icon=":material/logout:"):
+            st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
+            st.session_state.pop("messages", None)
+            _rerun(st)
+            return
+        if current_user.is_admin:
+            _render_admin_access_panel(st, auth_store, current_user)
         st.header("Ingestion status")
         st.text(load_status_summary(settings))
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "phoenix_trace_session_id" not in st.session_state:
+        st.session_state.phoenix_trace_session_id = str(uuid.uuid4())
 
     for message_index, message in enumerate(st.session_state.messages):
         _render_chat_message(st, message, message_index, settings)
@@ -169,7 +188,8 @@ def main() -> None:
 
     started_at = perf_counter()
     try:
-        result = query_runtime(settings, question)
+        with phoenix_trace_context(st.session_state.phoenix_trace_session_id):
+            result = query_runtime(settings, question)
     except Exception as exc:
         from imperial_rag.observability import log_failure
 
@@ -198,6 +218,116 @@ def main() -> None:
     }
     st.session_state.messages.append(assistant_message)
     _render_chat_message(st, assistant_message, len(st.session_state.messages) - 1, settings)
+
+
+def _prepare_auth_store(settings: Any) -> Any:
+    from imperial_rag.auth import AuthStore
+
+    auth_db_path = getattr(settings, "auth_db_path", None)
+    if auth_db_path is None:
+        processed_root = getattr(settings, "processed_root", Path.cwd() / ".imperial_rag")
+        auth_db_path = Path(processed_root) / "auth.sqlite3"
+    store = AuthStore(Path(auth_db_path))
+    store.initialize()
+
+    admin_email = os.environ.get("IMPERIAL_RAG_ADMIN_EMAIL", "").strip()
+    admin_password = os.environ.get("IMPERIAL_RAG_ADMIN_PASSWORD", "")
+    if admin_email and admin_password:
+        store.bootstrap_admin(admin_email, admin_password)
+    return store
+
+
+def _current_authenticated_user(st: Any, auth_store: Any) -> Any | None:
+    email = st.session_state.get(AUTH_SESSION_EMAIL_KEY)
+    if not email:
+        return None
+    user = auth_store.get_user(str(email))
+    if user is None or user.status != "approved":
+        st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
+        return None
+    return user
+
+
+def _render_auth_gate(st: Any, auth_store: Any) -> None:
+    from imperial_rag.auth import AuthenticationStatus
+
+    st.subheader("Access required")
+    mode = st.radio("Account action", ["Log in", "Sign up"], horizontal=True, key="auth-mode")
+
+    if mode == "Log in":
+        with st.form("auth-login-form"):
+            email = st.text_input("Email", key="auth-login-email")
+            password = st.text_input("Password", type="password", key="auth-login-password")
+            submitted = st.form_submit_button("Log in", icon=":material/login:")
+        if not submitted:
+            return
+        try:
+            result = auth_store.authenticate(email, password)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        if result.status == AuthenticationStatus.AUTHENTICATED and result.user is not None:
+            st.session_state[AUTH_SESSION_EMAIL_KEY] = result.user.email
+            _rerun(st)
+            return
+        if result.status == AuthenticationStatus.PENDING_APPROVAL:
+            st.warning("Your access request is waiting for admin approval.")
+            return
+        if result.status == AuthenticationStatus.REJECTED:
+            st.error("This access request was rejected.")
+            return
+        st.error("Invalid email or password.")
+        return
+
+    with st.form("auth-signup-form"):
+        full_name = st.text_input("Full name", key="auth-signup-full-name")
+        email = st.text_input("Email", key="auth-signup-email")
+        password = st.text_input("Password", type="password", key="auth-signup-password")
+        reason = st.text_area("Access reason", key="auth-signup-reason")
+        submitted = st.form_submit_button("Request access", icon=":material/how_to_reg:")
+    if not submitted:
+        return
+    try:
+        user = auth_store.register_user(email=email, password=password, full_name=full_name, reason=reason)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    if user.status == "approved":
+        st.info("This account already has access. Log in to continue.")
+        return
+    st.success("Registration submitted. An admin can grant access from the access requests panel.")
+
+
+def _render_admin_access_panel(st: Any, auth_store: Any, current_user: Any) -> None:
+    pending_users = auth_store.list_pending_users()
+    if not pending_users:
+        return
+
+    request_label = (
+        "1 pending access request" if len(pending_users) == 1 else f"{len(pending_users)} pending access requests"
+    )
+    st.warning(request_label)
+    for pending_user in pending_users:
+        with st.container(border=True):
+            st.markdown(f"**{pending_user.full_name or pending_user.email}**")
+            st.caption(pending_user.email)
+            if pending_user.reason:
+                st.caption(pending_user.reason)
+            if st.button(
+                "Grant access",
+                key=f"auth-approve-{pending_user.email}",
+                icon=":material/check:",
+                width="stretch",
+            ):
+                auth_store.approve_user(current_user.email, pending_user.email)
+                st.success(f"Granted access to {pending_user.email}")
+                _rerun(st)
+
+
+def _rerun(st: Any) -> None:
+    rerun = getattr(st, "rerun", None)
+    if rerun is not None:
+        rerun()
 
 
 def _coerce_result(result: Any) -> dict[str, Any]:

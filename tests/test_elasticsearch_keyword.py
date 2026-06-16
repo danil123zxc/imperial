@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from elasticsearch import Elasticsearch
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
@@ -15,7 +16,10 @@ from imperial_rag.elasticsearch_keyword import (
     elasticsearch_health,
 )
 from imperial_rag.indexing import stable_chunk_id
-from imperial_rag.keyword import build_elasticsearch_token_query
+from imperial_rag.keyword import (
+    ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+    build_elasticsearch_token_query,
+)
 
 
 @dataclass
@@ -41,8 +45,11 @@ class FakeIndices:
         self.client.existing_indices.discard(index)
 
 
-class FakeClient:
+class FakeClient(Elasticsearch):
+    # Subclass Elasticsearch so langchain_elasticsearch.ElasticsearchRetriever's
+    # ``client: Elasticsearch`` validation passes, but skip the real network init.
     def __init__(self):
+        self._headers = {}
         self.indices = FakeIndices(self)
         self.existing_indices = set()
         self.created = []
@@ -52,8 +59,11 @@ class FakeClient:
         self.search_responses = []
         self.ping_result = True
 
-    def search(self, index, query, size):
-        self.search_calls.append({"index": index, "query": query, "size": size})
+    def options(self, **kwargs):
+        return self
+
+    def search(self, index, body):
+        self.search_calls.append({"index": index, "body": body})
         return self.search_responses.pop(0)
 
     def ping(self):
@@ -71,6 +81,31 @@ def make_index(tmp_path: Path, client: FakeClient) -> ElasticsearchKeywordIndex:
 
 def mark_index_exists(client: FakeClient) -> None:
     client.existing_indices.add("test_keyword_chunks")
+
+
+def assert_fuzzy_token_query_body(body: dict, tokens: list[str], size: int) -> None:
+    assert body["size"] == size
+    token_clauses = body["query"]["bool"]["must"]
+    assert len(token_clauses) == len(tokens)
+    for token, clause in zip(tokens, token_clauses, strict=True):
+        alternatives = clause["bool"]["should"]
+        assert clause["bool"]["minimum_should_match"] == 1
+        assert alternatives[0] == {
+            "multi_match": {
+                "query": token,
+                "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+            }
+        }
+        assert alternatives[1] == {
+            "multi_match": {
+                "query": token,
+                "fields": ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
+                "fuzziness": "AUTO",
+                "prefix_length": 1,
+                "max_expansions": 25,
+                "fuzzy_transpositions": True,
+            }
+        }
 
 
 def test_keyword_retriever_is_langchain_retriever_and_preserves_scores() -> None:
@@ -114,15 +149,14 @@ def test_keyword_retriever_is_langchain_retriever_and_preserves_scores() -> None
     assert client.search_calls == [
         {
             "index": "test_keyword_chunks",
-            "query": build_elasticsearch_token_query(["возврат", "брак"]),
-            "size": 5,
+            "body": {"query": build_elasticsearch_token_query(["возврат", "брак"]), "size": 5},
         },
         {
             "index": "test_keyword_chunks",
-            "query": build_elasticsearch_token_query(["возврат", "брак"]),
-            "size": 5,
+            "body": {"query": build_elasticsearch_token_query(["возврат", "брак"]), "size": 5},
         },
     ]
+    assert_fuzzy_token_query_body(client.search_calls[0]["body"], ["возврат", "брак"], size=5)
 
 
 def test_keyword_index_facade_uses_retriever_for_query_time_search(tmp_path: Path) -> None:
@@ -187,18 +221,18 @@ def test_keyword_retriever_async_invoke_accepts_limit() -> None:
     assert client.search_calls == [
         {
             "index": "test_keyword_chunks",
-            "query": build_elasticsearch_token_query(["возврат", "брак"]),
-            "size": 5,
+            "body": {"query": build_elasticsearch_token_query(["возврат", "брак"]), "size": 5},
         }
     ]
+    assert_fuzzy_token_query_body(client.search_calls[0]["body"], ["возврат", "брак"], size=5)
 
 
 def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:
     import time
 
     class SlowClient(FakeClient):
-        def search(self, index, query, size):
-            self.search_calls.append({"index": index, "query": query, "size": size})
+        def search(self, index, body):
+            self.search_calls.append({"index": index, "body": body})
             time.sleep(0.2)
             return {
                 "hits": {
@@ -356,8 +390,7 @@ def test_search_with_scores_uses_all_tokens_query_and_maps_hits(tmp_path: Path) 
     assert client.search_calls == [
         {
             "index": "test_keyword_chunks",
-            "query": build_elasticsearch_token_query(["возврат", "брак"]),
-            "size": 5,
+            "body": {"query": build_elasticsearch_token_query(["возврат", "брак"]), "size": 5},
         }
     ]
     assert [hit.document.metadata["citation_id"] for hit in hits] == ["a"]
@@ -401,7 +434,15 @@ def test_search_uses_relaxed_queries_when_strict_search_misses(tmp_path: Path) -
 
     assert [result.metadata["citation_id"] for result in results] == ["store"]
     assert len(client.search_calls) == 2
-    assert client.search_calls[1]["query"]["bool"]["must"] != client.search_calls[0]["query"]["bool"]["must"]
+    assert_fuzzy_token_query_body(
+        client.search_calls[0]["body"],
+        ["оформит", "возврат", "брак", "магазин"],
+        size=1,
+    )
+    assert (
+        client.search_calls[1]["body"]["query"]["bool"]["must"]
+        != client.search_calls[0]["body"]["query"]["bool"]["must"]
+    )
 
 
 def test_search_with_scores_preserves_elasticsearch_metadata_boost_order(tmp_path: Path) -> None:
