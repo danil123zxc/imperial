@@ -362,6 +362,63 @@ def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) ->
     assert recorded_span.status.status_code is tracing_module.StatusCode.OK
 
 
+def test_trace_llm_step_sets_openinference_llm_attributes_and_messages(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_llm_step(
+        "answer.call_model",
+        "Что делать?",
+        attributes={"llm.provider": "dashscope", "llm.model_name": "qwen3.7-plus"},
+    ) as span:
+        span.set_attribute("llm.input_messages.0.message.role", "user")
+        span.set_attribute("llm.input_messages.0.message.content", "Что делать?")
+        span.set_attribute("llm.output_messages.0.message.role", "assistant")
+        span.set_attribute("llm.output_messages.0.message.content", "Оформить акт. [S1]")
+        span.set_output({"answer_chars": 19})
+
+    assert records[0]["name"] == "answer.call_model"
+    assert records[0]["attributes"]["openinference.span.kind"] == "LLM"
+    assert records[0]["attributes"]["input.value"] == "Что делать?"
+    assert records[0]["attributes"]["llm.provider"] == "dashscope"
+    assert records[0]["attributes"]["llm.model_name"] == "qwen3.7-plus"
+    recorded_span = records[0]["span"]
+    assert recorded_span.attributes["llm.input_messages.0.message.role"] == "user"
+    assert recorded_span.attributes["llm.input_messages.0.message.content"] == "Что делать?"
+    assert recorded_span.attributes["llm.output_messages.0.message.role"] == "assistant"
+    assert recorded_span.attributes["llm.output_messages.0.message.content"] == "Оформить акт. [S1]"
+    assert recorded_span.attributes["output.value"] == '{"answer_chars": 19}'
+    assert recorded_span.status.status_code is tracing_module.StatusCode.OK
+
+
 def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
@@ -696,6 +753,55 @@ def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_te
     assert "output.value" not in recorded_span.attributes
     assert "retrieval.documents.0.document.content" not in recorded_span.attributes
     assert recorded_span.attributes["retrieval.documents.0.document.id"] == "chunk-1"
+
+
+def test_openinference_redaction_env_hides_llm_messages(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_MESSAGES", "true")
+    monkeypatch.setenv("OPENINFERENCE_HIDE_OUTPUT_MESSAGES", "true")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_llm_step("answer.call_model", "private question") as span:
+        span.set_attribute("llm.input_messages.0.message.role", "user")
+        span.set_attribute("llm.input_messages.0.message.content", "private question")
+        span.set_attribute("llm.output_messages.0.message.role", "assistant")
+        span.set_attribute("llm.output_messages.0.message.content", "private answer")
+        span.set_attribute("llm.model_name", "qwen3.7-plus")
+
+    recorded_span = records[0]["span"]
+    assert records[0]["attributes"]["openinference.span.kind"] == "LLM"
+    assert "llm.input_messages.0.message.role" not in recorded_span.attributes
+    assert "llm.input_messages.0.message.content" not in recorded_span.attributes
+    assert "llm.output_messages.0.message.role" not in recorded_span.attributes
+    assert "llm.output_messages.0.message.content" not in recorded_span.attributes
+    assert recorded_span.attributes["llm.model_name"] == "qwen3.7-plus"
 
 
 def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:

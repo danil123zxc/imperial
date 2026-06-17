@@ -7,7 +7,7 @@ from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
 from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
 from imperial_rag.indexing import make_qdrant_store
-from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
+from imperial_rag.providers import QwenProviderSettings, create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import RetrievalService, RetrievalSettings
 from imperial_rag.tracing import imperial_trace_attributes, trace_pipeline_step
 from imperial_rag.workflows import build_query_workflow
@@ -138,6 +138,7 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
         }
 
     def generate(question: str, docs):
+        trace_attributes = _qwen_llm_trace_attributes()
         try:
             response = dependencies().chat_model.invoke(build_strict_messages(question, docs))
         except Exception as exc:
@@ -146,6 +147,7 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
             return {
                 "answer": REFUSAL_TEXT,
                 "trace_attributes": {
+                    **trace_attributes,
                     "answer.model_status": "error",
                     "answer.model_error_type": type(exc).__name__,
                     "answer.refusal_reason": "model_exception",
@@ -154,7 +156,7 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
             }
         return {
             "answer": getattr(response, "content", response),
-            "trace_attributes": {"answer.model_status": "ok"},
+            "trace_attributes": {**trace_attributes, "answer.model_status": "ok"},
         }
 
     workflow = build_query_workflow(retrieve=retrieve, generate=generate)
@@ -167,6 +169,15 @@ def build_live_query_workflow(settings: Settings | None = None):
 
 def _semantic_search_enabled() -> bool:
     return dashscope_configured()
+
+
+def _qwen_llm_trace_attributes() -> dict[str, Any]:
+    qwen_settings = QwenProviderSettings.from_env()
+    return {
+        "llm.provider": "dashscope",
+        "llm.model_name": qwen_settings.chat_model,
+        "llm.invocation_parameters": {"temperature": 0},
+    }
 
 
 def _query_trace_output(result: Any) -> dict[str, Any]:

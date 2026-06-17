@@ -144,11 +144,19 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
 
     assert success == {
         "answer": "Ответ с цитатой. [S1]",
-        "trace_attributes": {"answer.model_status": "ok"},
+        "trace_attributes": {
+            "llm.provider": "dashscope",
+            "llm.model_name": "qwen3.7-plus",
+            "llm.invocation_parameters": {"temperature": 0},
+            "answer.model_status": "ok",
+        },
     }
     assert failure == {
         "answer": "I could not find this clearly in the indexed documents.",
         "trace_attributes": {
+            "llm.provider": "dashscope",
+            "llm.model_name": "qwen3.7-plus",
+            "llm.invocation_parameters": {"temperature": 0},
             "answer.model_status": "error",
             "answer.model_error_type": "RuntimeError",
             "answer.refusal_reason": "model_exception",

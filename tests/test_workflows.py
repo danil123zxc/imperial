@@ -105,6 +105,7 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
         yield FakeTraceSpan()
 
     monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+    monkeypatch.setattr(workflows_module, "trace_llm_step", fake_trace_answer_step)
 
     workflow = build_query_workflow(
         retrieve=lambda question: docs,
@@ -218,6 +219,7 @@ def test_query_workflow_sets_prompt_provenance_and_generator_trace_attributes(mo
         yield FakeTraceSpan()
 
     monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+    monkeypatch.setattr(workflows_module, "trace_llm_step", fake_trace_answer_step)
 
     workflow = build_query_workflow(
         retrieve=lambda question: docs,
@@ -243,8 +245,21 @@ def test_query_workflow_sets_prompt_provenance_and_generator_trace_attributes(mo
     assert prompt_attrs["answer.citation_count"] == 1
     assert prompt_attrs["answer.citation_ids"] == ["known"]
     assert prompt_attrs["answer.context_chars"] == len("Known private fact.")
+    assert prompt_attrs["llm.invocation_parameters"] == {"temperature": 0}
+    assert prompt_attrs["llm.input_messages.0.message.role"] == "system"
+    assert "strict-citation RAG assistant" in prompt_attrs["llm.input_messages.0.message.content"]
+    assert prompt_attrs["llm.input_messages.1.message.role"] == "user"
+    assert "What is known?" in prompt_attrs["llm.input_messages.1.message.content"]
+    assert "1 retrieved chunk(s) elided" in prompt_attrs["llm.input_messages.1.message.content"]
+    assert prompt_attrs["llm.output_messages.0.message.role"] == "assistant"
+    assert prompt_attrs["llm.output_messages.0.message.content"] == "Known private fact. [S1]"
     assert prompt_attrs["answer.model_status"] == "ok"
-    assert all("Known private fact" not in str(value) for value in prompt_attrs.values())
+    prompt_only_attrs = {
+        key: value
+        for key, value in prompt_attrs.items()
+        if not key.startswith("llm.output_messages.")
+    }
+    assert all("Known private fact" not in str(value) for value in prompt_only_attrs.values())
 
 
 def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
@@ -265,6 +280,7 @@ def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
         yield FakeTraceSpan()
 
     monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+    monkeypatch.setattr(workflows_module, "trace_llm_step", fake_trace_answer_step)
 
     workflow = build_query_workflow()
     result = workflow.invoke({"question": "Что не найдено?"})
@@ -520,6 +536,7 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
         yield FakeTraceSpan()
 
     monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+    monkeypatch.setattr(workflows_module, "trace_llm_step", fake_trace_answer_step)
 
     workflow = build_query_workflow(
         retrieve=lambda question: docs,

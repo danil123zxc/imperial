@@ -28,6 +28,9 @@ _OUTPUT_MIME_TYPE = getattr(SpanAttributes, "OUTPUT_MIME_TYPE", "output.mime_typ
 _RETRIEVAL_DOCUMENTS = SpanAttributes.RETRIEVAL_DOCUMENTS
 _RERANKER_INPUT_DOCUMENTS = RerankerAttributes.RERANKER_INPUT_DOCUMENTS
 _RERANKER_OUTPUT_DOCUMENTS = RerankerAttributes.RERANKER_OUTPUT_DOCUMENTS
+_LLM_INPUT_MESSAGES = "llm.input_messages"
+_LLM_OUTPUT_MESSAGES = "llm.output_messages"
+_LLM_TOOLS = "llm.tools"
 _DOCUMENT_CONTENT = DocumentAttributes.DOCUMENT_CONTENT
 _DOCUMENT_ID = DocumentAttributes.DOCUMENT_ID
 _DOCUMENT_METADATA = DocumentAttributes.DOCUMENT_METADATA
@@ -167,6 +170,17 @@ def trace_answer_step(
     attributes: Mapping[str, Any] | None = None,
 ) -> Iterator[OpenInferenceTraceSpan]:
     with trace_openinference_step(name, question, kind="CHAIN", attributes=attributes) as span:
+        yield span
+
+
+@contextmanager
+def trace_llm_step(
+    name: str,
+    input_value: str,
+    *,
+    attributes: Mapping[str, Any] | None = None,
+) -> Iterator[OpenInferenceTraceSpan]:
+    with trace_openinference_step(name, input_value, kind="LLM", attributes=attributes) as span:
         yield span
 
 
@@ -458,6 +472,18 @@ def _hide_outputs() -> bool:
     return _env_flag("OPENINFERENCE_HIDE_OUTPUTS")
 
 
+def _hide_input_messages() -> bool:
+    return _hide_inputs() or _env_flag("OPENINFERENCE_HIDE_INPUT_MESSAGES") or _env_flag("OPENINFERENCE_HIDE_LLM_PROMPTS")
+
+
+def _hide_output_messages() -> bool:
+    return _hide_outputs() or _env_flag("OPENINFERENCE_HIDE_OUTPUT_MESSAGES")
+
+
+def _hide_llm_tools() -> bool:
+    return _hide_inputs() or _env_flag("OPENINFERENCE_HIDE_LLM_TOOLS")
+
+
 def _hide_input_text() -> bool:
     return _hide_inputs() or _env_flag("OPENINFERENCE_HIDE_INPUT_TEXT")
 
@@ -470,6 +496,12 @@ def _attribute_hidden(key: str) -> bool:
     if _hide_inputs() and (key == _INPUT_VALUE or key == _INPUT_MIME_TYPE or key.startswith("input.")):
         return True
     if _hide_outputs() and (key == _OUTPUT_VALUE or key == _OUTPUT_MIME_TYPE or key.startswith("output.")):
+        return True
+    if _hide_input_messages() and key.startswith(f"{_LLM_INPUT_MESSAGES}."):
+        return True
+    if _hide_output_messages() and key.startswith(f"{_LLM_OUTPUT_MESSAGES}."):
+        return True
+    if _hide_llm_tools() and key.startswith(f"{_LLM_TOOLS}."):
         return True
     if _hide_input_text() and key.endswith(f".{_DOCUMENT_CONTENT}"):
         return True

@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from imperial_rag.answering import (
     REFUSAL_TEXT,
+    STRICT_SYSTEM_PROMPT,
     build_evidence_prompt,
     build_strict_answer_chain,
     format_citations,
@@ -17,7 +18,7 @@ from imperial_rag.answering import (
     validate_citations,
 )
 from imperial_rag.retrieval import CandidateMerger
-from imperial_rag.tracing import imperial_trace_attributes, trace_answer_step
+from imperial_rag.tracing import imperial_trace_attributes, trace_answer_step, trace_llm_step
 
 PROMPT_VERSION = "strict-rag-v1"
 _EVIDENCE_PROMPT_SKELETON = """You are answering questions about internal company documents.
@@ -277,7 +278,7 @@ def build_query_workflow(
                 }
                 _set_answer_trace_output(span, update, evidence_count=0, citation_count=0)
                 return update
-            with trace_answer_step(
+            with trace_llm_step(
                 "answer.call_model",
                 state["question"],
                 attributes=imperial_trace_attributes(
@@ -286,17 +287,19 @@ def build_query_workflow(
                     {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
                 ),
             ) as model_span:
-                _set_model_prompt_trace_attributes(model_span, evidence, citations)
+                _set_model_prompt_trace_attributes(model_span, state["question"], evidence, citations)
                 if generate is not None:
                     generated = generate(state["question"], evidence)
                     answer = _coerce_answer(generated)
                     _set_model_generation_trace_attributes(model_span, generated)
                 else:
                     resolved_model = model or _legacy_openai_chat_model()
+                    _set_model_trace_attributes(model_span, resolved_model)
                     answer = build_strict_answer_chain(resolved_model).invoke(
                         {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
                     )
                     model_span.set_attribute("answer.model_status", "ok")
+                _set_model_output_trace_attributes(model_span, answer)
                 model_span.set_output(
                     {
                         "answer_chars": len(str(answer)),
@@ -356,17 +359,63 @@ def _answer_trace_attributes(evidence: Sequence[Document], citations: Sequence[s
     }
 
 
-def _set_model_prompt_trace_attributes(span: Any, evidence: Sequence[Document], citations: Sequence[str]) -> None:
+def _set_model_prompt_trace_attributes(
+    span: Any,
+    question: str,
+    evidence: Sequence[Document],
+    citations: Sequence[str],
+) -> None:
     attrs = _answer_trace_attributes(evidence, citations)
     span.set_attribute("answer.prompt_version", PROMPT_VERSION)
     span.set_attribute("answer.prompt_skeleton_hash", _EVIDENCE_PROMPT_SKELETON_HASH)
+    span.set_attribute("llm.invocation_parameters", {"temperature": 0})
+    for key, value in _llm_input_message_trace_attributes(question, evidence).items():
+        span.set_attribute(key, value)
     for key in ("answer.evidence_count", "answer.citation_count", "answer.citation_ids", "answer.context_chars"):
         span.set_attribute(key, attrs[key])
+
+
+def _set_model_trace_attributes(span: Any, model: Any) -> None:
+    model_name = (
+        getattr(model, "model_name", None)
+        or getattr(model, "model", None)
+        or getattr(model, "_model_name", None)
+        or getattr(model, "model_id", None)
+    )
+    if model_name:
+        span.set_attribute("llm.model_name", str(model_name))
+    provider = getattr(model, "lc_namespace", None)
+    if callable(provider):
+        namespace = ".".join(str(part) for part in provider())
+        if namespace:
+            span.set_attribute("llm.provider", namespace)
 
 
 def _set_model_generation_trace_attributes(span: Any, generated: Any) -> None:
     for key, value in _coerce_trace_attributes(generated).items():
         span.set_attribute(str(key), value)
+
+
+def _set_model_output_trace_attributes(span: Any, answer: Any) -> None:
+    span.set_attribute("llm.output_messages.0.message.role", "assistant")
+    span.set_attribute("llm.output_messages.0.message.content", str(answer))
+
+
+def _llm_input_message_trace_attributes(question: str, evidence: Sequence[Document]) -> dict[str, Any]:
+    return {
+        "llm.input_messages.0.message.role": "system",
+        "llm.input_messages.0.message.content": STRICT_SYSTEM_PROMPT,
+        "llm.input_messages.1.message.role": "user",
+        "llm.input_messages.1.message.content": _safe_user_prompt_trace_content(question, evidence),
+    }
+
+
+def _safe_user_prompt_trace_content(question: str, evidence: Sequence[Document]) -> str:
+    return (
+        f"Question:\n{question}\n\n"
+        "Evidence:\n"
+        f"<{len(evidence)} retrieved chunk(s) elided; inspect retrieval.select_evidence for source metadata.>"
+    )
 
 
 def _answer_context_trace_output(
