@@ -402,8 +402,9 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[5]["set_attributes"]["reranker.model_name"] == "fallback:deterministic"
     assert records[5]["output"]["reranker"] == "fallback:deterministic"
     assert "reranker_missing_dashscope_api_key" in records[5]["output"]["fallbacks"]
-    assert "reranker.input_documents.0.document.id" not in records[5]["set_attributes"]
-    assert "reranker.output_documents.0.document.id" not in records[5]["set_attributes"]
+    rerank_attributes = records[5]["set_attributes"]
+    assert [rerank_attributes[f"reranker.input_documents.{index}.document.id"] for index in range(2)] == ["v", "k"]
+    assert [rerank_attributes[f"reranker.output_documents.{index}.document.id"] for index in range(1)] == ["k"]
     assert records[6]["name"] == "retrieval.select_evidence"
     assert records[6]["kind"] == "RETRIEVER"
     assert records[6]["attributes"]["imperial.step"] == "select_evidence"
@@ -651,6 +652,19 @@ def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypat
     rerank_record = records[5]
     assert rerank_record["name"] == "retrieve.rerank"
     assert compressor_inputs == [["v0", "k0", "v1", "k1", "v2", "k2"]]
+    rerank_attributes = rerank_record["set_attributes"]
+    assert [rerank_attributes[f"reranker.input_documents.{index}.document.id"] for index in range(6)] == [
+        "v0",
+        "k0",
+        "v1",
+        "k1",
+        "v2",
+        "k2",
+    ]
+    assert [rerank_attributes[f"reranker.output_documents.{index}.document.id"] for index in range(2)] == [
+        "v0",
+        "k0",
+    ]
     assert rerank_record["output"]["rerank_input"] == 6
     assert result.diagnostics["rerank_input_candidates"] == 6
 

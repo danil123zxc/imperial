@@ -628,7 +628,9 @@ class RetrievalService:
                     },
                 ),
             ) as span:
+                span.set_reranker_input_documents(rerank_input)
                 reranked = self.reranker.rerank(query, rerank_input, diagnostics)
+                span.set_reranker_output_documents(reranked)
                 span.set_attribute("reranker.model_name", diagnostics.get("reranker"))
                 _set_documents_span_output(
                     span,
