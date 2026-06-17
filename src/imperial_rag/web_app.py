@@ -188,7 +188,14 @@ def main() -> None:
 
     started_at = perf_counter()
     try:
-        with phoenix_trace_context(st.session_state.phoenix_trace_session_id):
+        from imperial_rag.tracing import trace_user_id_from_email
+
+        with phoenix_trace_context(
+            st.session_state.phoenix_trace_session_id,
+            user_id=trace_user_id_from_email(current_user.email),
+            metadata={"entrypoint": "streamlit"},
+            tags=["imperial-rag", "streamlit"],
+        ):
             result = query_runtime(settings, question)
     except Exception as exc:
         from imperial_rag.observability import log_failure

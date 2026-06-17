@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import socket
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any
 from urllib.parse import urlparse
 
@@ -219,6 +220,18 @@ def imperial_trace_attributes(
     return trace_attributes
 
 
+def trace_candidate_documents_enabled() -> bool:
+    return _env_flag("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS")
+
+
+def trace_user_id_from_email(email: str) -> str:
+    normalized = str(email).strip().casefold()
+    if not normalized:
+        return ""
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"user_sha256:{digest}"
+
+
 def retrieval_documents_preview(
     documents: Sequence[Any],
     *,
@@ -333,20 +346,36 @@ def _json_value(value: Any) -> str:
 
 
 @contextmanager
-def phoenix_trace_context(session_id: str | None = None) -> Iterator[None]:
-    """Propagate Phoenix session context to all child spans when available."""
+def phoenix_trace_context(
+    session_id: str | None = None,
+    *,
+    user_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    tags: Sequence[str] | None = None,
+) -> Iterator[None]:
+    """Propagate Phoenix trace context to all child spans when available."""
 
     resolved_session_id = str(session_id).strip() if session_id is not None else ""
-    if not resolved_session_id:
-        yield
-        return
+    resolved_user_id = str(user_id).strip() if user_id is not None else ""
+    resolved_metadata: dict[str, Any] = {_IMPERIAL_TRACE_SCHEMA_VERSION: _TRACE_SCHEMA_VERSION_VALUE}
+    for key, value in dict(metadata or {}).items():
+        if value is not None:
+            resolved_metadata[str(key)] = value
+    resolved_tags = _dedupe_trace_tags(tags or [])
     try:
-        from phoenix.otel import using_session
+        from phoenix.otel import using_metadata, using_session, using_tags, using_user
     except ImportError:
         yield
         return
 
-    with using_session(session_id=resolved_session_id):
+    with ExitStack() as stack:
+        if resolved_session_id:
+            stack.enter_context(using_session(resolved_session_id))
+        if resolved_user_id:
+            stack.enter_context(using_user(resolved_user_id))
+        stack.enter_context(using_metadata(resolved_metadata))
+        if resolved_tags:
+            stack.enter_context(using_tags(resolved_tags))
         yield
 
 
@@ -385,6 +414,7 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
         project_name=resolved_settings.phoenix_project_name,
         endpoint=resolved_settings.phoenix_collector_endpoint,
         auto_instrument=True,
+        batch=_env_flag("IMPERIAL_RAG_TRACE_BATCH"),
         verbose=False,
     )
     _CONFIGURED_KEY = key
@@ -406,6 +436,18 @@ def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     if minimum is not None:
         return max(value, minimum)
     return value
+
+
+def _dedupe_trace_tags(tags: Sequence[str]) -> list[str]:
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        value = str(tag).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        resolved.append(value)
+    return resolved
 
 
 def _hide_inputs() -> bool:

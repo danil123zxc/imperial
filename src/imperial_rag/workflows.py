@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypedDict
 
@@ -17,6 +18,23 @@ from imperial_rag.answering import (
 )
 from imperial_rag.retrieval import CandidateMerger
 from imperial_rag.tracing import imperial_trace_attributes, trace_answer_step
+
+PROMPT_VERSION = "strict-rag-v1"
+_EVIDENCE_PROMPT_SKELETON = """You are answering questions about internal company documents.
+Use only the evidence below.
+Do not use general model knowledge.
+Every meaningful factual claim must cite a source from the evidence.
+Use the short source labels exactly as shown, for example [S1].
+Do not include uncited introductions or summaries.
+If the evidence is insufficient, answer exactly: {refusal_text}
+
+Question:
+{question}
+
+Evidence:
+{evidence}
+"""
+_EVIDENCE_PROMPT_SKELETON_HASH = hashlib.sha256(_EVIDENCE_PROMPT_SKELETON.encode("utf-8")).hexdigest()
 
 
 class VectorSearch(Protocol):
@@ -150,6 +168,15 @@ def _coerce_answer(answer: Any) -> str:
     return str(answer)
 
 
+def _coerce_trace_attributes(answer: Any) -> dict[str, Any]:
+    if not isinstance(answer, Mapping):
+        return {}
+    trace_attributes = answer.get("trace_attributes")
+    if isinstance(trace_attributes, Mapping):
+        return dict(trace_attributes)
+    return {}
+
+
 def _call_pipeline(run_pipeline, state: Mapping[str, Any]):
     try:
         signature = inspect.signature(run_pipeline)
@@ -259,13 +286,17 @@ def build_query_workflow(
                     {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
                 ),
             ) as model_span:
+                _set_model_prompt_trace_attributes(model_span, evidence, citations)
                 if generate is not None:
-                    answer = _coerce_answer(generate(state["question"], evidence))
+                    generated = generate(state["question"], evidence)
+                    answer = _coerce_answer(generated)
+                    _set_model_generation_trace_attributes(model_span, generated)
                 else:
                     resolved_model = model or _legacy_openai_chat_model()
                     answer = build_strict_answer_chain(resolved_model).invoke(
                         {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
                     )
+                    model_span.set_attribute("answer.model_status", "ok")
                 model_span.set_output(
                     {
                         "answer_chars": len(str(answer)),
@@ -323,6 +354,19 @@ def _answer_trace_attributes(evidence: Sequence[Document], citations: Sequence[s
         ],
         "answer.context_chars": sum(len(str(document.page_content)) for document in evidence),
     }
+
+
+def _set_model_prompt_trace_attributes(span: Any, evidence: Sequence[Document], citations: Sequence[str]) -> None:
+    attrs = _answer_trace_attributes(evidence, citations)
+    span.set_attribute("answer.prompt_version", PROMPT_VERSION)
+    span.set_attribute("answer.prompt_skeleton_hash", _EVIDENCE_PROMPT_SKELETON_HASH)
+    for key in ("answer.evidence_count", "answer.citation_count", "answer.citation_ids", "answer.context_chars"):
+        span.set_attribute(key, attrs[key])
+
+
+def _set_model_generation_trace_attributes(span: Any, generated: Any) -> None:
+    for key, value in _coerce_trace_attributes(generated).items():
+        span.set_attribute(str(key), value)
 
 
 def _answer_context_trace_output(

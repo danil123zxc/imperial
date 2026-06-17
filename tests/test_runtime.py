@@ -22,7 +22,7 @@ def test_create_runtime_constructs_without_live_services(monkeypatch):
     assert created["state"] == {"question": "Что делать?"}
 
 
-def test_runtime_query_wraps_workflow_in_agent_span(monkeypatch):
+def test_runtime_query_wraps_workflow_in_chain_span(monkeypatch):
     trace_calls = []
 
     class FakeTraceSpan:
@@ -30,7 +30,7 @@ def test_runtime_query_wraps_workflow_in_agent_span(monkeypatch):
             trace_calls.append({"output": value})
 
     @contextmanager
-    def fake_trace_agent_step(name, input_value, *, attributes=None):
+    def fake_trace_pipeline_step(name, input_value, *, attributes=None):
         trace_calls.append({"name": name, "input": input_value, "attributes": attributes})
         yield FakeTraceSpan()
 
@@ -47,7 +47,7 @@ def test_runtime_query_wraps_workflow_in_agent_span(monkeypatch):
                 },
             }
 
-    monkeypatch.setattr("imperial_rag.runtime.trace_agent_step", fake_trace_agent_step)
+    monkeypatch.setattr("imperial_rag.runtime.trace_pipeline_step", fake_trace_pipeline_step)
     runtime = Runtime(settings=Settings(), workflow=FakeWorkflow())
 
     assert runtime.query("Что делать с браком?")["answer"] == "Оформить акт. [S1]"
@@ -75,6 +75,86 @@ def test_runtime_query_wraps_workflow_in_agent_span(monkeypatch):
             }
         },
     ]
+
+
+def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failure(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeChatModel:
+        def __init__(self):
+            self.raise_error = False
+
+        def invoke(self, messages):
+            calls["messages"] = messages
+            if self.raise_error:
+                raise RuntimeError("provider down with secret-ish detail")
+            return type("Response", (), {"content": "Ответ с цитатой. [S1]"})()
+
+    fake_chat_model = FakeChatModel()
+
+    class FakeWorkflow:
+        def __init__(self, retrieve, generate):
+            self.retrieve = retrieve
+            self.generate = generate
+
+        def invoke(self, state):
+            docs = self.retrieve(state["question"])["retrieved_documents"]
+            return self.generate(state["question"], docs)
+
+    monkeypatch.setattr(
+        "imperial_rag.runtime.build_query_dependencies",
+        lambda settings: type(
+            "Deps",
+            (),
+            {
+                "vector_search": object(),
+                "keyword_search": object(),
+                "chat_model": fake_chat_model,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "imperial_rag.runtime.RetrievalService",
+        lambda vector_search, keyword_search, settings: type(
+            "Service",
+            (),
+            {
+                "retrieve": lambda self, question: type(
+                    "RetrievalResult",
+                    (),
+                    {
+                        "evidence": [],
+                        "vector_docs": [],
+                        "keyword_docs": [],
+                        "diagnostics": {"final_evidence": 0},
+                    },
+                )()
+            },
+        )(),
+    )
+    monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
+
+    runtime = create_runtime(Settings(workspace_root=tmp_path))
+    generate = runtime.workflow.generate
+    docs = []
+
+    success = generate("Что делать?", docs)
+    fake_chat_model.raise_error = True
+    failure = generate("Что делать?", docs)
+
+    assert success == {
+        "answer": "Ответ с цитатой. [S1]",
+        "trace_attributes": {"answer.model_status": "ok"},
+    }
+    assert failure == {
+        "answer": "I could not find this clearly in the indexed documents.",
+        "trace_attributes": {
+            "answer.model_status": "error",
+            "answer.model_error_type": "RuntimeError",
+            "answer.refusal_reason": "model_exception",
+            "tag.tags": ["model_fallback"],
+        },
+    }
 
 
 def test_runtime_query_uses_retrieval_service(monkeypatch, tmp_path):

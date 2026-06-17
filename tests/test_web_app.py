@@ -617,7 +617,15 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
 
     tracing_module = types.ModuleType("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
-    tracing_module.phoenix_trace_context = _null_trace_context
+    trace_contexts = []
+
+    @contextmanager
+    def trace_context(session_id, **kwargs):
+        trace_contexts.append({"session_id": session_id, **kwargs})
+        yield
+
+    tracing_module.phoenix_trace_context = trace_context
+    tracing_module.trace_user_id_from_email = lambda email: "user_sha256:testhash"
 
     observability_module = types.ModuleType("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
@@ -673,6 +681,15 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
     failure = [call for call in calls if call[0] == "failure"][0]
     assert failure[1][0] == "web_query"
     assert "question" not in failure[2]
+    assert trace_contexts == [
+        {
+            "session_id": streamlit_module.session_state.phoenix_trace_session_id,
+            "user_id": "user_sha256:testhash",
+            "metadata": {"entrypoint": "streamlit"},
+            "tags": ["imperial-rag", "streamlit"],
+        }
+    ]
+    assert streamlit_module.session_state.auth_user_email not in str(trace_contexts)
     assert errors == ["Something went wrong while answering. Check local logs for details."]
 
 
@@ -739,5 +756,5 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
 
 
 @contextmanager
-def _null_trace_context(session_id):
+def _null_trace_context(session_id, **kwargs):
     yield

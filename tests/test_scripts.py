@@ -207,7 +207,7 @@ def test_ingest_vector_store_disabled_does_not_require_dashscope_key(monkeypatch
 
 def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
     module = _load_script("scripts/query.py", "query_script_trace_session")
-    sessions = []
+    trace_contexts = []
 
     env_module = types.ModuleType("imperial_rag.env")
     env_module.load_project_env = lambda workspace_root=None: None
@@ -217,8 +217,8 @@ def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
     tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
 
     @contextmanager
-    def trace_context(session_id):
-        sessions.append(session_id)
+    def trace_context(session_id, **kwargs):
+        trace_contexts.append({"session_id": session_id, **kwargs})
         yield
 
     tracing_module.phoenix_trace_context = trace_context
@@ -243,7 +243,13 @@ def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
     module.main(["private question", "--trace-session-id", "session-explicit"])
 
     assert capsys.readouterr().out == "ok\n"
-    assert sessions == ["session-explicit"]
+    assert trace_contexts == [
+        {
+            "session_id": "session-explicit",
+            "metadata": {"entrypoint": "cli"},
+            "tags": ["imperial-rag", "cli"],
+        }
+    ]
 
 
 def test_entrypoint_trace_session_id_prefers_env_then_generated(monkeypatch):
@@ -261,7 +267,7 @@ def test_entrypoint_trace_session_id_prefers_env_then_generated(monkeypatch):
 
 
 @contextmanager
-def _null_trace_context(session_id):
+def _null_trace_context(session_id, **kwargs):
     yield
 
 

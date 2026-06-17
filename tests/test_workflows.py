@@ -93,6 +93,9 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
     trace_calls = []
 
     class FakeTraceSpan:
+        def set_attribute(self, key, value):
+            pass
+
         def set_output(self, value):
             trace_calls.append({"output": value})
 
@@ -191,12 +194,68 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
     ]
 
 
+def test_query_workflow_sets_prompt_provenance_and_generator_trace_attributes(monkeypatch):
+    from imperial_rag import workflows as workflows_module
+
+    docs = [
+        Document(
+            page_content="Known private fact.",
+            metadata={"citation_id": "known"},
+        )
+    ]
+    trace_calls = []
+
+    class FakeTraceSpan:
+        def set_attribute(self, key, value):
+            trace_calls.append({"attribute": key, "value": value})
+
+        def set_output(self, value):
+            trace_calls.append({"output": value})
+
+    @contextmanager
+    def fake_trace_answer_step(name, question, *, attributes=None):
+        trace_calls.append({"name": name, "question": question, "attributes": attributes})
+        yield FakeTraceSpan()
+
+    monkeypatch.setattr(workflows_module, "trace_answer_step", fake_trace_answer_step)
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: {
+            "answer": "Known private fact. [S1]",
+            "trace_attributes": {"answer.model_status": "ok"},
+        },
+    )
+
+    result = workflow.invoke({"question": "What is known?"})
+
+    assert result["answer"] == "Known private fact. [S1]"
+    model_start_index = next(
+        index for index, call in enumerate(trace_calls) if call.get("name") == "answer.call_model"
+    )
+    model_attribute_calls = [
+        call for call in trace_calls[model_start_index + 1 :] if "attribute" in call
+    ]
+    prompt_attrs = {call["attribute"]: call["value"] for call in model_attribute_calls}
+    assert prompt_attrs["answer.prompt_version"] == "strict-rag-v1"
+    assert len(prompt_attrs["answer.prompt_skeleton_hash"]) == 64
+    assert prompt_attrs["answer.evidence_count"] == 1
+    assert prompt_attrs["answer.citation_count"] == 1
+    assert prompt_attrs["answer.citation_ids"] == ["known"]
+    assert prompt_attrs["answer.context_chars"] == len("Known private fact.")
+    assert prompt_attrs["answer.model_status"] == "ok"
+    assert all("Known private fact" not in str(value) for value in prompt_attrs.values())
+
+
 def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
     from imperial_rag import workflows as workflows_module
 
     trace_calls = []
 
     class FakeTraceSpan:
+        def set_attribute(self, key, value):
+            pass
+
         def set_output(self, value):
             trace_calls.append({"output": value})
 
@@ -449,6 +508,9 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
     trace_calls = []
 
     class FakeTraceSpan:
+        def set_attribute(self, key, value):
+            pass
+
         def set_output(self, value):
             trace_calls.append({"output": value})
 

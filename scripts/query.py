@@ -69,7 +69,7 @@ def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
 def _trace_context(session_id: str):
     from imperial_rag.tracing import phoenix_trace_context
 
-    return phoenix_trace_context(session_id)
+    return phoenix_trace_context(session_id, metadata={"entrypoint": "cli"}, tags=["imperial-rag", "cli"])
 
 
 def _trace_session_id(explicit: str | None) -> str:

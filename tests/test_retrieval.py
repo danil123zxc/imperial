@@ -378,7 +378,7 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
         "retrieval.select_evidence",
     ]
     assert [record["query"] for record in records] == ["возврат брака"] * 7
-    assert records[0]["kind"] == "RETRIEVER"
+    assert records[0]["kind"] == "CHAIN"
     assert records[0]["attributes"]["imperial.phase"] == "retrieval"
     assert records[0]["attributes"]["imperial.step"] == "run"
     assert records[0]["attributes"]["imperial.trace_schema_version"] == "rag-v2"
@@ -415,8 +415,37 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[6]["output"]["context_chars"] == 22
     assert records[0]["output"]["final_evidence"] == 1
     assert records[0]["output"]["reranker"] == "fallback:deterministic"
+    assert records[0]["set_attributes"]["tag.tags"] == [
+        "degraded",
+        "fallback:reranker_missing_dashscope_api_key",
+    ]
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
     assert result.diagnostics["final_evidence"] == 1
+
+
+def test_retrieval_service_traces_candidate_documents_only_when_enabled(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "true")
+    records = capture_retrieval_spans(monkeypatch)
+    vector_docs = [
+        Document(page_content="vector return", metadata={"citation_id": "v", "chunk_id": "vector-chunk"})
+    ]
+    keyword_docs = [
+        Document(page_content="keyword return", metadata={"citation_id": "k", "chunk_id": "keyword-chunk", "_keyword_rank": 0})
+    ]
+    service = RetrievalService(
+        vector_search=FakeVectorSearch(vector_docs),
+        keyword_search=FakeKeywordSearch(keyword_docs),
+        settings=RetrievalSettings(rerank_top_n=1),
+    )
+
+    service.retrieve("возврат брака")
+
+    assert records[1]["set_attributes"]["retrieval.documents.0.document.id"] == "vector-chunk"
+    assert records[1]["set_attributes"]["retrieval.documents.0.document.content"] == "vector return"
+    assert records[2]["set_attributes"]["retrieval.documents.0.document.id"] == "keyword-chunk"
+    assert records[2]["set_attributes"]["retrieval.documents.0.document.content"] == "keyword return"
 
 
 def test_retrieval_service_traces_search_fallbacks(monkeypatch):
@@ -457,6 +486,11 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
     assert records[6]["output"]["count"] == 0
     assert records[0]["output"]["degraded"] is True
     assert records[0]["output"]["fallbacks"] == ["vector_search_failed", "keyword_search_failed"]
+    assert records[0]["set_attributes"]["tag.tags"] == [
+        "degraded",
+        "fallback:vector_search_failed",
+        "fallback:keyword_search_failed",
+    ]
     assert result.evidence == []
     assert result.diagnostics["final_evidence"] == 0
 

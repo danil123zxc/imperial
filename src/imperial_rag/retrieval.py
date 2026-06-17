@@ -9,7 +9,12 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_classic.retrievers import EnsembleRetriever
 
 from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
-from imperial_rag.tracing import imperial_trace_attributes, retrieval_documents_preview, trace_retrieval_step
+from imperial_rag.tracing import (
+    imperial_trace_attributes,
+    retrieval_documents_preview,
+    trace_candidate_documents_enabled,
+    trace_retrieval_step,
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -128,6 +133,8 @@ class HybridRetriever:
                 status=vector_status,
                 fallbacks=fallbacks,
             )
+            if trace_candidate_documents_enabled():
+                span.set_retrieval_documents(vector_docs)
 
         with trace_retrieval_step(
             "retrieve.keyword_search",
@@ -160,6 +167,8 @@ class HybridRetriever:
                 fallbacks=fallbacks,
                 keyword_scores_available=keyword_scores_available,
             )
+            if trace_candidate_documents_enabled():
+                span.set_retrieval_documents(keyword_docs)
 
         return RetrievalCandidateResult(
             vector_docs=vector_docs,
@@ -548,6 +557,7 @@ class RetrievalService:
         with trace_retrieval_step(
             "retrieval",
             query,
+            kind="CHAIN",
             attributes=imperial_trace_attributes(
                 "retrieval",
                 "run",
@@ -655,6 +665,9 @@ class RetrievalService:
                 span.set_final_evidence_documents(evidence)
                 span.set_output(_final_evidence_span_output(evidence))
 
+            retrieval_tags = _retrieval_degraded_tags(diagnostics)
+            if retrieval_tags:
+                parent_span.set_attribute("tag.tags", retrieval_tags)
             parent_span.set_output(_retrieval_summary_output(diagnostics))
             return RetrievalResult(
                 evidence=evidence,
@@ -716,6 +729,28 @@ def _retrieval_summary_output(diagnostics: dict[str, Any]) -> dict[str, Any]:
     output["fallbacks"] = fallbacks
     output["degraded"] = bool(fallbacks)
     return output
+
+
+def _retrieval_degraded_tags(diagnostics: dict[str, Any]) -> list[str]:
+    fallbacks = list(diagnostics.get("fallbacks") or [])
+    if not fallbacks:
+        return []
+    tags = ["degraded"]
+    seen = set(tags)
+    for fallback in fallbacks:
+        reason = _bounded_fallback_tag(str(fallback))
+        if not reason:
+            continue
+        tag = f"fallback:{reason}"
+        if tag not in seen:
+            tags.append(tag)
+            seen.add(tag)
+    return tags
+
+
+def _bounded_fallback_tag(reason: str) -> str:
+    sanitized = "".join(character if character.isalnum() or character in {"_", "-", ":"} else "_" for character in reason)
+    return sanitized[:80].strip("_")
 
 
 def _trace_output_value(value: Any) -> Any:

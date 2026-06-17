@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import types
 from pathlib import Path
@@ -49,6 +50,7 @@ def test_configure_phoenix_tracing_registers_once(monkeypatch, tmp_path: Path) -
             "project_name": "trace-project",
             "endpoint": "http://localhost:6006/v1/traces",
             "auto_instrument": True,
+            "batch": False,
             "verbose": False,
         }
     ]
@@ -87,9 +89,26 @@ def test_configure_phoenix_tracing_rejects_changed_key_after_configuration(monke
             "project_name": "project-a",
             "endpoint": "http://localhost:6006/v1/traces",
             "auto_instrument": True,
+            "batch": False,
             "verbose": False,
         }
     ]
+
+
+def test_configure_phoenix_tracing_honors_trace_batch_env(monkeypatch, tmp_path: Path) -> None:
+    _reset_phoenix_tracing_for_tests()
+    calls: list[dict[str, object]] = []
+    provider = object()
+    fake_phoenix = types.ModuleType("phoenix")
+    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel.register = lambda **kwargs: calls.append(kwargs) or provider
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_BATCH", "true")
+
+    assert configure_phoenix_tracing(Settings(workspace_root=tmp_path), enabled=True) is provider
+
+    assert calls[0]["batch"] is True
 
 
 def test_configure_phoenix_tracing_can_be_enabled_by_env(monkeypatch, tmp_path: Path) -> None:
@@ -799,40 +818,79 @@ def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:
     ]
 
 
-def test_phoenix_trace_context_uses_session_context(monkeypatch) -> None:
+def test_phoenix_trace_context_uses_session_user_metadata_and_tags(monkeypatch) -> None:
     calls = []
     fake_phoenix = types.ModuleType("phoenix")
     fake_otel = types.ModuleType("phoenix.otel")
 
-    class FakeAttributesContext:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+    class FakeContext:
+        def __init__(self, name, payload):
+            self.name = name
+            self.payload = payload
 
         def __enter__(self):
-            calls.append(("enter", self.kwargs))
+            calls.append(("enter", self.name, self.payload))
 
         def __exit__(self, exc_type, exc, traceback):
-            calls.append(("exit", self.kwargs))
+            calls.append(("exit", self.name, self.payload))
             return False
 
-    fake_otel.using_session = lambda **kwargs: FakeAttributesContext(**kwargs)
+    fake_otel.using_session = lambda session_id: FakeContext("session", session_id)
+    fake_otel.using_user = lambda user_id: FakeContext("user", user_id)
+    fake_otel.using_metadata = lambda metadata: FakeContext("metadata", metadata)
+    fake_otel.using_tags = lambda tags: FakeContext("tags", tags)
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
 
-    with tracing_module.phoenix_trace_context("session-123"):
-        calls.append(("body", {}))
+    with tracing_module.phoenix_trace_context(
+        "session-123",
+        user_id="user_abc",
+        metadata={"entrypoint": "cli"},
+        tags=["imperial-rag", "cli"],
+    ):
+        calls.append(("body", None, None))
 
     assert calls == [
-        ("enter", {"session_id": "session-123"}),
-        ("body", {}),
-        ("exit", {"session_id": "session-123"}),
+        ("enter", "session", "session-123"),
+        ("enter", "user", "user_abc"),
+        (
+            "enter",
+            "metadata",
+            {"imperial.trace_schema_version": "rag-v2", "entrypoint": "cli"},
+        ),
+        ("enter", "tags", ["imperial-rag", "cli"]),
+        ("body", None, None),
+        ("exit", "tags", ["imperial-rag", "cli"]),
+        (
+            "exit",
+            "metadata",
+            {"imperial.trace_schema_version": "rag-v2", "entrypoint": "cli"},
+        ),
+        ("exit", "user", "user_abc"),
+        ("exit", "session", "session-123"),
     ]
 
 
-def test_phoenix_trace_context_ignores_empty_session(monkeypatch) -> None:
+def test_phoenix_trace_context_ignores_empty_session_but_keeps_metadata(monkeypatch) -> None:
+    calls = []
     fake_phoenix = types.ModuleType("phoenix")
     fake_otel = types.ModuleType("phoenix.otel")
     fake_otel.using_session = lambda **kwargs: pytest.fail("empty session should not enter Phoenix context")
+    fake_otel.using_user = lambda *args, **kwargs: pytest.fail("missing user should not enter Phoenix context")
+    fake_otel.using_tags = lambda *args, **kwargs: pytest.fail("missing tags should not enter Phoenix context")
+
+    class FakeMetadataContext:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        def __enter__(self):
+            calls.append(("enter", self.metadata))
+
+        def __exit__(self, exc_type, exc, traceback):
+            calls.append(("exit", self.metadata))
+            return False
+
+    fake_otel.using_metadata = lambda metadata: FakeMetadataContext(metadata)
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
 
@@ -840,3 +898,27 @@ def test_phoenix_trace_context_ignores_empty_session(monkeypatch) -> None:
         pass
     with tracing_module.phoenix_trace_context("  "):
         pass
+
+    assert calls == [
+        ("enter", {"imperial.trace_schema_version": "rag-v2"}),
+        ("exit", {"imperial.trace_schema_version": "rag-v2"}),
+        ("enter", {"imperial.trace_schema_version": "rag-v2"}),
+        ("exit", {"imperial.trace_schema_version": "rag-v2"}),
+    ]
+
+
+def test_trace_user_id_from_email_is_deterministic_and_pseudonymous() -> None:
+    expected_hash = hashlib.sha256("user@example.com".encode("utf-8")).hexdigest()[:16]
+
+    user_id = tracing_module.trace_user_id_from_email(" User@Example.COM ")
+
+    assert user_id == f"user_sha256:{expected_hash}"
+    assert "example.com" not in user_id
+
+
+def test_trace_candidate_documents_enabled_reads_env(monkeypatch) -> None:
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", raising=False)
+    assert tracing_module.trace_candidate_documents_enabled() is False
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "true")
+    assert tracing_module.trace_candidate_documents_enabled() is True

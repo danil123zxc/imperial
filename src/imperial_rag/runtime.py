@@ -9,7 +9,7 @@ from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
 from imperial_rag.indexing import make_qdrant_store
 from imperial_rag.providers import create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import RetrievalService, RetrievalSettings
-from imperial_rag.tracing import imperial_trace_attributes, trace_agent_step
+from imperial_rag.tracing import imperial_trace_attributes, trace_pipeline_step
 from imperial_rag.workflows import build_query_workflow
 
 
@@ -88,7 +88,7 @@ class Runtime:
     dependencies: QueryDependencies | None = None
 
     def query(self, question: str) -> dict:
-        with trace_agent_step(
+        with trace_pipeline_step(
             "imperial_rag.query",
             question,
             attributes=imperial_trace_attributes(
@@ -140,11 +140,22 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
     def generate(question: str, docs):
         try:
             response = dependencies().chat_model.invoke(build_strict_messages(question, docs))
-        except Exception:
+        except Exception as exc:
             from imperial_rag.answering import REFUSAL_TEXT
 
-            return REFUSAL_TEXT
-        return getattr(response, "content", response)
+            return {
+                "answer": REFUSAL_TEXT,
+                "trace_attributes": {
+                    "answer.model_status": "error",
+                    "answer.model_error_type": type(exc).__name__,
+                    "answer.refusal_reason": "model_exception",
+                    "tag.tags": ["model_fallback"],
+                },
+            }
+        return {
+            "answer": getattr(response, "content", response),
+            "trace_attributes": {"answer.model_status": "ok"},
+        }
 
     workflow = build_query_workflow(retrieve=retrieve, generate=generate)
     return Runtime(settings=resolved_settings, workflow=workflow)
