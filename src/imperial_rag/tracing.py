@@ -69,13 +69,14 @@ _TRACE_METADATA_ALLOWLIST = frozenset(
 
 
 class OpenInferenceTraceSpan:
-    def __init__(self, span: Any) -> None:
+    def __init__(self, span: Any, kind: str | None = None) -> None:
         self._span = span
+        self._kind = kind
 
     def set_attribute(self, key: str, value: Any) -> None:
         if value is None:
             return
-        if _attribute_hidden(key):
+        if _attribute_hidden(key, self._kind):
             return
         self._span.set_attribute(key, _attribute_value(value))
 
@@ -135,11 +136,11 @@ def trace_openinference_step(
         span_attributes[_INPUT_VALUE] = input_value
         span_attributes[_INPUT_MIME_TYPE] = _TEXT_MIME_TYPE
     for key, value in (attributes or {}).items():
-        if value is not None and not _attribute_hidden(key):
+        if value is not None and not _attribute_hidden(key, kind):
             span_attributes[key] = _attribute_value(value)
 
     with tracer.start_as_current_span(name, attributes=span_attributes) as span:
-        trace_span = OpenInferenceTraceSpan(span)
+        trace_span = OpenInferenceTraceSpan(span, kind=kind)
         try:
             yield trace_span
         except Exception as exc:
@@ -240,12 +241,7 @@ def trace_candidate_documents_enabled() -> bool:
 
 
 def trace_user_id_from_email(email: str) -> str:
-    """Return a pseudonymous Phoenix user ID.
-
-    Set IMPERIAL_RAG_TRACE_USER_HASH_SECRET to use HMAC-SHA256 for stronger
-    pseudonymization. Leave it unset to preserve the existing deterministic
-    SHA-256 IDs for local trace correlation.
-    """
+    """Return a pseudonymous Phoenix user ID."""
 
     normalized = str(email).strip().casefold()
     if not normalized:
@@ -379,12 +375,7 @@ def phoenix_trace_context(
     metadata: Mapping[str, Any] | None = None,
     tags: Sequence[str] | None = None,
 ) -> Iterator[None]:
-    """Propagate private Phoenix trace context to child spans when available.
-
-    Phoenix is the detailed diagnostic store for this local app. Child spans may
-    contain raw user queries, prompts, answers, and evidence depending on
-    OpenInference and Imperial trace privacy flags.
-    """
+    """Propagate private Phoenix trace context to child spans when available."""
 
     resolved_session_id = str(session_id).strip() if session_id is not None else ""
     resolved_user_id = str(user_id).strip() if user_id is not None else ""
@@ -485,7 +476,7 @@ def _hide_inputs() -> bool:
     return _env_flag("OPENINFERENCE_HIDE_INPUTS")
 
 
-def _hide_span_input(kind: str) -> bool:
+def _hide_span_input(kind: str | None) -> bool:
     if _hide_inputs():
         return True
     return str(kind).strip().upper() == "LLM" and _hide_input_messages()
@@ -515,8 +506,8 @@ def _trace_full_final_evidence() -> bool:
     return _env_flag("IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE")
 
 
-def _attribute_hidden(key: str) -> bool:
-    if _hide_inputs() and (key == _INPUT_VALUE or key == _INPUT_MIME_TYPE or key.startswith("input.")):
+def _attribute_hidden(key: str, kind: str | None = None) -> bool:
+    if _hide_span_input(kind) and (key == _INPUT_VALUE or key == _INPUT_MIME_TYPE or key.startswith("input.")):
         return True
     if _hide_outputs() and (key == _OUTPUT_VALUE or key == _OUTPUT_MIME_TYPE or key.startswith("output.")):
         return True

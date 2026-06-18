@@ -14,6 +14,41 @@ import imperial_rag.tracing as tracing_module
 from imperial_rag.tracing import _reset_phoenix_tracing_for_tests, configure_phoenix_tracing
 
 
+def make_fake_tracer(records: list[dict[str, object]]) -> object:
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+            self.status = None
+            self.exceptions: list[object] = []
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            self.status = status
+
+        def record_exception(self, exc):
+            self.exceptions.append(exc)
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    return FakeTracer()
+
+
 def test_configure_phoenix_tracing_returns_none_when_disabled(monkeypatch, tmp_path: Path) -> None:
     _reset_phoenix_tracing_for_tests()
     monkeypatch.delenv("PHOENIX_TRACING_ENABLED", raising=False)
@@ -155,34 +190,7 @@ def test_configure_phoenix_tracing_errors_clearly_when_dependency_missing(monkey
 def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step(
         "retrieve.vector_search",
@@ -207,34 +215,7 @@ def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypat
 def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_agent_step(
         "imperial_rag.query",
@@ -267,38 +248,7 @@ def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypa
 def test_trace_agent_step_records_errors(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-            self.exceptions = []
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-        def record_exception(self, exc):
-            self.exceptions.append(exc)
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with pytest.raises(RuntimeError, match="boom"):
         with tracing_module.trace_agent_step("imperial_rag.query", "Что делать?"):
@@ -314,34 +264,7 @@ def test_trace_agent_step_records_errors(monkeypatch) -> None:
 def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_answer_step(
         "answer.generate",
@@ -366,34 +289,7 @@ def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) ->
 def test_trace_llm_step_sets_openinference_llm_attributes_and_messages(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_llm_step(
         "answer.call_model",
@@ -423,34 +319,7 @@ def test_trace_llm_step_sets_openinference_llm_attributes_and_messages(monkeypat
 def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_pipeline_step(
         "ingest.build_chunks",
@@ -482,29 +351,6 @@ def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch)
 def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __enter__(self):
-            span = FakeSpan()
-            records.append({"span": span})
-            return span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            return FakeSpanContext()
-
     document = type(
         "Document",
         (),
@@ -524,7 +370,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
             },
         },
     )()
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieve.keyword_search", "возврат") as span:
         span.set_retrieval_documents([document])
@@ -547,29 +393,6 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
 def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __enter__(self):
-            span = FakeSpan()
-            records.append({"span": span})
-            return span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            return FakeSpanContext()
-
     documents = [
         type(
             "Document",
@@ -581,7 +404,7 @@ def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -
         )()
         for index in range(11)
     ]
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieve.vector_search", "возврат") as span:
         span.set_retrieval_documents(documents)
@@ -596,29 +419,6 @@ def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -
 def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __enter__(self):
-            span = FakeSpan()
-            records.append({"span": span})
-            return span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            return FakeSpanContext()
-
     documents = [
         type(
             "Document",
@@ -632,7 +432,7 @@ def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> N
     ]
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", "1")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", "12")
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieve.vector_search", "возврат") as span:
         span.set_retrieval_documents(documents)
@@ -645,34 +445,11 @@ def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> N
 def test_final_evidence_documents_can_store_full_content_when_enabled(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __enter__(self):
-            span = FakeSpan()
-            records.append({"span": span})
-            return span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            return FakeSpanContext()
-
     content = "final evidence " + ("x" * 900)
     document = type("Document", (), {"page_content": content, "metadata": {"chunk_id": "final"}})()
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE", "true")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", "12")
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieval.select_evidence", "возврат") as span:
         span.set_final_evidence_documents([document])
@@ -711,38 +488,11 @@ def test_trace_document_metadata_can_include_full_metadata_when_enabled(monkeypa
 def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_text(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            self.status = status
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
     document = type("Document", (), {"page_content": "private corpus text", "metadata": {"chunk_id": "chunk-1"}})()
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUTS", "true")
     monkeypatch.setenv("OPENINFERENCE_HIDE_OUTPUTS", "true")
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_TEXT", "true")
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieve.keyword_search", "private query") as span:
         span.set_output({"count": 1})
@@ -759,35 +509,9 @@ def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_te
 def test_openinference_redaction_env_hides_llm_messages(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_MESSAGES", "true")
     monkeypatch.setenv("OPENINFERENCE_HIDE_OUTPUT_MESSAGES", "true")
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_llm_step("answer.call_model", "private question") as span:
         span.set_attribute("llm.input_messages.0.message.role", "user")
@@ -811,34 +535,8 @@ def test_openinference_redaction_env_hides_llm_messages(monkeypatch) -> None:
 def test_openinference_redaction_env_hides_llm_prompt_input_value(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
-
-        def __enter__(self):
-            return self.span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
-
     monkeypatch.setenv("OPENINFERENCE_HIDE_LLM_PROMPTS", "true")
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_llm_step("answer.call_model", "private question") as span:
         span.set_attribute("llm.input_messages.0.message.content", "private question")
@@ -851,35 +549,28 @@ def test_openinference_redaction_env_hides_llm_prompt_input_value(monkeypatch) -
     assert recorded_span.attributes["llm.model_name"] == "qwen3.7-plus"
 
 
+def test_openinference_redaction_env_hides_late_llm_prompt_input_value(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUTS", "false")
+    monkeypatch.setenv("OPENINFERENCE_HIDE_LLM_PROMPTS", "true")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
+
+    with tracing_module.trace_llm_step("answer.call_model", "private question") as span:
+        span.set_attribute("input.value", "secret")
+        span.set_attribute("llm.model_name", "qwen3.7-plus")
+
+    recorded_span = records[0]["span"]
+    assert "input.value" not in recorded_span.attributes
+    assert recorded_span.attributes["llm.model_name"] == "qwen3.7-plus"
+
+
 def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __enter__(self):
-            span = FakeSpan()
-            records.append({"span": span})
-            return span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            return FakeSpanContext()
-
     input_document = type("Document", (), {"page_content": "candidate", "metadata": {"chunk_id": "in"}})()
     output_document = type("Document", (), {"page_content": "reranked", "metadata": {"chunk_id": "out"}})()
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieve.rerank", "возврат", kind="RERANKER") as span:
         span.set_reranker_input_documents([input_document])
@@ -895,29 +586,6 @@ def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
 def test_trace_span_caps_and_truncates_native_reranker_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
-
-        def set_status(self, status):
-            pass
-
-    class FakeSpanContext:
-        def __enter__(self):
-            span = FakeSpan()
-            records.append({"span": span})
-            return span
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            return FakeSpanContext()
-
     documents = [
         type(
             "Document",
@@ -929,7 +597,7 @@ def test_trace_span_caps_and_truncates_native_reranker_documents(monkeypatch) ->
         )()
         for index in range(11)
     ]
-    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step("retrieve.rerank", "возврат", kind="RERANKER") as span:
         span.set_reranker_input_documents(documents)
