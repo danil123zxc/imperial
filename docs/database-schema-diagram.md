@@ -1,15 +1,15 @@
 # Imperial RAG Database Schema Diagram
 
-Generated from the live workspace on 2026-06-03; updated for the Elasticsearch keyword migration on 2026-06-11.
+Generated from the live workspace on 2026-06-19.
 
 ## Live Local Data Surfaces
 
 | Surface | Location | Shape | Notes |
 | --- | --- | --- | --- |
 | Manifest SQLite | `.imperial_rag/manifest.sqlite3` | `files` | File discovery, extraction, chunk-count, and index-status ledger |
-| OCR cache SQLite | `.imperial_rag/ocr_cache.sqlite3` | `ocr_cache` | Created only when OCR runs |
+| OCR cache SQLite | `.imperial_rag/extracted/ocr-cache/ocr_cache.sqlite3` | `ocr_cache` | Created only when OCR runs through the ingestion pipeline |
 | Keyword Elasticsearch | `ELASTICSEARCH_URL`, default `http://localhost:9200` | `ELASTICSEARCH_INDEX`, default `imperial_keyword_chunks` | Required keyword-search service |
-| Qdrant vectors | `QDRANT_URL`, default `http://localhost:6333` | `QDRANT_COLLECTION`, default `imperial_chunks_qwen` | Semantic vector-search service |
+| Qdrant vectors | `QDRANT_URL`, default `http://localhost:6333` | `QDRANT_COLLECTION`, default `imperial_chunks_qwen` | Semantic vector-search service using DashScope `text-embedding-v4` metadata |
 
 The `documents/**/Thumbs.db` files are Windows thumbnail artifacts, not project databases.
 
@@ -73,8 +73,8 @@ Notes:
 
 - `FILES` is the manifest table for scanned corpus files.
 - `ELASTICSEARCH_KEYWORD_INDEX` is the keyword-search index. Ingestion rebuilds it from `.imperial_rag/extracted/chunks.jsonl`; the old `.imperial_rag/keyword.sqlite3` file is obsolete generated state and is not read by the app.
-- `QDRANT_IMPERIAL_CHUNKS_QWEN` is the configured Qdrant collection name from `QDRANT_COLLECTION`, defaulting to `imperial_chunks_qwen`.
-- `OCR_CACHE` is code-defined as `.imperial_rag/ocr_cache.sqlite3`.
+- `QDRANT_IMPERIAL_CHUNKS_QWEN` is the configured Qdrant collection name from `QDRANT_COLLECTION`, defaulting to `imperial_chunks_qwen`; `.imperial_rag/vector_provider.json` records the DashScope embedding provider metadata that must match runtime settings.
+- `OCR_CACHE` is created by the ingestion pipeline at `.imperial_rag/extracted/ocr-cache/ocr_cache.sqlite3` when OCR is enabled.
 
 ## Chunk Metadata Payload
 

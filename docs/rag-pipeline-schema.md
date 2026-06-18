@@ -1,6 +1,6 @@
 # Imperial RAG Pipeline Schema
 
-Generated from the current checkout on 2026-06-12.
+Generated from the current checkout on 2026-06-19.
 
 ## Current Local Snapshot
 
@@ -14,6 +14,7 @@ Generated from the current checkout on 2026-06-12.
 | Vector metadata | `dashscope`, `text-embedding-v4`, `2048` dimensions, cosine distance |
 | Keyword search backend | Elasticsearch index `imperial_keyword_chunks` |
 | Vector search backend | Qdrant collection `imperial_chunks_qwen` |
+| Default model provider | Qwen/DashScope for chat, embeddings, OCR, and reranking |
 
 The old `.imperial_rag/keyword.sqlite3` file may still exist as generated state from the earlier SQLite keyword path, but current ingestion and runtime code use `ElasticsearchKeywordIndex`.
 
@@ -32,6 +33,7 @@ flowchart TD
     manifest_replace["ManifestStore.replace_records\n.imperial_rag/manifest.sqlite3"]
     extract["extract_file(record)\nDOCX, PDF, XLSX, RTF, image, archive"]
     ocr["Optional OcrClient\nQwen vision OCR + OCR cache"]
+    ocr_cache["OCR cache\n.imperial_rag/extracted/ocr-cache/ocr_cache.sqlite3"]
     extracted_json["write extracted documents\n.imperial_rag/extracted/documents/{file_id}.json"]
     chunk["build_chunks\nRecursiveCharacterTextSplitter\nchunk_size=400, overlap=50 by default"]
     chunks_jsonl["write chunks\n.imperial_rag/extracted/chunks.jsonl"]
@@ -46,6 +48,7 @@ flowchart TD
     pipeline --> scan --> dupes --> manifest_replace
     manifest_replace --> extract
     extract -. when enabled/configured .-> ocr
+    ocr -. caches results .-> ocr_cache
     extract --> extracted_json
     extract --> chunk --> chunks_jsonl
     chunks_jsonl --> keyword
@@ -212,3 +215,18 @@ final_evidence
 | Qdrant down | Vector search becomes unavailable/no-op through runtime guards |
 | Elasticsearch down | Ingestion keyword indexing fails; runtime retrieval reports keyword search unavailable |
 | Phoenix down | Tracing is skipped unless explicitly enabled or reachable |
+
+## Runtime Provider Defaults
+
+Qwen/DashScope is the current default provider surface:
+
+```text
+DASHSCOPE_API_KEY
+IMPERIAL_RAG_QWEN_CHAT_MODEL=qwen3.7-plus
+IMPERIAL_RAG_QWEN_VISION_MODEL=qwen-vl-ocr-2025-11-20
+IMPERIAL_RAG_QWEN_EMBEDDING_MODEL=text-embedding-v4
+IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS=2048
+IMPERIAL_RAG_QWEN_RERANK_MODEL=qwen3-rerank
+```
+
+Legacy OpenAI/Cohere compatibility paths are opt-in escape hatches only. The runtime uses `DASHSCOPE_API_KEY` to decide whether semantic search and hosted reranking can run, and it refuses to query Qdrant when `.imperial_rag/vector_provider.json` does not match the configured embedding provider metadata.

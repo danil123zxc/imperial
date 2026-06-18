@@ -11,6 +11,7 @@ The project is designed for private local operation: source files stay in the wo
 - Writes extracted artifacts and chunks under `.imperial_rag/`.
 - Builds a local Elasticsearch keyword index for exact Russian/company terminology.
 - Optionally indexes chunks into local Qdrant for semantic vector search.
+- Uses hosted Qwen/DashScope by default for chat, embeddings, reranking, and OCR when `DASHSCOPE_API_KEY` is configured.
 - Retrieves hybrid evidence and generates strict citation-based answers.
 - Provides a CLI query path and a local Streamlit chat UI.
 - Runs deterministic citation/refusal/source-hint evaluations, with optional Phoenix experiment storage.
@@ -34,8 +35,27 @@ Core package code lives in `src/imperial_rag/`:
 - `manifest.py` tracks discovered files, extraction status, duplicate groups, and index status.
 - `elasticsearch_keyword.py` owns Elasticsearch keyword indexing, and `indexing.py` owns Qdrant vector indexing helpers plus stable chunk ids.
 - `retrieval.py`, `answering.py`, `workflows.py`, and `runtime.py` own query-time RAG behavior.
+- `providers.py` centralizes Qwen/DashScope chat, embedding, reranking, and OCR provider defaults.
 - `tracing.py` configures Phoenix tracing.
 - `web_app.py` provides the Streamlit UI.
+
+## Current Local Snapshot
+
+Snapshot date: 2026-06-19.
+
+These numbers describe the generated state currently present under `.imperial_rag/` in this checkout. Refresh them with the commands in the runbook when the corpus is reingested.
+
+| Item | Current value |
+| --- | --- |
+| Manifest files | `162` |
+| Manifest statuses | `103` indexed, `23` failed, `23` no-text, `11` unsupported, `2` manifest-only |
+| Chunk artifact | `.imperial_rag/extracted/chunks.jsonl` |
+| Chunk count | `2470` |
+| Index status | `103` files keyword+vector indexed, `59` files skipped+skipped |
+| Keyword backend | Elasticsearch index `imperial_keyword_chunks` |
+| Vector backend | Qdrant collection `imperial_chunks_qwen` |
+| Vector provider metadata | DashScope `text-embedding-v4`, `2048` dimensions, cosine distance |
+| Compose runtime | `app`, `elasticsearch`, `kibana`, `phoenix`, and `qdrant` healthy on `127.0.0.1` ports |
 
 ## Quickstart
 
@@ -138,6 +158,18 @@ docker compose down
 
 ## Local Services
 
+### Model Provider
+
+Qwen/DashScope is the default model provider surface:
+
+- chat: `IMPERIAL_RAG_QWEN_CHAT_MODEL`, default `qwen3.7-plus`
+- OCR/vision: `IMPERIAL_RAG_QWEN_VISION_MODEL`, default `qwen-vl-ocr-2025-11-20`
+- embeddings: `IMPERIAL_RAG_QWEN_EMBEDDING_MODEL`, default `text-embedding-v4`
+- embedding dimensions: `IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS`, default `2048`
+- reranker: `IMPERIAL_RAG_QWEN_RERANK_MODEL`, default `qwen3-rerank`
+
+Set `DASHSCOPE_API_KEY` in `.env` or the process environment before running model-backed chat, OCR, vector indexing, semantic retrieval, or Ragas evaluator metrics. Legacy OpenAI/Cohere paths are compatibility escape hatches only and must be enabled explicitly with `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE`.
+
 ### Elasticsearch
 
 Elasticsearch is required for keyword search. Start it locally before running ingestion or querying the processed corpus:
@@ -211,11 +243,11 @@ Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_
 
 ### Local Logs
 
-The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr, so they are captured wherever the process is launched. The current detached Streamlit run redirects stderr into `/tmp/imperial-streamlit-8501.log`.
+The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr, so they are captured wherever the process is launched. In the Compose-owned local stack, Docker's `json-file` logging is the canonical captured log store and `docker compose logs -f app` is the normal inspection path.
 
 Phoenix remains the trace and evaluation system. This v1 logging layer writes sanitized operational events to stderr only; it does not send app logs to Elasticsearch, Sentry, or any other external service. Future Kibana log views should link to Phoenix only by request/session identifiers, and those links must be treated as links into private traces rather than sanitized public records.
 
-If stderr is redirected to a local file, rotate or delete that file according to the machine's privacy requirements. The detached Streamlit helper currently writes to `/tmp/imperial-streamlit-8501.log`, which can be removed with `rm -f /tmp/imperial-streamlit-8501.log` after debugging.
+If stderr is redirected to a local file during an ad hoc non-Compose run, rotate or delete that file according to the machine's privacy requirements.
 
 ## Evaluation
 
@@ -233,10 +265,16 @@ Phoenix must already be reachable at `PHOENIX_CLIENT_ENDPOINT`, which defaults t
 docker compose up -d phoenix
 ```
 
-By default, the all-evals command stores deterministic citation/refusal/source-hint checks plus Ragas faithfulness and answer relevancy in the same Phoenix experiment. Answer relevancy uses both evaluator chat and embedding calls through the DashScope/OpenAI-compatible settings. To create a deterministic-only Phoenix experiment for troubleshooting:
+By default, the all-evals command stores deterministic citation/refusal/source-hint checks plus Ragas faithfulness and answer relevancy in the same Phoenix experiment. Answer relevancy uses both evaluator chat and embedding calls through the DashScope/OpenAI-compatible settings. ID-based context recall is also available as an explicit metric when examples include retrieved/reference context ids. To create a deterministic-only Phoenix experiment for troubleshooting:
 
 ```bash
 uv run python scripts/run_all_evals.py --ragas-metrics none
+```
+
+Run a Phoenix experiment with ID-based context recall only:
+
+```bash
+uv run python scripts/run_all_evals.py --ragas-metrics id_context_recall
 ```
 
 Run deterministic local citation/refusal/source-hint checks:
@@ -251,7 +289,7 @@ Store only the legacy Phoenix eval runner output in local Phoenix:
 uv run python scripts/run_phoenix_eval.py --use-phoenix
 ```
 
-By default, Phoenix experiments from `run_phoenix_eval.py` include deterministic citation/refusal/source-hint checks plus Ragas faithfulness and answer relevancy. To store only deterministic scores:
+By default, Phoenix experiments from `run_phoenix_eval.py` include deterministic citation/refusal/source-hint checks plus Ragas faithfulness and answer relevancy. The `--ragas-metrics` flag also supports `id_context_recall` and `none`. To store only deterministic scores:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py --use-phoenix --ragas-metrics none
@@ -263,7 +301,7 @@ Run standalone Ragas quality checks over the same gold questions without creatin
 uv run python scripts/run_ragas_eval.py
 ```
 
-The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness,answer_relevancy`; reference-based metrics such as `context_recall` and `factual_correctness` use the `reference_answer` values in `evals/questions.jsonl`.
+The Ragas runner is part of the dev/eval toolchain, so run `uv sync --extra dev` first. It defaults to `faithfulness,answer_relevancy`; it also supports `id_context_recall`. Reference-based metrics such as `context_recall` and `factual_correctness` use the `reference_answer` values in `evals/questions.jsonl`.
 
 Write Ragas scores to JSONL:
 
@@ -327,8 +365,7 @@ evals/questions.jsonl      Deterministic evaluation questions
 docs/superpowers/          Design specs and implementation plans
 documents/                 Private source corpus
 .imperial_rag/             Generated local filesystem state, extracted text, caches
-imperial_elasticsearch_data  Local Docker volume for keyword index state
-compose.yaml               Local Phoenix, Qdrant, and Elasticsearch services
+compose.yaml               Local app, Phoenix, Qdrant, Kibana, and Elasticsearch services
 pyproject.toml             Python package and dependency configuration
 ```
 
