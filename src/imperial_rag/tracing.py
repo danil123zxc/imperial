@@ -130,7 +130,7 @@ def trace_openinference_step(
     span_attributes: dict[str, Any] = {
         _SPAN_KIND: kind,
     }
-    if not _hide_inputs():
+    if not _hide_span_input(kind):
         span_attributes[_INPUT_VALUE] = input_value
         span_attributes[_INPUT_MIME_TYPE] = _TEXT_MIME_TYPE
     for key, value in (attributes or {}).items():
@@ -466,6 +466,12 @@ def _dedupe_trace_tags(tags: Sequence[str]) -> list[str]:
 
 def _hide_inputs() -> bool:
     return _env_flag("OPENINFERENCE_HIDE_INPUTS")
+
+
+def _hide_span_input(kind: str) -> bool:
+    if _hide_inputs():
+        return True
+    return str(kind).strip().upper() == "LLM" and _hide_input_messages()
 
 
 def _hide_outputs() -> bool:

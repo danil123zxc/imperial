@@ -795,12 +795,58 @@ def test_openinference_redaction_env_hides_llm_messages(monkeypatch) -> None:
         span.set_attribute("llm.output_messages.0.message.content", "private answer")
         span.set_attribute("llm.model_name", "qwen3.7-plus")
 
+    start_attrs = records[0]["attributes"]
     recorded_span = records[0]["span"]
-    assert records[0]["attributes"]["openinference.span.kind"] == "LLM"
+    assert start_attrs["openinference.span.kind"] == "LLM"
+    assert "input.value" not in start_attrs
+    assert "input.mime_type" not in start_attrs
     assert "llm.input_messages.0.message.role" not in recorded_span.attributes
     assert "llm.input_messages.0.message.content" not in recorded_span.attributes
     assert "llm.output_messages.0.message.role" not in recorded_span.attributes
     assert "llm.output_messages.0.message.content" not in recorded_span.attributes
+    assert recorded_span.attributes["llm.model_name"] == "qwen3.7-plus"
+
+
+def test_openinference_redaction_env_hides_llm_prompt_input_value(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.attributes: dict[str, object] = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def set_status(self, status):
+            pass
+
+    class FakeSpanContext:
+        def __init__(self, span: FakeSpan) -> None:
+            self.span = span
+
+        def __enter__(self):
+            return self.span
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name, attributes=None):
+            span = FakeSpan()
+            records.append({"attributes": dict(attributes or {}), "span": span})
+            return FakeSpanContext(span)
+
+    monkeypatch.setenv("OPENINFERENCE_HIDE_LLM_PROMPTS", "true")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
+
+    with tracing_module.trace_llm_step("answer.call_model", "private question") as span:
+        span.set_attribute("llm.input_messages.0.message.content", "private question")
+        span.set_attribute("llm.model_name", "qwen3.7-plus")
+
+    start_attrs = records[0]["attributes"]
+    recorded_span = records[0]["span"]
+    assert start_attrs == {"openinference.span.kind": "LLM"}
+    assert "llm.input_messages.0.message.content" not in recorded_span.attributes
     assert recorded_span.attributes["llm.model_name"] == "qwen3.7-plus"
 
 
