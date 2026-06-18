@@ -162,6 +162,7 @@ def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
     assert "OPENINFERENCE_HIDE_INPUTS=false" in lines
     assert "OPENINFERENCE_HIDE_OUTPUTS=false" in lines
     assert "OPENINFERENCE_HIDE_INPUT_MESSAGES=false" in lines
+    assert "OPENINFERENCE_HIDE_LLM_PROMPTS=false" in lines
     assert "OPENINFERENCE_HIDE_OUTPUT_MESSAGES=false" in lines
     assert "OPENINFERENCE_HIDE_INPUT_IMAGES=true" in lines
     assert "OPENINFERENCE_HIDE_INPUT_TEXT=false" in lines
@@ -175,6 +176,7 @@ def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
     assert "IMPERIAL_RAG_TRACE_BATCH=false" in lines
     assert "IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT=10" in lines
     assert "IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS=800" in lines
+    assert "IMPERIAL_RAG_TRACE_USER_HASH_SECRET=" in lines
 
 
 def test_readme_documents_private_compose_deployment() -> None:
@@ -186,3 +188,14 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "http://127.0.0.1:8501/_stcore/health" in readme
     assert "http://127.0.0.1:9200" in readme
     assert "http://127.0.0.1:5601" in readme
+    assert "unauthenticated by default and are safe only while bound to `127.0.0.1`" in readme
+    assert "Phoenix traces are private diagnostic records" in readme
+    assert "Future Kibana log views should link to Phoenix only by request/session identifiers" in readme
+
+
+def test_compose_documents_local_only_unauthenticated_observability_services() -> None:
+    compose = _read("compose.yaml")
+
+    assert "Phoenix stores private traces and has no auth in this local stack." in compose
+    assert "Elasticsearch and Kibana have security disabled for local development." in compose
+    assert "Do not rebind these ports or deploy remotely without auth and TLS." in compose

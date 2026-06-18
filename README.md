@@ -83,6 +83,8 @@ Then open `http://127.0.0.1:8501`. Sign in with the bootstrap admin account, the
 
 The private Compose stack runs the Streamlit app, Elasticsearch, Kibana, Qdrant, and Phoenix on one machine with all published ports bound to `127.0.0.1`.
 
+Elasticsearch, Kibana, and Phoenix in this Compose stack are unauthenticated by default and are safe only while bound to `127.0.0.1` on a trusted host. Do not rebind these ports to `0.0.0.0`, publish them through a reverse proxy, or share broad tunnels unless authentication and TLS are enabled.
+
 Prepare the server checkout:
 
 ```bash
@@ -205,11 +207,15 @@ debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full fina
 Phoenix-native `retrieval.select_evidence` document panel. Candidate spans remain compact. `OPENINFERENCE_HIDE_*`
 redaction settings still override document text and outputs.
 
+Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_*` and `IMPERIAL_RAG_TRACE_*` flags, spans can include raw user questions, model prompts, model answers, selected evidence text, and document metadata. Treat Phoenix access as access to private corpus-derived data.
+
 ### Local Logs
 
 The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr, so they are captured wherever the process is launched. The current detached Streamlit run redirects stderr into `/tmp/imperial-streamlit-8501.log`.
 
-Phoenix remains the trace and evaluation system. This v1 logging layer does not send logs or alerts to Sentry or any other external service.
+Phoenix remains the trace and evaluation system. This v1 logging layer writes sanitized operational events to stderr only; it does not send app logs to Elasticsearch, Sentry, or any other external service. Future Kibana log views should link to Phoenix only by request/session identifiers, and those links must be treated as links into private traces rather than sanitized public records.
+
+If stderr is redirected to a local file, rotate or delete that file according to the machine's privacy requirements. The detached Streamlit helper currently writes to `/tmp/imperial-streamlit-8501.log`, which can be removed with `rm -f /tmp/imperial-streamlit-8501.log` after debugging.
 
 ## Evaluation
 

@@ -379,7 +379,12 @@ def phoenix_trace_context(
     metadata: Mapping[str, Any] | None = None,
     tags: Sequence[str] | None = None,
 ) -> Iterator[None]:
-    """Propagate Phoenix trace context to all child spans when available."""
+    """Propagate private Phoenix trace context to child spans when available.
+
+    Phoenix is the detailed diagnostic store for this local app. Child spans may
+    contain raw user queries, prompts, answers, and evidence depending on
+    OpenInference and Imperial trace privacy flags.
+    """
 
     resolved_session_id = str(session_id).strip() if session_id is not None else ""
     resolved_user_id = str(user_id).strip() if user_id is not None else ""
