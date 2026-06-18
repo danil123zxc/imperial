@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import hmac
 import sys
 import types
 from pathlib import Path
@@ -1065,6 +1066,20 @@ def test_trace_user_id_from_email_is_deterministic_and_pseudonymous() -> None:
     user_id = tracing_module.trace_user_id_from_email(" User@Example.COM ")
 
     assert user_id == f"user_sha256:{expected_hash}"
+    assert "example.com" not in user_id
+
+
+def test_trace_user_id_from_email_uses_local_hmac_secret(monkeypatch) -> None:
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_USER_HASH_SECRET", "local secret")
+    expected_hash = hmac.new(
+        b"local secret",
+        b"user@example.com",
+        hashlib.sha256,
+    ).hexdigest()[:16]
+
+    user_id = tracing_module.trace_user_id_from_email(" User@Example.COM ")
+
+    assert user_id == f"user_hmac_sha256:{expected_hash}"
     assert "example.com" not in user_id
 
 

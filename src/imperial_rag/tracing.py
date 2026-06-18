@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import hmac
 import socket
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
@@ -239,9 +240,20 @@ def trace_candidate_documents_enabled() -> bool:
 
 
 def trace_user_id_from_email(email: str) -> str:
+    """Return a pseudonymous Phoenix user ID.
+
+    Set IMPERIAL_RAG_TRACE_USER_HASH_SECRET to use HMAC-SHA256 for stronger
+    pseudonymization. Leave it unset to preserve the existing deterministic
+    SHA-256 IDs for local trace correlation.
+    """
+
     normalized = str(email).strip().casefold()
     if not normalized:
         return ""
+    secret = os.environ.get("IMPERIAL_RAG_TRACE_USER_HASH_SECRET", "").strip()
+    if secret:
+        digest = hmac.new(secret.encode("utf-8"), normalized.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+        return f"user_hmac_sha256:{digest}"
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
     return f"user_sha256:{digest}"
 

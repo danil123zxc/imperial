@@ -346,6 +346,7 @@ Common settings:
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.select_evidence` when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.
+- `IMPERIAL_RAG_TRACE_USER_HASH_SECRET`: optional local secret for HMAC-based Phoenix user IDs; leave unset to preserve current deterministic local trace correlation.
 - `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.
 - `IMPERIAL_RAG_LOG_LEVEL`: local structured log level, defaulting to `INFO`.
 - `IMPERIAL_RAG_LOG_FORMAT`: local structured log format; v1 supports `json`.
