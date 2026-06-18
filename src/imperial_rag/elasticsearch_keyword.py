@@ -13,6 +13,7 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_elasticsearch import ElasticsearchRetriever as LangChainElasticsearchRetriever
 
 from imperial_rag.config import Settings
+from imperial_rag.document_ids import metadata_or_content_id
 from imperial_rag.keyword import (
     KeywordHit,
     build_elasticsearch_token_query,
@@ -262,7 +263,7 @@ def _structured_search_fields(document: Document) -> dict[str, str]:
 
 def _retrieval_id(document: Document, *, hit_id: str | None = None) -> str:
     metadata = document.metadata or {}
-    return str(metadata.get("citation_id") or metadata.get("chunk_id") or hit_id or document.page_content)
+    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), hit_id, content=document.page_content)
 
 
 def elasticsearch_health(settings: Settings, *, client: Any | None = None) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
 from imperial_rag.config import Settings
+import imperial_rag.elasticsearch_keyword as elasticsearch_keyword_module
 from imperial_rag.elasticsearch_keyword import (
     ElasticsearchKeywordIndex,
     ElasticsearchKeywordRetriever,
@@ -225,6 +227,14 @@ def test_keyword_retriever_async_invoke_accepts_limit() -> None:
         }
     ]
     assert_fuzzy_token_query_body(client.search_calls[0]["body"], ["возврат", "брак"], size=5)
+
+
+def test_elasticsearch_retrieval_id_hashes_content_when_ids_and_hit_id_are_missing() -> None:
+    document = Document(page_content="private keyword text", metadata={})
+    expected = f"content_sha256:{hashlib.sha256(b'private keyword text').hexdigest()[:12]}"
+
+    assert elasticsearch_keyword_module._retrieval_id(document) == expected
+    assert "private keyword text" not in elasticsearch_keyword_module._retrieval_id(document)
 
 
 def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:

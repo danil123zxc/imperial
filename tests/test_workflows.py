@@ -1,3 +1,4 @@
+import hashlib
 from contextlib import contextmanager
 
 import pytest
@@ -5,6 +6,7 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
 
 from imperial_rag.answering import REFUSAL_TEXT
+import imperial_rag.workflows as workflows_module
 from imperial_rag.workflows import (
     build_ingestion_workflow,
     build_query_workflow,
@@ -724,6 +726,14 @@ def test_rank_hybrid_candidates_deduplicates_and_boosts_keyword_exact_matches():
     )
 
     assert [doc.metadata["citation_id"] for doc in ranked] == ["same", "return", "warehouse"]
+
+
+def test_legacy_workflow_document_key_hashes_content_when_metadata_ids_are_missing() -> None:
+    document = Document(page_content="private workflow text", metadata={})
+    expected = f"content_sha256:{hashlib.sha256(b'private workflow text').hexdigest()[:12]}"
+
+    assert workflows_module._document_key(document) == expected
+    assert "private workflow text" not in workflows_module._document_key(document)
 
 
 def test_ingestion_workflow_invokes_pipeline_and_returns_status_counts():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import contextmanager
 
 from langchain_core.documents import Document
@@ -609,6 +610,18 @@ def test_rrf_candidate_fusion_deduplicates_by_retrieval_id_and_merges_metadata()
     assert fused[0].metadata["_vector_rank"] == 0
     assert fused[0].metadata["_keyword_rank"] == 0
     assert fused[0].metadata["_keyword_score"] == 7.0
+
+
+def test_retrieval_id_helpers_hash_content_when_metadata_ids_are_missing() -> None:
+    document = Document(page_content="private corpus text", metadata={})
+    expected = f"content_sha256:{hashlib.sha256(b'private corpus text').hexdigest()[:12]}"
+
+    assert retrieval_module._document_key(document) == expected
+    assert retrieval_module._retrieval_id(document) == expected
+
+    annotated = retrieval_module._annotate_retrieval_documents([document], rank_key="_vector_rank")
+    assert annotated[0].metadata["_retrieval_id"] == expected
+    assert "private corpus text" not in annotated[0].metadata["_retrieval_id"]
 
 
 def test_rrf_candidate_fusion_interleaves_equal_vector_and_keyword_ranks():

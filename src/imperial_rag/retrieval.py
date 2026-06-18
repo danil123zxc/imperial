@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_classic.retrievers import EnsembleRetriever
 
+from imperial_rag.document_ids import metadata_or_content_id
 from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
 from imperial_rag.tracing import (
     imperial_trace_attributes,
@@ -219,12 +220,17 @@ class HybridRetriever:
 
 def _document_key(document: Document) -> str:
     metadata = document.metadata or {}
-    return str(metadata.get("citation_id") or metadata.get("chunk_id") or document.page_content)
+    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), content=document.page_content)
 
 
 def _retrieval_id(document: Document) -> str:
     metadata = document.metadata or {}
-    return str(metadata.get("_retrieval_id") or metadata.get("citation_id") or metadata.get("chunk_id") or document.page_content)
+    return metadata_or_content_id(
+        metadata.get("_retrieval_id"),
+        metadata.get("citation_id"),
+        metadata.get("chunk_id"),
+        content=document.page_content,
+    )
 
 
 def _annotate_retrieval_documents(documents: list[Document], *, rank_key: str) -> list[Document]:

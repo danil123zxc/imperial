@@ -17,6 +17,7 @@ from imperial_rag.answering import (
     format_sources,
     validate_citations,
 )
+from imperial_rag.document_ids import metadata_or_content_id
 from imperial_rag.retrieval import CandidateMerger
 from imperial_rag.tracing import imperial_trace_attributes, trace_answer_step, trace_llm_step
 
@@ -82,7 +83,8 @@ def _legacy_openai_chat_model():
 
 
 def _document_key(document: Document) -> str:
-    return str(document.metadata.get("citation_id") or document.metadata.get("chunk_id") or document.page_content)
+    metadata = document.metadata or {}
+    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), content=document.page_content)
 
 
 def _content_key(document: Document) -> str:
