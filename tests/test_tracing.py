@@ -85,7 +85,7 @@ def test_configure_phoenix_tracing_registers_once(monkeypatch, tmp_path: Path) -
         {
             "project_name": "trace-project",
             "endpoint": "http://localhost:6006/v1/traces",
-            "auto_instrument": True,
+            "auto_instrument": False,
             "batch": False,
             "verbose": False,
         }
@@ -124,7 +124,7 @@ def test_configure_phoenix_tracing_rejects_changed_key_after_configuration(monke
         {
             "project_name": "project-a",
             "endpoint": "http://localhost:6006/v1/traces",
-            "auto_instrument": True,
+            "auto_instrument": False,
             "batch": False,
             "verbose": False,
         }
@@ -145,6 +145,22 @@ def test_configure_phoenix_tracing_honors_trace_batch_env(monkeypatch, tmp_path:
     assert configure_phoenix_tracing(Settings(workspace_root=tmp_path), enabled=True) is provider
 
     assert calls[0]["batch"] is True
+
+
+def test_configure_phoenix_tracing_honors_auto_instrument_env(monkeypatch, tmp_path: Path) -> None:
+    _reset_phoenix_tracing_for_tests()
+    calls: list[dict[str, object]] = []
+    provider = object()
+    fake_phoenix = types.ModuleType("phoenix")
+    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel.register = lambda **kwargs: calls.append(kwargs) or provider
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT", "true")
+
+    assert configure_phoenix_tracing(Settings(workspace_root=tmp_path), enabled=True) is provider
+
+    assert calls[0]["auto_instrument"] is True
 
 
 def test_configure_phoenix_tracing_can_be_enabled_by_env(monkeypatch, tmp_path: Path) -> None:
@@ -193,14 +209,14 @@ def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypat
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
     with tracing_module.trace_retrieval_step(
-        "retrieve.vector_search",
+        "retrieval.vector_search",
         "возврат брака",
         attributes={"retrieval.k": 8, "retrieval.options": {"fetch_k": 80}},
     ) as span:
         span.set_attribute("retrieval.status", "ok")
         span.set_output({"count": 1, "top_documents": [{"citation_id": "S1"}]})
 
-    assert records[0]["name"] == "retrieve.vector_search"
+    assert records[0]["name"] == "retrieval.vector_search"
     assert records[0]["attributes"]["openinference.span.kind"] == "RETRIEVER"
     assert records[0]["attributes"]["input.value"] == "возврат брака"
     assert records[0]["attributes"]["input.mime_type"] == "text/plain"
@@ -372,7 +388,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     )()
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieve.keyword_search", "возврат") as span:
+    with tracing_module.trace_retrieval_step("retrieval.keyword_search", "возврат") as span:
         span.set_retrieval_documents([document])
 
     recorded_span = records[0]["span"]
@@ -406,7 +422,7 @@ def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -
     ]
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieve.vector_search", "возврат") as span:
+    with tracing_module.trace_retrieval_step("retrieval.vector_search", "возврат") as span:
         span.set_retrieval_documents(documents)
 
     recorded_span = records[0]["span"]
@@ -434,7 +450,7 @@ def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> N
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", "12")
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieve.vector_search", "возврат") as span:
+    with tracing_module.trace_retrieval_step("retrieval.vector_search", "возврат") as span:
         span.set_retrieval_documents(documents)
 
     recorded_span = records[0]["span"]
@@ -451,7 +467,7 @@ def test_final_evidence_documents_can_store_full_content_when_enabled(monkeypatc
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", "12")
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieval.select_evidence", "возврат") as span:
+    with tracing_module.trace_retrieval_step("retrieval.final_evidence", "возврат") as span:
         span.set_final_evidence_documents([document])
 
     recorded_span = records[0]["span"]
@@ -494,7 +510,7 @@ def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_te
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_TEXT", "true")
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieve.keyword_search", "private query") as span:
+    with tracing_module.trace_retrieval_step("retrieval.keyword_search", "private query") as span:
         span.set_output({"count": 1})
         span.set_retrieval_documents([document])
         span.set_final_evidence_documents([document])
@@ -572,7 +588,7 @@ def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
     output_document = type("Document", (), {"page_content": "reranked", "metadata": {"chunk_id": "out"}})()
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieve.rerank", "возврат", kind="RERANKER") as span:
+    with tracing_module.trace_retrieval_step("retrieval.rerank", "возврат", kind="RERANKER") as span:
         span.set_reranker_input_documents([input_document])
         span.set_reranker_output_documents([output_document])
 
@@ -599,7 +615,7 @@ def test_trace_span_caps_and_truncates_native_reranker_documents(monkeypatch) ->
     ]
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
-    with tracing_module.trace_retrieval_step("retrieve.rerank", "возврат", kind="RERANKER") as span:
+    with tracing_module.trace_retrieval_step("retrieval.rerank", "возврат", kind="RERANKER") as span:
         span.set_reranker_input_documents(documents)
         span.set_reranker_output_documents(documents)
 

@@ -104,7 +104,7 @@ class HybridRetriever:
         keyword_docs: list[Document] = []
 
         with trace_retrieval_step(
-            "retrieve.vector_search",
+            "retrieval.vector_search",
             query,
             attributes=imperial_trace_attributes(
                 "retrieval",
@@ -138,7 +138,7 @@ class HybridRetriever:
                 span.set_retrieval_documents(vector_docs)
 
         with trace_retrieval_step(
-            "retrieve.keyword_search",
+            "retrieval.keyword_search",
             query,
             attributes=imperial_trace_attributes(
                 "retrieval",
@@ -577,59 +577,17 @@ class RetrievalService:
         ) as parent_span:
             candidates = self.hybrid.retrieve(query)
             diagnostics = dict(candidates.diagnostics)
-            with trace_retrieval_step(
-                "retrieve.merge_candidates",
-                query,
-                kind="CHAIN",
-                attributes=imperial_trace_attributes(
-                    "retrieval",
-                    "merge_candidates",
-                    {
-                        "retrieval.vector_candidates": len(candidates.vector_docs),
-                        "retrieval.keyword_candidates": len(candidates.keyword_docs),
-                    },
-                ),
-            ) as span:
-                merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
-                diagnostics["merged_candidates"] = len(merged)
-                _set_documents_span_output(
-                    span,
-                    merged,
-                    vector_candidates=len(candidates.vector_docs),
-                    keyword_candidates=len(candidates.keyword_docs),
-                )
+            merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
+            diagnostics["merged_candidates"] = len(merged)
+            fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
+            rerank_input = fused[: self.settings.rerank_input_limit]
+            diagnostics["fusion"] = "rrf"
+            diagnostics["fusion_rrf_k"] = self.settings.rrf_k
+            diagnostics["fused_candidates"] = len(fused)
+            diagnostics["rerank_input_candidates"] = len(rerank_input)
 
             with trace_retrieval_step(
-                "retrieve.fuse_candidates",
-                query,
-                kind="CHAIN",
-                attributes=imperial_trace_attributes(
-                    "retrieval",
-                    "fuse_candidates",
-                    {
-                        "retrieval.fusion": "rrf",
-                        "retrieval.fusion_rrf_k": self.settings.rrf_k,
-                        "retrieval.input_count": len(merged),
-                        "retrieval.rerank_input_limit": self.settings.rerank_input_limit,
-                    },
-                ),
-            ) as span:
-                fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
-                rerank_input = fused[: self.settings.rerank_input_limit]
-                diagnostics["fusion"] = "rrf"
-                diagnostics["fusion_rrf_k"] = self.settings.rrf_k
-                diagnostics["fused_candidates"] = len(fused)
-                diagnostics["rerank_input_candidates"] = len(rerank_input)
-                _set_documents_span_output(
-                    span,
-                    fused,
-                    fusion="rrf",
-                    fusion_rrf_k=self.settings.rrf_k,
-                    rerank_input_candidates=len(rerank_input),
-                )
-
-            with trace_retrieval_step(
-                "retrieve.rerank",
+                "retrieval.rerank",
                 query,
                 kind="RERANKER",
                 attributes=imperial_trace_attributes(
@@ -660,11 +618,11 @@ class RetrievalService:
             evidence = reranked
             diagnostics["final_evidence"] = len(evidence)
             with trace_retrieval_step(
-                "retrieval.select_evidence",
+                "retrieval.final_evidence",
                 query,
                 attributes=imperial_trace_attributes(
                     "retrieval",
-                    "select_evidence",
+                    "final_evidence",
                     {"retrieval.final_evidence": len(evidence)},
                 ),
             ) as span:
@@ -725,6 +683,8 @@ def _retrieval_summary_output(diagnostics: dict[str, Any]) -> dict[str, Any]:
         "merged_candidates",
         "fused_candidates",
         "rerank_input_candidates",
+        "fusion",
+        "fusion_rrf_k",
         "reranked_candidates",
         "final_evidence",
         "vector_search_status",

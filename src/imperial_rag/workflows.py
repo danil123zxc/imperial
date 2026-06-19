@@ -257,19 +257,9 @@ def build_query_workflow(
             attributes=imperial_trace_attributes(
                 "answer",
                 "generate",
-                _answer_trace_attributes(evidence, citations),
+                _answer_trace_attributes(evidence, citations, source_count=len(sources)),
             ),
         ) as span:
-            with trace_answer_step(
-                "answer.prepare_context",
-                state["question"],
-                attributes=imperial_trace_attributes(
-                    "answer",
-                    "prepare_context",
-                    _answer_trace_attributes(evidence, citations),
-                ),
-            ) as context_span:
-                context_span.set_output(_answer_context_trace_output(evidence, citations, sources))
             if not evidence:
                 update: QueryState = {
                     "answer": REFUSAL_TEXT,
@@ -278,7 +268,7 @@ def build_query_workflow(
                     "citations_valid": True,
                     "invalid_citations": [],
                 }
-                _set_answer_trace_output(span, update, evidence_count=0, citation_count=0)
+                _set_answer_trace_output(span, update, evidence=evidence, citations=citations, sources=sources)
                 return update
             with trace_llm_step(
                 "answer.call_model",
@@ -310,11 +300,11 @@ def build_query_workflow(
                     }
                 )
             with trace_answer_step(
-                "answer.validate_citations",
+                "answer.citation_check",
                 state["question"],
                 attributes=imperial_trace_attributes(
                     "answer",
-                    "validate_citations",
+                    "citation_check",
                     {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
                 ),
             ) as validation_span:
@@ -334,7 +324,7 @@ def build_query_workflow(
                 "citations_valid": valid,
                 "invalid_citations": invalid,
             }
-            _set_answer_trace_output(span, update, evidence_count=len(evidence), citation_count=len(citations))
+            _set_answer_trace_output(span, update, evidence=evidence, citations=citations, sources=sources)
             return update
 
     graph = StateGraph(QueryState)
@@ -348,8 +338,13 @@ def build_query_workflow(
     return graph.compile()
 
 
-def _answer_trace_attributes(evidence: Sequence[Document], citations: Sequence[str]) -> dict[str, Any]:
-    return {
+def _answer_trace_attributes(
+    evidence: Sequence[Document],
+    citations: Sequence[str],
+    *,
+    source_count: int | None = None,
+) -> dict[str, Any]:
+    attributes = {
         "answer.evidence_count": len(evidence),
         "answer.citation_count": len(citations),
         "answer.citation_ids": [
@@ -359,6 +354,9 @@ def _answer_trace_attributes(evidence: Sequence[Document], citations: Sequence[s
         ],
         "answer.context_chars": sum(len(str(document.page_content)) for document in evidence),
     }
+    if source_count is not None:
+        attributes["answer.source_count"] = source_count
+    return attributes
 
 
 def _set_model_prompt_trace_attributes(
@@ -416,7 +414,7 @@ def _safe_user_prompt_trace_content(question: str, evidence: Sequence[Document])
     return (
         f"Question:\n{question}\n\n"
         "Evidence:\n"
-        f"<{len(evidence)} retrieved chunk(s) elided; inspect retrieval.select_evidence for source metadata.>"
+        f"<{len(evidence)} retrieved chunk(s) elided; inspect retrieval.final_evidence for source metadata.>"
     )
 
 
@@ -438,15 +436,21 @@ def _answer_context_trace_output(
     }
 
 
-def _set_answer_trace_output(span: Any, update: Mapping[str, Any], *, evidence_count: int, citation_count: int) -> None:
+def _set_answer_trace_output(
+    span: Any,
+    update: Mapping[str, Any],
+    *,
+    evidence: Sequence[Document],
+    citations: Sequence[str],
+    sources: Sequence[str],
+) -> None:
     span.set_output(
         {
             "answer": update.get("answer", ""),
             "citations_valid": update.get("citations_valid"),
             "invalid_citations": update.get("invalid_citations", []),
             "refused": update.get("answer") == REFUSAL_TEXT,
-            "evidence_count": evidence_count,
-            "citation_count": citation_count,
+            **_answer_context_trace_output(evidence, citations, sources),
         }
     )
 

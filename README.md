@@ -233,11 +233,11 @@ uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --
 ```
 
 Query traces use a domain-first hierarchy: `imperial_rag.query` contains retrieval and answer phases,
-retrieval has child spans for vector search, keyword search, fusion, reranking, and final evidence selection,
-and answer generation has child spans for context preparation, model call, and citation validation. For rich local
-debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full final evidence documents to the
-Phoenix-native `retrieval.select_evidence` document panel. Candidate spans remain compact. `OPENINFERENCE_HIDE_*`
-redaction settings still override document text and outputs.
+retrieval has child spans for vector search, keyword search, reranking, and final evidence selection, and answer
+generation has child spans for the model call and citation check. Merge/fusion counts stay on the parent
+`retrieval` span output. For rich local debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full
+final evidence documents to the Phoenix-native `retrieval.final_evidence` document panel. Candidate spans remain
+compact. `OPENINFERENCE_HIDE_*` redaction settings still override document text and outputs.
 
 Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_*` and `IMPERIAL_RAG_TRACE_*` flags, spans can include raw user questions, model prompts, model answers, selected evidence text, and document metadata. Treat Phoenix access as access to private corpus-derived data.
 
@@ -387,7 +387,8 @@ Common settings:
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_SESSION_ID`: optional CLI Phoenix `session.id`; omitted values generate a per-run `cli_<uuid>`.
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
-- `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.select_evidence` when explicitly enabled.
+- `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.final_evidence` when explicitly enabled.
+- `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`: opt into Phoenix/OpenInference framework auto-instrumentation for deep debugging; defaults to `false` so manual domain spans define the summary trace tree.
 - `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.
 - `IMPERIAL_RAG_TRACE_USER_HASH_SECRET`: optional local secret for HMAC-based Phoenix user IDs; leave unset to preserve current deterministic local trace correlation.
 - `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.

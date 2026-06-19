@@ -435,7 +435,7 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
     _CONFIGURED_PROVIDER = register(
         project_name=resolved_settings.phoenix_project_name,
         endpoint=resolved_settings.phoenix_collector_endpoint,
-        auto_instrument=True,
+        auto_instrument=_env_flag("IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT"),
         batch=_env_flag("IMPERIAL_RAG_TRACE_BATCH"),
         verbose=False,
     )
