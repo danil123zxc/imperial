@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -395,6 +396,16 @@ def test_ragas_eval_script_imports_without_importing_ragas_at_module_load():
 
     assert hasattr(module, "build_ragas_rows")
     assert hasattr(module, "evaluate_ragas_rows")
+
+
+def test_run_coroutine_rejects_sync_bridge_inside_running_loop():
+    from imperial_rag import ragas_eval
+
+    async def runner():
+        with pytest.raises(RuntimeError, match="running event loop"):
+            ragas_eval._run_coroutine(asyncio.sleep(0))
+
+    asyncio.run(runner())
 
 
 def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():

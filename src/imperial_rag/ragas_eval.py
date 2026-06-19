@@ -5,11 +5,12 @@ import importlib
 import inspect
 import math
 import sys
-import threading
 import types
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+import anyio
 
 from imperial_rag.providers import MissingDashScopeKeyError, QwenProviderSettings
 
@@ -691,21 +692,13 @@ def _run_coroutine(awaitable: Any) -> Any:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(awaitable)
+        return anyio.run(_await_result, awaitable)
     if not loop.is_running():
         return loop.run_until_complete(awaitable)
+    if hasattr(awaitable, "close"):
+        awaitable.close()
+    raise RuntimeError("Cannot synchronously resolve a Ragas awaitable inside a running event loop.")
 
-    result_box: dict[str, Any] = {}
 
-    def run_in_thread() -> None:
-        try:
-            result_box["result"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover - defensive cross-thread propagation
-            result_box["error"] = exc
-
-    thread = threading.Thread(target=run_in_thread)
-    thread.start()
-    thread.join()
-    if "error" in result_box:
-        raise result_box["error"]
-    return result_box.get("result")
+async def _await_result(awaitable: Any) -> Any:
+    return await awaitable

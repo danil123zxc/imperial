@@ -8,6 +8,7 @@ from langchain_core.retrievers import BaseRetriever
 from pydantic import Field
 
 import imperial_rag.retrieval as retrieval_module
+from imperial_rag.document_ids import document_key
 from imperial_rag.retrieval import CandidateMerger, FallbackRanker, RetrievalSettings, RrfCandidateFusion
 from imperial_rag.retrieval import HybridRetriever
 from imperial_rag.retrieval import RetrievalService
@@ -324,6 +325,34 @@ def test_hybrid_retriever_reports_vector_provider_mismatch_without_vector_call()
     assert "vector_provider_mismatch" in result.diagnostics["fallbacks"]
 
 
+def test_hybrid_retriever_reports_vector_store_unavailable_without_vector_call():
+    calls = []
+
+    class UnavailableVector:
+        vector_unavailable = True
+        error_type = "RuntimeError"
+
+        def max_marginal_relevance_search(self, query, k, fetch_k, lambda_mult):
+            calls.append(query)
+            raise RuntimeError("vector search should not be called")
+
+    keyword_docs = [Document(page_content="keyword", metadata={"citation_id": "k"})]
+
+    result = HybridRetriever(
+        vector_search=UnavailableVector(),
+        keyword_search=FakeKeywordSearch(keyword_docs),
+        settings=RetrievalSettings(),
+    ).retrieve("возврат")
+
+    assert calls == []
+    assert result.vector_docs == []
+    assert [doc.metadata["citation_id"] for doc in result.keyword_docs] == ["k"]
+    assert result.diagnostics["vector_search_status"] == "unavailable"
+    assert result.diagnostics["keyword_search_status"] == "ok"
+    assert result.diagnostics["vector_search_error_type"] == "RuntimeError"
+    assert "vector_store_unavailable" in result.diagnostics["fallbacks"]
+
+
 def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
@@ -612,7 +641,7 @@ def test_retrieval_id_helpers_hash_content_when_metadata_ids_are_missing() -> No
     document = Document(page_content="private corpus text", metadata={})
     expected = f"content_sha256:{hashlib.sha256(b'private corpus text').hexdigest()[:12]}"
 
-    assert retrieval_module._document_key(document) == expected
+    assert document_key(document) == expected
     assert retrieval_module._retrieval_id(document) == expected
 
     annotated = retrieval_module._annotate_retrieval_documents([document], rank_key="_vector_rank")

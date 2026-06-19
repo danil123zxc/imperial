@@ -81,6 +81,13 @@ def make_index(tmp_path: Path, client: FakeClient) -> ElasticsearchKeywordIndex:
     return ElasticsearchKeywordIndex(FakeSettings(tmp_path), client=client, bulk=fake_bulk)
 
 
+def test_index_mappings_use_russian_analyzer_for_searchable_text_fields() -> None:
+    mappings = elasticsearch_keyword_module.INDEX_MAPPINGS["properties"]
+
+    for field in ("content_text", "file_name", "relative_path", "section_heading", "normalized_text"):
+        assert mappings[field]["analyzer"] == "russian"
+
+
 def mark_index_exists(client: FakeClient) -> None:
     client.existing_indices.add("test_keyword_chunks")
 

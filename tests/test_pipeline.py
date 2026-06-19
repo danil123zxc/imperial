@@ -55,7 +55,15 @@ class FakeManifestStore:
         self.records = []
         self.status_updates = []
         self.index_updates = []
+        self.closed = False
         FakeManifestStore.last = self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.closed = True
+        return False
 
     def replace_records(self, records):
         self.records = list(records)
@@ -100,6 +108,7 @@ def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatc
     assert FakeManifestStore.last.status_updates[0]["chunk_count"] == 1
     assert FakeManifestStore.last.index_updates[0]["keyword_index_status"] == IndexStatus.INDEXED
     assert FakeManifestStore.last.index_updates[0]["vector_index_status"] == IndexStatus.SKIPPED
+    assert FakeManifestStore.last.closed is True
 
 
 def test_run_ingestion_uses_retrieval_chunk_settings(tmp_path, monkeypatch):

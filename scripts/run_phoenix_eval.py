@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -355,7 +354,7 @@ def _run_phoenix_experiment(
 
 
 def _configure_observability(settings: Any) -> None:
-    from imperial_rag.observability import configure_observability
+    from imperial_rag.cli import configure_observability
 
     configure_observability(settings)
 
@@ -372,13 +371,15 @@ def _log_eval_completion(started_at: float, **fields: Any) -> None:
 
 
 def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
-    from imperial_rag.observability import log_failure
+    from imperial_rag.cli import log_failure
 
-    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
+    log_failure(operation, exc, started_at, **fields)
 
 
 def _duration_ms(started_at: float) -> int:
-    return int((perf_counter() - started_at) * 1000)
+    from imperial_rag.cli import duration_ms
+
+    return duration_ms(started_at)
 
 
 def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:
@@ -572,9 +573,9 @@ def log_phoenix_eval_annotations(
 
 
 def _configure_tracing(settings: Any, enabled: bool) -> None:
-    from imperial_rag.tracing import configure_phoenix_tracing
+    from imperial_rag.cli import configure_tracing
 
-    configure_phoenix_tracing(settings, enabled=enabled)
+    configure_tracing(settings, enabled=enabled)
 
 
 def _get_ragas_faithfulness_scorer() -> Any:
@@ -596,21 +597,15 @@ def _get_ragas_answer_relevancy_scorer() -> Any:
 
 
 def _build_settings(workspace_root: Path | None) -> Any:
-    from imperial_rag.config import Settings
+    from imperial_rag.cli import build_settings
 
-    if workspace_root is None:
-        return Settings()
-    try:
-        return Settings(workspace_root=workspace_root)
-    except TypeError:
-        os.environ["IMPERIAL_RAG_WORKSPACE_ROOT"] = str(workspace_root)
-        return Settings()
+    return build_settings(workspace_root)
 
 
 def _load_project_env(workspace_root: Path | None) -> None:
-    from imperial_rag.env import load_project_env
+    from imperial_rag.cli import load_project_environment
 
-    load_project_env(workspace_root)
+    load_project_environment(workspace_root)
 
 
 def _looks_like_refusal(answer: str) -> bool:

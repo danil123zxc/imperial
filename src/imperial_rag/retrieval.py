@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
@@ -8,7 +7,9 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_classic.retrievers import EnsembleRetriever
 
-from imperial_rag.document_ids import metadata_or_content_id
+from imperial_rag.config import env_float, env_int, env_str
+from imperial_rag.document_ids import content_key, document_key, metadata_or_content_id
+from imperial_rag.keyword import searchable_document_text
 from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
 from imperial_rag.tracing import (
     imperial_trace_attributes,
@@ -16,27 +17,6 @@ from imperial_rag.tracing import (
     trace_candidate_documents_enabled,
     trace_retrieval_step,
 )
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return int(raw)
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return float(raw)
-
-
-def _env_str(name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw
 
 
 @dataclass(frozen=True)
@@ -55,20 +35,20 @@ class RetrievalSettings:
 
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
-        qwen_rerank_model = _env_str("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen3-rerank")
-        primary_reranker = _env_str("IMPERIAL_RAG_PRIMARY_RERANKER", f"dashscope:{qwen_rerank_model}")
+        qwen_rerank_model = env_str("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen3-rerank")
+        primary_reranker = env_str("IMPERIAL_RAG_PRIMARY_RERANKER", f"dashscope:{qwen_rerank_model}")
         return cls(
-            chunk_size=_env_int("IMPERIAL_RAG_CHUNK_SIZE", cls.chunk_size),
-            chunk_overlap=_env_int("IMPERIAL_RAG_CHUNK_OVERLAP", cls.chunk_overlap),
-            vector_fetch_k=_env_int("IMPERIAL_RAG_VECTOR_FETCH_K", cls.vector_fetch_k),
-            vector_k=_env_int("IMPERIAL_RAG_VECTOR_K", cls.vector_k),
-            keyword_limit=_env_int("IMPERIAL_RAG_KEYWORD_LIMIT", cls.keyword_limit),
-            rerank_input_limit=_env_int("IMPERIAL_RAG_RERANK_INPUT_LIMIT", cls.rerank_input_limit),
-            rerank_top_n=_env_int("IMPERIAL_RAG_RERANK_TOP_N", cls.rerank_top_n),
-            mmr_lambda_mult=_env_float("IMPERIAL_RAG_MMR_LAMBDA_MULT", cls.mmr_lambda_mult),
-            rrf_k=_env_int("IMPERIAL_RAG_RRF_K", cls.rrf_k),
+            chunk_size=env_int("IMPERIAL_RAG_CHUNK_SIZE", cls.chunk_size),
+            chunk_overlap=env_int("IMPERIAL_RAG_CHUNK_OVERLAP", cls.chunk_overlap),
+            vector_fetch_k=env_int("IMPERIAL_RAG_VECTOR_FETCH_K", cls.vector_fetch_k),
+            vector_k=env_int("IMPERIAL_RAG_VECTOR_K", cls.vector_k),
+            keyword_limit=env_int("IMPERIAL_RAG_KEYWORD_LIMIT", cls.keyword_limit),
+            rerank_input_limit=env_int("IMPERIAL_RAG_RERANK_INPUT_LIMIT", cls.rerank_input_limit),
+            rerank_top_n=env_int("IMPERIAL_RAG_RERANK_TOP_N", cls.rerank_top_n),
+            mmr_lambda_mult=env_float("IMPERIAL_RAG_MMR_LAMBDA_MULT", cls.mmr_lambda_mult),
+            rrf_k=env_int("IMPERIAL_RAG_RRF_K", cls.rrf_k),
             primary_reranker=primary_reranker,
-            fallback_reranker=_env_str("IMPERIAL_RAG_FALLBACK_RERANKER", cls.fallback_reranker),
+            fallback_reranker=env_str("IMPERIAL_RAG_FALLBACK_RERANKER", cls.fallback_reranker),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -119,6 +99,9 @@ class HybridRetriever:
             if getattr(self.vector_search, "provider_mismatch", False):
                 vector_status = "provider_mismatch"
                 fallbacks.append("vector_provider_mismatch")
+            elif getattr(self.vector_search, "vector_unavailable", False):
+                vector_status = "unavailable"
+                fallbacks.append("vector_store_unavailable")
             else:
                 try:
                     vector_docs = self._vector_docs(query)
@@ -179,6 +162,7 @@ class HybridRetriever:
                 "keyword_candidates": len(keyword_docs),
                 "vector_search_status": vector_status,
                 "keyword_search_status": keyword_status,
+                **_vector_error_diagnostics(self.vector_search),
                 "keyword_scores_available": keyword_scores_available,
                 "fallbacks": fallbacks,
             },
@@ -218,11 +202,6 @@ class HybridRetriever:
         )
 
 
-def _document_key(document: Document) -> str:
-    metadata = document.metadata or {}
-    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), content=document.page_content)
-
-
 def _retrieval_id(document: Document) -> str:
     metadata = document.metadata or {}
     return metadata_or_content_id(
@@ -238,31 +217,21 @@ def _annotate_retrieval_documents(documents: list[Document], *, rank_key: str) -
     for rank, document in enumerate(documents):
         metadata = dict(document.metadata or {})
         metadata.setdefault(rank_key, rank)
-        annotated_document = Document(page_content=document.page_content, metadata=metadata)
-        metadata.setdefault("_retrieval_id", _retrieval_id(annotated_document))
+        metadata.setdefault(
+            "_retrieval_id",
+            metadata_or_content_id(
+                metadata.get("_retrieval_id"),
+                metadata.get("citation_id"),
+                metadata.get("chunk_id"),
+                content=document.page_content,
+            ),
+        )
         annotated.append(Document(page_content=document.page_content, metadata=metadata))
     return annotated
 
 
-def _content_key(document: Document) -> str:
-    return " ".join(document.page_content.split()).casefold()
-
-
 def _query_tokens(query: str) -> list[str]:
     return [token for token in query.casefold().replace("-", " ").split() if token]
-
-
-def _searchable_text(document: Document) -> str:
-    metadata = document.metadata or {}
-    return " ".join(
-        [
-            document.page_content,
-            str(metadata.get("file_name", "")),
-            str(metadata.get("relative_path", "")),
-            str(metadata.get("section_heading", "")),
-            str(metadata.get("source_type", "")),
-        ]
-    ).casefold()
 
 
 def _dashscope_model_name(configured: str) -> str | None:
@@ -279,25 +248,25 @@ class CandidateMerger:
         index_by_key: dict[str, int] = {}
         index_by_content: dict[str, int] = {}
         for document in [*vector_docs, *keyword_docs]:
-            document_key = _document_key(document)
-            content_key = _content_key(document)
+            candidate_document_key = document_key(document)
+            candidate_content_key = content_key(document)
 
-            existing_index = index_by_key.get(document_key)
+            existing_index = index_by_key.get(candidate_document_key)
             if existing_index is None:
-                existing_index = index_by_content.get(content_key)
+                existing_index = index_by_content.get(candidate_content_key)
             if existing_index is not None:
                 kept = merged[existing_index]
                 merged[existing_index] = Document(
                     page_content=kept.page_content,
                     metadata=self._merge_metadata(kept.metadata, document.metadata),
                 )
-                index_by_key.setdefault(document_key, existing_index)
-                index_by_content.setdefault(content_key, existing_index)
+                index_by_key.setdefault(candidate_document_key, existing_index)
+                index_by_content.setdefault(candidate_content_key, existing_index)
                 continue
 
             index = len(merged)
-            index_by_key[document_key] = index
-            index_by_content[content_key] = index
+            index_by_key[candidate_document_key] = index
+            index_by_content[candidate_content_key] = index
             merged.append(Document(page_content=document.page_content, metadata=dict(document.metadata or {})))
         return merged
 
@@ -335,7 +304,8 @@ class RrfCandidateFusion:
             and self._rank_value(doc, "_keyword_rank") is None
         ]
 
-        ranked = CandidateMerger().merge(vector_docs, keyword_docs)
+        merger = CandidateMerger()
+        ranked = merger.merge(vector_docs, keyword_docs)
         vector_list = self._rank_ordered(ranked, "_vector_rank")
         keyword_list = self._rank_ordered(ranked, "_keyword_rank")
         positions = self._positions([vector_list, keyword_list])
@@ -344,7 +314,7 @@ class RrfCandidateFusion:
         ordered_ids = {_retrieval_id(document) for document in ordered}
         tail = [
             document
-            for document in CandidateMerger().merge([], unranked_docs)
+            for document in merger.merge([], unranked_docs)
             if _retrieval_id(document) not in ordered_ids
         ]
 
@@ -422,7 +392,7 @@ class FallbackRanker:
 
     def _score(self, query: str, document: Document) -> float:
         metadata = document.metadata or {}
-        searchable = _searchable_text(document)
+        searchable = searchable_document_text(document).casefold()
         tokens = _query_tokens(query)
 
         score = 0.0
@@ -534,9 +504,9 @@ class Reranker:
         if len(combined) >= target:
             return combined
 
-        seen = {_document_key(document) for document in combined}
+        seen = {document_key(document) for document in combined}
         for document in self._fallback.rank(query, candidates, top_n=len(candidates)):
-            key = _document_key(document)
+            key = document_key(document)
             if key in seen:
                 continue
             combined.append(document)
@@ -725,3 +695,10 @@ def _trace_output_value(value: Any) -> Any:
     if isinstance(value, dict):
         return dict(value)
     return value
+
+
+def _vector_error_diagnostics(vector_search: Any) -> dict[str, Any]:
+    if not getattr(vector_search, "vector_unavailable", False):
+        return {}
+    error_type = getattr(vector_search, "error_type", None)
+    return {"vector_search_error_type": str(error_type)} if error_type else {}

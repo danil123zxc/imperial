@@ -69,7 +69,7 @@ def _assert_phoenix_reachable(endpoint: str, timeout: float = 2.0) -> None:
 
 
 def _configure_observability(settings) -> None:
-    from imperial_rag.observability import configure_observability
+    from imperial_rag.cli import configure_observability
 
     configure_observability(settings)
 
@@ -90,13 +90,15 @@ def _log_completion(started_at: float, *, example_count: int, ragas_metrics: str
 
 
 def _log_failure(operation: str, exc: BaseException, started_at: float, **fields) -> None:
-    from imperial_rag.observability import log_failure
+    from imperial_rag.cli import log_failure
 
-    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
+    log_failure(operation, exc, started_at, **fields)
 
 
 def _duration_ms(started_at: float) -> int:
-    return int((perf_counter() - started_at) * 1000)
+    from imperial_rag.cli import duration_ms
+
+    return duration_ms(started_at)
 
 
 if __name__ == "__main__":

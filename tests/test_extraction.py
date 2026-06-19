@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,15 @@ def test_standalone_image_uses_ocr_client_and_cache(tmp_path):
     assert second.documents[0].metadata["ocr_cached"] is True
     assert second_client.calls == []
     assert (tmp_path / "processed" / "ocr_cache.sqlite3").exists()
+
+
+def test_ocr_cache_context_manager_closes_connection(tmp_path):
+    with OcrCache(tmp_path / "processed") as cache:
+        cache.write("scan", OcrResult(text="OCR text", method="fake"))
+        assert cache.read("scan").text == "OCR text"
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        cache.read("scan")
 
 
 def test_standalone_image_without_ocr_text_is_no_text(tmp_path):

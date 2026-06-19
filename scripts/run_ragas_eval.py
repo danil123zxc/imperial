@@ -246,7 +246,7 @@ def _retrieved_contexts(outputs: dict[str, Any]) -> list[str]:
 
 
 def _configure_observability(settings: Any) -> None:
-    from imperial_rag.observability import configure_observability
+    from imperial_rag.cli import configure_observability
 
     configure_observability(settings)
 
@@ -265,13 +265,15 @@ def _log_completion(started_at: float, **fields: Any) -> None:
 
 
 def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
-    from imperial_rag.observability import log_failure
+    from imperial_rag.cli import log_failure
 
-    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at), **fields)
+    log_failure(operation, exc, started_at, **fields)
 
 
 def _duration_ms(started_at: float) -> int:
-    return int((perf_counter() - started_at) * 1000)
+    from imperial_rag.cli import duration_ms
+
+    return duration_ms(started_at)
 
 
 def _merge_records_by_position(
@@ -288,17 +290,15 @@ def _merge_records_by_position(
 
 
 def _build_settings(workspace_root: Path | None) -> Any:
-    from imperial_rag.config import Settings
+    from imperial_rag.cli import build_settings
 
-    if workspace_root is None:
-        return Settings()
-    return Settings(workspace_root=workspace_root)
+    return build_settings(workspace_root)
 
 
 def _load_project_env(workspace_root: Path | None) -> None:
-    from imperial_rag.env import load_project_env
+    from imperial_rag.cli import load_project_environment
 
-    load_project_env(workspace_root)
+    load_project_environment(workspace_root)
 
 
 def _import_async_openai() -> Any:

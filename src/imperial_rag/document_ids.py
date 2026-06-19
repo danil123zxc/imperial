@@ -29,3 +29,12 @@ def metadata_or_content_id(*values: Any, content: Any) -> str:
     if not normalized or normalized == "None":
         raise ValueError("No usable ID: metadata values exhausted and content is empty or None")
     return content_fingerprint_id(content)
+
+
+def document_key(document: Any) -> str:
+    metadata = dict(getattr(document, "metadata", {}) or {})
+    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), content=getattr(document, "page_content", ""))
+
+
+def content_key(document: Any) -> str:
+    return " ".join(str(getattr(document, "page_content", "")).split()).casefold()

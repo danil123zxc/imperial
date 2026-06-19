@@ -91,6 +91,57 @@ def test_build_retrieved_file_groups_groups_chunks_by_file_and_loads_file_previe
     assert groups[0].can_download is True
 
 
+def test_build_retrieved_file_groups_bounds_loaded_file_preview(tmp_path, monkeypatch):
+    documents_root = tmp_path / "documents"
+    extraction_root = tmp_path / ".imperial_rag" / "extracted"
+    source_path = documents_root / "docs" / "policy.docx"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_bytes(b"docx bytes")
+    artifact_path = extraction_root / "documents" / "policy.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        json.dumps({"documents": [{"page_content": "abcdef"}, {"page_content": "ghijkl"}]}),
+        encoding="utf-8",
+    )
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=extraction_root)
+    monkeypatch.setattr(web_app, "FILE_PREVIEW_CHAR_LIMIT", 10)
+
+    groups = build_retrieved_file_groups(
+        [
+            Document(
+                page_content="chunk",
+                metadata={
+                    "file_id": "policy",
+                    "file_path": str(source_path),
+                    "relative_path": "docs/policy.docx",
+                    "file_name": "policy.docx",
+                },
+            )
+        ],
+        settings,
+    )
+
+    assert groups[0].preview_text == "abcdef\n\ngh..."
+
+
+def test_download_button_payload_disables_large_files(tmp_path, monkeypatch):
+    path = tmp_path / "large.pdf"
+    path.write_bytes(b"12345")
+    monkeypatch.setattr(web_app, "FILE_DOWNLOAD_BYTE_LIMIT", 4)
+    group = RetrievedFileGroup(
+        file_key="relative_path:large.pdf",
+        file_name="large.pdf",
+        display_path="large.pdf",
+        download_path=path,
+        download_name="large.pdf",
+        download_mime="application/pdf",
+        preview_text="preview",
+        can_download=True,
+    )
+
+    assert web_app._download_button_payload(group) == (b"", True)
+
+
 def test_build_retrieved_file_groups_groups_same_relative_path_without_matching_file_id(tmp_path):
     documents_root = tmp_path / "documents"
     source_path = documents_root / "docs" / "same.docx"
@@ -244,6 +295,103 @@ def test_build_retrieved_file_groups_returns_empty_list_without_evidence(tmp_pat
     settings = SimpleNamespace(documents_root=tmp_path / "documents")
 
     assert build_retrieved_file_groups([], settings) == []
+
+
+def test_query_runtime_reuses_streamlit_cached_runtime(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeRuntime:
+        def __init__(self, settings):
+            self.settings = settings
+
+        def query(self, question):
+            return {"answer": f"{question}:{len(calls)}"}
+
+    def fake_create_runtime(settings):
+        calls.append(settings)
+        return FakeRuntime(settings)
+
+    def fake_cache_resource(func):
+        cache = {}
+
+        def wrapper(cache_key, settings):
+            if cache_key not in cache:
+                cache[cache_key] = func(cache_key, settings)
+            return cache[cache_key]
+
+        return wrapper
+
+    monkeypatch.setitem(sys.modules, "streamlit", types.SimpleNamespace(cache_resource=fake_cache_resource))
+    monkeypatch.setattr("imperial_rag.runtime.create_runtime", fake_create_runtime)
+    monkeypatch.setattr(web_app, "_RUNTIME_CACHE_WRAPPER", None, raising=False)
+    settings = SimpleNamespace(
+        workspace_root=tmp_path,
+        qdrant_url="http://127.0.0.1:6333",
+        qdrant_collection="chunks",
+        elasticsearch_url="http://127.0.0.1:9200",
+        elasticsearch_index="keyword",
+    )
+
+    first = web_app.query_runtime(settings, "first")
+    second = web_app.query_runtime(settings, "second")
+
+    assert first == {"answer": "first:1"}
+    assert second == {"answer": "second:1"}
+    assert calls == [settings]
+
+
+def test_render_chat_message_surfaces_invalid_citation_warning(tmp_path):
+    class ChatMessage:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    warnings = []
+    writes = []
+    streamlit = types.SimpleNamespace(
+        chat_message=lambda *args, **kwargs: ChatMessage(),
+        write=lambda message: writes.append(message),
+        warning=lambda message: warnings.append(message),
+    )
+    message = {
+        "role": "assistant",
+        "content": "Unsupported answer without valid citations.",
+        "citations_valid": False,
+        "invalid_citations": ["S99"],
+    }
+
+    web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
+
+    assert writes == ["Unsupported answer without valid citations."]
+    assert warnings == ["Answer citations could not be verified. Treat this response as diagnostic."]
+
+
+def test_render_chat_message_surfaces_model_provider_error(tmp_path):
+    class ChatMessage:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    errors = []
+    streamlit = types.SimpleNamespace(
+        chat_message=lambda *args, **kwargs: ChatMessage(),
+        error=lambda message: errors.append(message),
+    )
+    message = {
+        "role": "assistant",
+        "content": "The model provider failed while answering. Check local logs and provider credentials, then try again.",
+        "error": {"type": "model_provider_error"},
+    }
+
+    web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
+
+    assert errors == [
+        "The model provider failed while answering. Check local logs and provider credentials, then try again."
+    ]
 
 
 def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):

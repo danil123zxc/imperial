@@ -14,6 +14,10 @@ import uuid
 APP_TITLE = "Imperial RAG"
 PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
 AUTH_SESSION_EMAIL_KEY = "auth_user_email"
+FILE_PREVIEW_CHAR_LIMIT = 12_000
+FILE_DOWNLOAD_BYTE_LIMIT = 50 * 1024 * 1024
+_RUNTIME_CACHE_WRAPPER: Any | None = None
+_RUNTIME_CACHE_RESOURCE: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -51,7 +55,8 @@ def load_status_summary(settings: Any | None = None) -> str:
     manifest_path = Path(resolved_settings.manifest_db_path)
     if not manifest_path.exists():
         return build_status_summary(total_files=0, indexed_files=0, failed_files=0)
-    records = ManifestStore(manifest_path).list_records()
+    with ManifestStore(manifest_path) as manifest_store:
+        records = manifest_store.list_records()
     indexed = sum(1 for record in records if record.status == FileStatus.INDEXED)
     failed = sum(1 for record in records if record.status == FileStatus.FAILED)
     return build_status_summary(total_files=len(records), indexed_files=indexed, failed_files=failed)
@@ -63,7 +68,7 @@ def query_runtime(settings: Any, question: str) -> dict[str, Any]:
     except (ImportError, AttributeError):
         create_runtime = None
     if create_runtime is not None:
-        return _coerce_result(create_runtime(settings).query(question))
+        return _coerce_result(_runtime_resource(settings).query(question))
 
     try:
         from imperial_rag.runtime import Runtime
@@ -76,6 +81,65 @@ def query_runtime(settings: Any, question: str) -> dict[str, Any]:
     from imperial_rag.runtime import build_live_query_workflow
 
     return _coerce_result(build_live_query_workflow(settings).invoke({"question": question}))
+
+
+def _runtime_resource(settings: Any) -> Any:
+    try:
+        import streamlit as st
+    except ImportError:
+        st = None
+
+    cache_resource = getattr(st, "cache_resource", None) if st is not None else None
+    if cache_resource is None:
+        from imperial_rag.runtime import create_runtime
+
+        return create_runtime(settings)
+
+    global _RUNTIME_CACHE_WRAPPER, _RUNTIME_CACHE_RESOURCE
+    if _RUNTIME_CACHE_WRAPPER is None or _RUNTIME_CACHE_RESOURCE is not cache_resource:
+        _RUNTIME_CACHE_WRAPPER = cache_resource(_create_cached_runtime)
+        _RUNTIME_CACHE_RESOURCE = cache_resource
+    return _RUNTIME_CACHE_WRAPPER(_runtime_cache_key(settings), settings)
+
+
+def _create_cached_runtime(cache_key: tuple[Any, ...], _settings: Any) -> Any:
+    from imperial_rag.runtime import create_runtime
+
+    return create_runtime(_settings)
+
+
+def _runtime_cache_key(settings: Any) -> tuple[Any, ...]:
+    env_names = (
+        "DASHSCOPE_API_KEY",
+        "IMPERIAL_RAG_QWEN_CHAT_MODEL",
+        "IMPERIAL_RAG_QWEN_EMBEDDING_MODEL",
+        "IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSION",
+        "IMPERIAL_RAG_QWEN_RERANK_MODEL",
+        "IMPERIAL_RAG_PRIMARY_RERANKER",
+        "IMPERIAL_RAG_FALLBACK_RERANKER",
+        "IMPERIAL_RAG_VECTOR_FETCH_K",
+        "IMPERIAL_RAG_VECTOR_K",
+        "IMPERIAL_RAG_KEYWORD_LIMIT",
+        "IMPERIAL_RAG_RERANK_INPUT_LIMIT",
+        "IMPERIAL_RAG_RERANK_TOP_N",
+        "IMPERIAL_RAG_MMR_LAMBDA_MULT",
+        "IMPERIAL_RAG_RRF_K",
+    )
+    return (
+        str(getattr(settings, "workspace_root", "")),
+        str(getattr(settings, "qdrant_url", "")),
+        str(getattr(settings, "qdrant_collection", "")),
+        str(getattr(settings, "elasticsearch_url", "")),
+        str(getattr(settings, "elasticsearch_index", "")),
+        tuple((name, _cache_safe_env_value(name)) for name in env_names),
+    )
+
+
+def _cache_safe_env_value(name: str) -> str | bool:
+    value = os.environ.get(name, "")
+    if "KEY" in name or "TOKEN" in name or "SECRET" in name:
+        return bool(value.strip())
+    return value.strip()
 
 
 def build_retrieved_file_groups(evidence: list[Any], settings: Any) -> list[RetrievedFileGroup]:
@@ -221,6 +285,9 @@ def main() -> None:
         "role": "assistant",
         "content": answer,
         "sources": sources,
+        "error": result.get("error"),
+        "citations_valid": result.get("citations_valid"),
+        "invalid_citations": result.get("invalid_citations") or [],
         "retrieved_files": build_retrieved_file_groups(evidence, settings),
     }
     st.session_state.messages.append(assistant_message)
@@ -373,6 +440,9 @@ def _query_log_fields(result: Any) -> dict[str, Any]:
             fields["final_evidence"] = len(evidence)
         except TypeError:
             pass
+    error = result.get("error") if isinstance(result, dict) else None
+    if isinstance(error, dict):
+        fields["error_type"] = str(error.get("type") or "")
     return fields
 
 
@@ -382,7 +452,12 @@ def _duration_ms(started_at: float) -> int:
 
 def _render_chat_message(st: Any, message: dict[str, Any], message_index: int, settings: Any) -> None:
     with st.chat_message(message["role"]):
-        st.write(message["content"])
+        if _message_has_error(message):
+            st.error(message["content"])
+        else:
+            st.write(message["content"])
+        if message.get("citations_valid") is False:
+            st.warning("Answer citations could not be verified. Treat this response as diagnostic.")
         retrieved_files = message.get("retrieved_files") or []
         if retrieved_files:
             _render_retrieved_files(st, normalize_retrieved_file_groups(retrieved_files, settings), message_index)
@@ -419,6 +494,8 @@ def _download_button_payload(group: RetrievedFileGroup) -> tuple[bytes, bool]:
     if not group.can_download or group.download_path is None:
         return b"", True
     try:
+        if group.download_path.stat().st_size > FILE_DOWNLOAD_BYTE_LIMIT:
+            return b"", True
         return group.download_path.read_bytes(), False
     except OSError:
         return b"", True
@@ -556,7 +633,21 @@ def _file_preview_text_by_id(file_id: str, settings: Any) -> str:
         text = str(document.get("page_content") or "").strip()
         if text:
             parts.append(text)
-    return "\n\n".join(parts) if parts else PREVIEW_UNAVAILABLE_TEXT
+    return _bounded_preview(parts)
+
+
+def _bounded_preview(parts: list[str]) -> str:
+    if not parts:
+        return PREVIEW_UNAVAILABLE_TEXT
+    preview = "\n\n".join(parts)
+    if len(preview) <= FILE_PREVIEW_CHAR_LIMIT:
+        return preview
+    return f"{preview[:FILE_PREVIEW_CHAR_LIMIT].rstrip()}..."
+
+
+def _message_has_error(message: dict[str, Any]) -> bool:
+    error = message.get("error")
+    return isinstance(error, dict) and bool(error.get("type"))
 
 
 def _extraction_root(settings: Any) -> Path | None:

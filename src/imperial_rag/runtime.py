@@ -7,10 +7,13 @@ from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
 from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
 from imperial_rag.indexing import make_qdrant_store
+from imperial_rag.observability import log_event
 from imperial_rag.providers import QwenProviderSettings, create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import RetrievalService, RetrievalSettings
 from imperial_rag.tracing import imperial_trace_attributes, trace_pipeline_step
 from imperial_rag.workflows import build_query_workflow
+
+MODEL_PROVIDER_ERROR_TEXT = "The model provider failed while answering. Check local logs and provider credentials, then try again."
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,19 @@ class QueryDependencies:
 
 class _NoopVectorSearch:
     def similarity_search(self, query: str, k: int):
+        return []
+
+
+class _UnavailableVectorSearch:
+    vector_unavailable = True
+
+    def __init__(self, error_type: str) -> None:
+        self.error_type = error_type
+
+    def similarity_search(self, query: str, k: int):
+        return []
+
+    def max_marginal_relevance_search(self, query: str, k: int, fetch_k: int, lambda_mult: float):
         return []
 
 
@@ -55,8 +71,16 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
                 make_qdrant_store(settings.qdrant_url, settings.qdrant_collection),
                 retrieval_settings,
             )
-        except Exception:
-            vector_search = _NoopVectorSearch()
+        except Exception as exc:
+            vector_search = _UnavailableVectorSearch(type(exc).__name__)
+            log_event(
+                "imperial_rag.vector_store_unavailable",
+                level="warning",
+                operation="build_query_dependencies",
+                status="warning",
+                component="runtime",
+                error_type=type(exc).__name__,
+            )
     elif semantic_search_enabled:
         vector_search = _ProviderMismatchVectorSearch()
     else:
@@ -110,23 +134,25 @@ class Runtime:
 
 def create_runtime(settings: Settings | None = None) -> Runtime:
     resolved_settings = settings or Settings()
-    dependencies_cache: dict[str, QueryDependencies] = {}
-    retrieval_service_cache: dict[str, RetrievalService] = {}
+    dependencies_cache: QueryDependencies | None = None
+    retrieval_service_cache: RetrievalService | None = None
 
     def dependencies() -> QueryDependencies:
-        if "value" not in dependencies_cache:
-            dependencies_cache["value"] = build_query_dependencies(resolved_settings)
-        return dependencies_cache["value"]
+        nonlocal dependencies_cache
+        if dependencies_cache is None:
+            dependencies_cache = build_query_dependencies(resolved_settings)
+        return dependencies_cache
 
     def retrieval_service() -> RetrievalService:
-        if "value" not in retrieval_service_cache:
+        nonlocal retrieval_service_cache
+        if retrieval_service_cache is None:
             deps = dependencies()
-            retrieval_service_cache["value"] = RetrievalService(
+            retrieval_service_cache = RetrievalService(
                 vector_search=deps.vector_search,
                 keyword_search=deps.keyword_search,
                 settings=RetrievalSettings.from_env(),
             )
-        return retrieval_service_cache["value"]
+        return retrieval_service_cache
 
     def retrieve(question: str):
         result = retrieval_service().retrieve(question)
@@ -142,10 +168,13 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
         try:
             response = dependencies().chat_model.invoke(build_strict_messages(question, docs))
         except Exception as exc:
-            from imperial_rag.answering import REFUSAL_TEXT
-
             return {
-                "answer": REFUSAL_TEXT,
+                "answer": MODEL_PROVIDER_ERROR_TEXT,
+                "error": {
+                    "type": "model_provider_error",
+                    "message": "The model provider failed while answering.",
+                    "model_error_type": type(exc).__name__,
+                },
                 "trace_attributes": {
                     **trace_attributes,
                     "answer.model_status": "error",

@@ -49,7 +49,7 @@ def test_settings_reads_environment_overrides_including_qdrant_collection(monkey
     assert settings.phoenix_collector_endpoint == "http://phoenix.internal:6006/v1/traces"
     assert settings.phoenix_client_endpoint == "http://phoenix.internal:6006"
     assert settings.log_level == "DEBUG"
-    assert settings.log_format == "json"
+    assert settings.log_format == "plain"
 
 
 def test_load_project_env_reads_workspace_dotenv_without_overriding_exported_values(monkeypatch, tmp_path):

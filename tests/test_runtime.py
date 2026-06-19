@@ -152,7 +152,12 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
         },
     }
     assert failure == {
-        "answer": "I could not find this clearly in the indexed documents.",
+        "answer": "The model provider failed while answering. Check local logs and provider credentials, then try again.",
+        "error": {
+            "type": "model_provider_error",
+            "message": "The model provider failed while answering.",
+            "model_error_type": "RuntimeError",
+        },
         "trace_attributes": {
             "llm.provider": "dashscope",
             "llm.model_name": "qwen3.7-plus",
@@ -345,6 +350,44 @@ def test_build_query_dependencies_uses_qdrant_mmr_retriever(monkeypatch, tmp_pat
         "search_kwargs": {"k": 70, "fetch_k": 70, "lambda_mult": 0.4},
     }
     assert calls["keyword_settings"] is settings
+
+
+def test_build_query_dependencies_marks_vector_construction_failure_unavailable(monkeypatch, tmp_path):
+    events = []
+
+    class FakeElasticsearchKeywordIndex:
+        def __init__(self, settings):
+            self.settings = settings
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
+    monkeypatch.setattr("imperial_rag.runtime.vector_metadata_matches_config", lambda settings: True, raising=False)
+    monkeypatch.setattr(
+        "imperial_rag.runtime.make_qdrant_store",
+        lambda qdrant_url, collection_name: (_ for _ in ()).throw(RuntimeError("qdrant unavailable secret")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "imperial_rag.runtime.log_event",
+        lambda event, level="info", **fields: events.append((event, level, fields)),
+    )
+
+    dependencies = build_query_dependencies(Settings(workspace_root=tmp_path))
+
+    assert getattr(dependencies.vector_search, "vector_unavailable", False) is True
+    assert getattr(dependencies.vector_search, "error_type", "") == "RuntimeError"
+    assert events == [
+        (
+            "imperial_rag.vector_store_unavailable",
+            "warning",
+            {
+                "operation": "build_query_dependencies",
+                "status": "warning",
+                "component": "runtime",
+                "error_type": "RuntimeError",
+            },
+        )
+    ]
 
 
 def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):

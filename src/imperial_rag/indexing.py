@@ -73,16 +73,8 @@ def embedding_model_identifier(provider_settings: QwenProviderSettings | None = 
 
 
 def make_qdrant_store(qdrant_url: str, collection_name: str, embeddings: object | None = None) -> QdrantVectorStore:
-    settings = Settings()
     return create_qdrant_vector_store(
-        Settings(
-            workspace_root=settings.workspace_root,
-            qdrant_url=qdrant_url,
-            qdrant_collection=collection_name,
-            phoenix_project_name=settings.phoenix_project_name,
-            phoenix_collector_endpoint=settings.phoenix_collector_endpoint,
-            phoenix_client_endpoint=settings.phoenix_client_endpoint,
-        ),
+        Settings(qdrant_url=qdrant_url, qdrant_collection=collection_name),
         embeddings=embeddings,
     )
 

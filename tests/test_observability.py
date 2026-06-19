@@ -50,6 +50,25 @@ def test_log_event_emits_json_with_required_fields(capsys) -> None:
     assert payload["timestamp"].endswith("Z")
 
 
+def test_plain_log_format_emits_readable_event(capsys) -> None:
+    observability.configure_observability(SimpleNamespace(log_level="INFO", log_format="plain"))
+
+    observability.log_event(
+        "imperial_rag.query",
+        operation="query",
+        status="success",
+        component="cli",
+        final_evidence=3,
+    )
+
+    raw = capsys.readouterr().err
+    assert "event=imperial_rag.query" in raw
+    assert "operation=query" in raw
+    assert "status=success" in raw
+    assert "component=cli" in raw
+    assert "final_evidence=3" in raw
+
+
 def test_log_level_filters_info_events(capsys) -> None:
     observability.configure_observability(SimpleNamespace(log_level="ERROR", log_format="json"))
 

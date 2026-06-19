@@ -65,8 +65,10 @@ def scan_files(documents_root: Path) -> list[FileRecord]:
     for path in sorted(documents_root.rglob("*")):
         if not path.is_file():
             continue
-        stat = path.stat()
         relative_path = path.relative_to(documents_root)
+        if _should_skip_scanned_path(relative_path):
+            continue
+        stat = path.stat()
         records.append(
             FileRecord(
                 file_id=stable_file_id(relative_path),
@@ -81,7 +83,22 @@ def scan_files(documents_root: Path) -> list[FileRecord]:
                 inferred_category=relative_path.parts[0] if relative_path.parts else "",
             )
         )
-    return assign_duplicate_groups(records)
+    return records
+
+
+def _should_skip_scanned_path(relative_path: Path) -> bool:
+    ignored_names = {".DS_Store", "Thumbs.db", "desktop.ini"}
+    for part in relative_path.parts:
+        if part in ignored_names:
+            return True
+        if part.startswith("."):
+            return True
+    name = relative_path.name
+    if name.startswith("~$") or name.startswith(".~"):
+        return True
+    if name.endswith("#") or name.endswith(".tmp") or name.endswith(".temp"):
+        return True
+    return False
 
 
 def assign_duplicate_groups(records: list[FileRecord]) -> list[FileRecord]:
@@ -197,6 +214,13 @@ class ManifestStore:
                     file_id,
                 ),
             )
+
+    def __enter__(self) -> "ManifestStore":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        self.close()
+        return False
 
     def close(self) -> None:
         self._conn.close()

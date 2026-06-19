@@ -28,14 +28,14 @@ INDEX_MAPPINGS = {
     "properties": {
         "chunk_id": {"type": "keyword"},
         "text": {"type": "text", "index": False},
-        "content_text": {"type": "text"},
-        "file_name": {"type": "text"},
-        "relative_path": {"type": "text"},
-        "section_heading": {"type": "text"},
+        "content_text": {"type": "text", "analyzer": "russian"},
+        "file_name": {"type": "text", "analyzer": "russian"},
+        "relative_path": {"type": "text", "analyzer": "russian"},
+        "section_heading": {"type": "text", "analyzer": "russian"},
         "source_type": {"type": "text"},
         "sheet_name": {"type": "text"},
         "page_number_text": {"type": "text"},
-        "normalized_text": {"type": "text"},
+        "normalized_text": {"type": "text", "analyzer": "russian"},
         "metadata": {"type": "object", "enabled": False},
     }
 }

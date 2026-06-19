@@ -40,6 +40,14 @@ class JsonEventFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
+class PlainEventFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        payload = dict(getattr(record, "event_payload", {}) or {})
+        payload.setdefault("timestamp", datetime.fromtimestamp(record.created, UTC).isoformat().replace("+00:00", "Z"))
+        payload.setdefault("level", record.levelname.lower())
+        return " ".join(f"{key}={_plain_value(payload[key])}" for key in sorted(payload))
+
+
 def configure_observability(settings: Any | None = None) -> logging.Logger:
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(_logging_level(getattr(settings, "log_level", os.environ.get("IMPERIAL_RAG_LOG_LEVEL", "INFO"))))
@@ -48,10 +56,10 @@ def configure_observability(settings: Any | None = None) -> logging.Logger:
     global _CONFIGURED_LOGGER, _HANDLER
     if _HANDLER is None:
         _HANDLER = logging.StreamHandler()
-        _HANDLER.setFormatter(JsonEventFormatter())
         logger.handlers = [_HANDLER]
     elif _HANDLER not in logger.handlers:
         logger.handlers = [_HANDLER]
+    _HANDLER.setFormatter(_formatter_for(getattr(settings, "log_format", "json")))
 
     _CONFIGURED_LOGGER = logger
     return logger
@@ -103,6 +111,16 @@ def _sanitize_value(value: Any) -> Any:
 def _is_sensitive_key(key: Any) -> bool:
     normalized = str(key).strip().casefold()
     return normalized in _SENSITIVE_KEYS or any(part in normalized for part in ("api_key", "authorization", "token", "secret"))
+
+
+def _formatter_for(log_format: Any) -> logging.Formatter:
+    return PlainEventFormatter() if str(log_format).strip().casefold() == "plain" else JsonEventFormatter()
+
+
+def _plain_value(value: Any) -> str:
+    if isinstance(value, (str, bool, int, float)) or value is None:
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _logging_level(level: Any) -> int:

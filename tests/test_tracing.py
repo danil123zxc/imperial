@@ -655,6 +655,35 @@ def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:
     ]
 
 
+def test_retrieval_documents_preview_omits_text_when_input_text_hidden(monkeypatch) -> None:
+    document = type(
+        "Document",
+        (),
+        {
+            "page_content": "Private corpus text that should not be serialized into output.value",
+            "metadata": {
+                "citation_id": "S1",
+                "chunk_id": "chunk-1",
+                "file_name": "policy.docx",
+                "source_type": "body",
+            },
+        },
+    )()
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_TEXT", "true")
+
+    preview = tracing_module.retrieval_documents_preview([document])
+
+    assert preview == [
+        {
+            "rank": 0,
+            "citation_id": "S1",
+            "chunk_id": "chunk-1",
+            "file_name": "policy.docx",
+            "source_type": "body",
+        }
+    ]
+
+
 def test_phoenix_trace_context_uses_session_user_metadata_and_tags(monkeypatch) -> None:
     calls = []
     fake_phoenix = types.ModuleType("phoenix")
@@ -751,6 +780,10 @@ def test_trace_user_id_from_email_is_deterministic_and_pseudonymous() -> None:
 
     assert user_id == f"user_sha256:{expected_hash}"
     assert "example.com" not in user_id
+
+
+def test_trace_user_id_from_email_returns_empty_for_missing_email() -> None:
+    assert tracing_module.trace_user_id_from_email(None) == ""
 
 
 def test_trace_user_id_from_email_uses_local_hmac_secret(monkeypatch) -> None:

@@ -1,4 +1,7 @@
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from imperial_rag.manifest import (
     FileStatus,
@@ -106,3 +109,17 @@ def test_manifest_store_records_keyword_and_vector_index_status(tmp_path):
     assert loaded.embedding_model == "text-embedding-3-large"
     assert loaded.index_error_message == "qdrant unavailable"
     assert loaded.last_indexed_ns > 0
+
+
+def test_manifest_store_context_manager_closes_connection(tmp_path):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.docx").write_bytes(b"docx")
+    record = scan_files(docs)[0]
+
+    with ManifestStore(tmp_path / "manifest.sqlite3") as store:
+        store.replace_records([record])
+        assert store.list_records()[0].file_id == record.file_id
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        store.list_records()

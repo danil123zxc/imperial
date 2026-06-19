@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -90,144 +91,149 @@ def _run(
             records = deps["assign_duplicate_groups"](deps["scan_files"](Path(settings.documents_root)))
             scan_span.set_output({"total_files": len(records)})
 
-        manifest_store = deps["ManifestStore"](Path(settings.manifest_db_path))
-        manifest_store.replace_records(records)
-        ocr_cache = _build_ocr_cache(extraction_root) if ocr_client is not None else None
+        with ExitStack() as resources:
+            manifest_store = resources.enter_context(deps["ManifestStore"](Path(settings.manifest_db_path)))
+            manifest_store.replace_records(records)
+            ocr_cache = _build_ocr_cache(extraction_root) if ocr_client is not None else None
+            if ocr_cache is not None:
+                ocr_cache = resources.enter_context(ocr_cache)
 
-        extracted_documents: list[Any] = []
-        status_by_file: dict[str, Any] = {}
-        method_by_file: dict[str, str | None] = {}
-        error_by_file: dict[str, str | None] = {}
+            extracted_documents: list[Any] = []
+            status_by_file: dict[str, Any] = {}
+            method_by_file: dict[str, str | None] = {}
+            error_by_file: dict[str, str | None] = {}
 
-        with trace_pipeline_step(
-            "ingest.extract_files",
-            "corpus",
-            attributes={"ingest.total_files": len(records), "ingest.ocr_enabled": ocr_client is not None},
-        ) as extract_span:
-            for record in records:
-                file_id = str(record.file_id)
-                try:
-                    result = _extract_record(
-                        extract_file=deps["extract_file"],
-                        record=record,
-                        ocr_client=ocr_client,
-                        ocr_cache=ocr_cache,
-                        artifact_root=extraction_root / "artifacts",
-                    )
-                except Exception as exc:  # pragma: no cover - integration protection
-                    status_by_file[file_id] = deps["FileStatus"].FAILED
-                    method_by_file[file_id] = _planned_extraction_method(record)
-                    error_by_file[file_id] = str(exc)
-                    manifest_store.update_status(
-                        file_id=file_id,
-                        status=deps["FileStatus"].FAILED,
-                        extraction_method=method_by_file[file_id],
-                        error_message=str(exc),
-                        chunk_count=0,
-                    )
-                    continue
-
-                documents = list(getattr(result, "documents", []) or [])
-                status_by_file[file_id] = result.status
-                method_by_file[file_id] = getattr(result, "extraction_method", None)
-                error_by_file[file_id] = getattr(result, "message", None) or None
-                if documents:
-                    _write_extracted_artifact(extraction_root, record, result)
-                    extracted_documents.extend(documents)
-            extract_span.set_output(
-                _extraction_trace_output(
-                    extracted_documents=extracted_documents,
-                    status_by_file=status_by_file,
-                    error_by_file=error_by_file,
-                    failed_status=deps["FileStatus"].FAILED,
-                )
-            )
-
-        retrieval_settings = deps["RetrievalSettings"].from_env()
-        with trace_pipeline_step(
-            "ingest.build_chunks",
-            "corpus",
-            attributes={
-                "ingest.document_count": len(extracted_documents),
-                "ingest.chunk_size": retrieval_settings.chunk_size,
-                "ingest.chunk_overlap": retrieval_settings.chunk_overlap,
-            },
-        ) as chunk_span:
-            chunks = list(
-                deps["build_chunks"](
-                    extracted_documents,
-                    chunk_size=retrieval_settings.chunk_size,
-                    chunk_overlap=retrieval_settings.chunk_overlap,
-                )
-            )
-            _write_chunks(extraction_root, chunks)
-            chunk_span.set_output(
-                {
-                    "document_count": len(extracted_documents),
-                    "chunk_count": len(chunks),
-                    "chunk_size": retrieval_settings.chunk_size,
-                    "chunk_overlap": retrieval_settings.chunk_overlap,
-                }
-            )
-
-        with trace_pipeline_step(
-            "ingest.keyword_index",
-            "corpus",
-            attributes={"ingest.chunk_count": len(chunks)},
-        ) as keyword_span:
-            keyword_indexed = _replace_keyword_index(deps["KeywordSearchIndex"], settings, chunks)
-            keyword_span.set_output({"chunk_count": len(chunks), "indexed": keyword_indexed})
-
-        vector_indexed = False
-        if vector_store is not None:
             with trace_pipeline_step(
-                "ingest.vector_index",
+                "ingest.extract_files",
+                "corpus",
+                attributes={"ingest.total_files": len(records), "ingest.ocr_enabled": ocr_client is not None},
+            ) as extract_span:
+                for record in records:
+                    file_id = str(record.file_id)
+                    try:
+                        result = _extract_record(
+                            extract_file=deps["extract_file"],
+                            record=record,
+                            ocr_client=ocr_client,
+                            ocr_cache=ocr_cache,
+                            artifact_root=extraction_root / "artifacts",
+                        )
+                    except Exception as exc:  # pragma: no cover - integration protection
+                        status_by_file[file_id] = deps["FileStatus"].FAILED
+                        method_by_file[file_id] = _planned_extraction_method(record)
+                        error_by_file[file_id] = str(exc)
+                        manifest_store.update_status(
+                            file_id=file_id,
+                            status=deps["FileStatus"].FAILED,
+                            extraction_method=method_by_file[file_id],
+                            error_message=str(exc),
+                            chunk_count=0,
+                        )
+                        continue
+
+                    documents = list(getattr(result, "documents", []) or [])
+                    status_by_file[file_id] = result.status
+                    method_by_file[file_id] = getattr(result, "extraction_method", None)
+                    error_by_file[file_id] = getattr(result, "message", None) or None
+                    if documents:
+                        _write_extracted_artifact(extraction_root, record, result)
+                        extracted_documents.extend(documents)
+                extract_span.set_output(
+                    _extraction_trace_output(
+                        extracted_documents=extracted_documents,
+                        status_by_file=status_by_file,
+                        error_by_file=error_by_file,
+                        failed_status=deps["FileStatus"].FAILED,
+                    )
+                )
+
+            retrieval_settings = deps["RetrievalSettings"].from_env()
+            with trace_pipeline_step(
+                "ingest.build_chunks",
+                "corpus",
+                attributes={
+                    "ingest.document_count": len(extracted_documents),
+                    "ingest.chunk_size": retrieval_settings.chunk_size,
+                    "ingest.chunk_overlap": retrieval_settings.chunk_overlap,
+                },
+            ) as chunk_span:
+                chunks = list(
+                    deps["build_chunks"](
+                        extracted_documents,
+                        chunk_size=retrieval_settings.chunk_size,
+                        chunk_overlap=retrieval_settings.chunk_overlap,
+                    )
+                )
+                _write_chunks(extraction_root, chunks)
+                chunk_span.set_output(
+                    {
+                        "document_count": len(extracted_documents),
+                        "chunk_count": len(chunks),
+                        "chunk_size": retrieval_settings.chunk_size,
+                        "chunk_overlap": retrieval_settings.chunk_overlap,
+                    }
+                )
+
+            with trace_pipeline_step(
+                "ingest.keyword_index",
                 "corpus",
                 attributes={"ingest.chunk_count": len(chunks)},
-            ) as vector_span:
-                vector_indexed = _index_with_vector_store(deps["index_vector_documents"], settings, vector_store, chunks)
-                vector_span.set_output({"chunk_count": len(chunks), "indexed": vector_indexed})
+            ) as keyword_span:
+                keyword_indexed = _replace_keyword_index(deps["KeywordSearchIndex"], settings, chunks)
+                keyword_span.set_output({"chunk_count": len(chunks), "indexed": keyword_indexed})
 
-        chunk_count_by_file = _count_chunks_by_file(chunks)
+            vector_indexed = False
+            if vector_store is not None:
+                with trace_pipeline_step(
+                    "ingest.vector_index",
+                    "corpus",
+                    attributes={"ingest.chunk_count": len(chunks)},
+                ) as vector_span:
+                    vector_indexed = _index_with_vector_store(
+                        deps["index_vector_documents"], settings, vector_store, chunks
+                    )
+                    vector_span.set_output({"chunk_count": len(chunks), "indexed": vector_indexed})
 
-        for record in records:
-            file_id = str(record.file_id)
-            status = status_by_file.get(file_id, deps["FileStatus"].PENDING)
-            chunk_count = chunk_count_by_file.get(file_id, 0)
-            manifest_store.update_status(
-                file_id=file_id,
-                status=status,
-                extraction_method=method_by_file.get(file_id),
-                error_message=error_by_file.get(file_id),
-                chunk_count=chunk_count,
-            )
-            _update_index_status(
-                deps=deps,
-                manifest_store=manifest_store,
-                file_id=file_id,
-                status=status,
-                chunk_count=chunk_count,
+            chunk_count_by_file = _count_chunks_by_file(chunks)
+
+            for record in records:
+                file_id = str(record.file_id)
+                status = status_by_file.get(file_id, deps["FileStatus"].PENDING)
+                chunk_count = chunk_count_by_file.get(file_id, 0)
+                manifest_store.update_status(
+                    file_id=file_id,
+                    status=status,
+                    extraction_method=method_by_file.get(file_id),
+                    error_message=error_by_file.get(file_id),
+                    chunk_count=chunk_count,
+                )
+                _update_index_status(
+                    deps=deps,
+                    manifest_store=manifest_store,
+                    file_id=file_id,
+                    status=status,
+                    chunk_count=chunk_count,
+                    keyword_indexed=keyword_indexed,
+                    index_vectors=index_vectors,
+                    vector_indexed=vector_indexed,
+                    embedding_model=deps["embedding_model_identifier"]() if vector_indexed else None,
+                )
+
+            status_counts = Counter(_status_value(status) for status in status_by_file.values())
+            summary = IngestionSummary(
+                total_files=len(records),
+                indexed_files=status_counts[_status_value(deps["FileStatus"].INDEXED)],
+                manifest_only_files=status_counts[_status_value(deps["FileStatus"].MANIFEST_ONLY)],
+                no_text_files=status_counts[_status_value(deps["FileStatus"].NO_TEXT)],
+                unsupported_files=status_counts[_status_value(deps["FileStatus"].UNSUPPORTED)],
+                failed_files=status_counts[_status_value(deps["FileStatus"].FAILED)],
+                chunk_count=len(chunks),
                 keyword_indexed=keyword_indexed,
-                index_vectors=index_vectors,
                 vector_indexed=vector_indexed,
-                embedding_model=deps["embedding_model_identifier"]() if vector_indexed else None,
+                extraction_root=str(extraction_root),
             )
-
-        status_counts = Counter(_status_value(status) for status in status_by_file.values())
-        summary = IngestionSummary(
-            total_files=len(records),
-            indexed_files=status_counts[_status_value(deps["FileStatus"].INDEXED)],
-            manifest_only_files=status_counts[_status_value(deps["FileStatus"].MANIFEST_ONLY)],
-            no_text_files=status_counts[_status_value(deps["FileStatus"].NO_TEXT)],
-            unsupported_files=status_counts[_status_value(deps["FileStatus"].UNSUPPORTED)],
-            failed_files=status_counts[_status_value(deps["FileStatus"].FAILED)],
-            chunk_count=len(chunks),
-            keyword_indexed=keyword_indexed,
-            vector_indexed=vector_indexed,
-            extraction_root=str(extraction_root),
-        )
-        corpus_span.set_output(_summary_trace_output(summary))
-        return summary
+            corpus_span.set_output(_summary_trace_output(summary))
+            return summary
 
 
 def _load_dependencies() -> dict[str, Any]:

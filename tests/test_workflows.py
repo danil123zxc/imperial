@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
 
 from imperial_rag.answering import REFUSAL_TEXT
-import imperial_rag.workflows as workflows_module
+from imperial_rag.document_ids import document_key
 from imperial_rag.workflows import (
     build_ingestion_workflow,
     build_query_workflow,
@@ -49,6 +49,36 @@ def test_query_workflow_with_injected_retrieval_and_generator_happy_path():
     assert result["answer"] == "Возврат брака оформляется актом. [S1]"
     assert result["citations"] == ["[S1] unknown"]
     assert result["sources"] == ["[S1] unknown"]
+    assert result["citations_valid"] is True
+    assert result["invalid_citations"] == []
+
+
+def test_query_workflow_preserves_model_provider_error_without_citation_warning():
+    docs = [
+        Document(
+            page_content="Возврат брака оформляется актом.",
+            metadata={"citation_id": "return-policy"},
+        )
+    ]
+    error = {
+        "type": "model_provider_error",
+        "message": "The model provider failed while answering.",
+        "model_error_type": "RuntimeError",
+    }
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: {
+            "answer": "The model provider failed while answering. Check local logs and provider credentials, then try again.",
+            "error": error,
+            "trace_attributes": {"answer.model_status": "error"},
+        },
+    )
+
+    result = workflow.invoke({"question": "Как оформить возврат брака?"})
+
+    assert result["answer"] == "The model provider failed while answering. Check local logs and provider credentials, then try again."
+    assert result["error"] == error
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
 
@@ -678,8 +708,8 @@ def test_legacy_workflow_document_key_hashes_content_when_metadata_ids_are_missi
     document = Document(page_content="private workflow text", metadata={})
     expected = f"content_sha256:{hashlib.sha256(b'private workflow text').hexdigest()[:12]}"
 
-    assert workflows_module._document_key(document) == expected
-    assert "private workflow text" not in workflows_module._document_key(document)
+    assert document_key(document) == expected
+    assert "private workflow text" not in document_key(document)
 
 
 def test_ingestion_workflow_invokes_pipeline_and_returns_status_counts():

@@ -17,7 +17,8 @@ from imperial_rag.answering import (
     format_sources,
     validate_citations,
 )
-from imperial_rag.document_ids import metadata_or_content_id
+from imperial_rag.document_ids import content_key, document_key
+from imperial_rag.keyword import searchable_document_text
 from imperial_rag.retrieval import CandidateMerger
 from imperial_rag.tracing import imperial_trace_attributes, trace_answer_step, trace_llm_step
 
@@ -67,6 +68,7 @@ class QueryState(TypedDict, total=False):
     citations_valid: bool
     invalid_citations: list[str]
     retrieval: dict[str, Any]
+    error: dict[str, Any]
 
 
 def _legacy_openai_chat_model():
@@ -80,15 +82,6 @@ def _legacy_openai_chat_model():
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(model="gpt-4.1-mini", temperature=0)
-
-
-def _document_key(document: Document) -> str:
-    metadata = document.metadata or {}
-    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), content=document.page_content)
-
-
-def _content_key(document: Document) -> str:
-    return " ".join(document.page_content.split()).casefold()
 
 
 def _contains_query_terms(query: str, text: str) -> bool:
@@ -106,21 +99,13 @@ def rank_hybrid_candidates(
     if k is not None:
         limit = k
     candidates = CandidateMerger().merge(vector_docs, keyword_docs)
-    keyword_keys = {_document_key(document) for document in keyword_docs}
-    keyword_contents = {_content_key(document) for document in keyword_docs}
+    keyword_keys = {document_key(document) for document in keyword_docs}
+    keyword_contents = {content_key(document) for document in keyword_docs}
 
     def score(document: Document) -> tuple[int, int]:
-        searchable = " ".join(
-            [
-                document.page_content,
-                str(document.metadata.get("file_name", "")),
-                str(document.metadata.get("relative_path", "")),
-                str(document.metadata.get("section_heading", "")),
-                str(document.metadata.get("source_type", "")),
-            ]
-        )
+        searchable = searchable_document_text(document)
         exact_boost = 1 if _contains_query_terms(query, searchable) else 0
-        keyword_boost = 1 if _document_key(document) in keyword_keys or _content_key(document) in keyword_contents else 0
+        keyword_boost = 1 if document_key(document) in keyword_keys or content_key(document) in keyword_contents else 0
         return exact_boost, keyword_boost
 
     return sorted(candidates, key=score, reverse=True)[:limit]
@@ -178,6 +163,13 @@ def _coerce_trace_attributes(answer: Any) -> dict[str, Any]:
     if isinstance(trace_attributes, Mapping):
         return dict(trace_attributes)
     return {}
+
+
+def _coerce_error(answer: Any) -> dict[str, Any] | None:
+    if not isinstance(answer, Mapping):
+        return None
+    error = answer.get("error")
+    return dict(error) if isinstance(error, Mapping) else None
 
 
 def _call_pipeline(run_pipeline, state: Mapping[str, Any]):
@@ -283,6 +275,7 @@ def build_query_workflow(
                 if generate is not None:
                     generated = generate(state["question"], evidence)
                     answer = _coerce_answer(generated)
+                    model_error = _coerce_error(generated)
                     _set_model_generation_trace_attributes(model_span, generated)
                 else:
                     resolved_model = model or _legacy_openai_chat_model()
@@ -290,6 +283,7 @@ def build_query_workflow(
                     answer = build_strict_answer_chain(resolved_model).invoke(
                         {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
                     )
+                    model_error = None
                     model_span.set_attribute("answer.model_status", "ok")
                 _set_model_output_trace_attributes(model_span, answer)
                 model_span.set_output(
@@ -299,6 +293,17 @@ def build_query_workflow(
                         "citation_count": len(citations),
                     }
                 )
+            if model_error is not None:
+                update = {
+                    "answer": answer,
+                    "citations": citations,
+                    "sources": sources,
+                    "citations_valid": True,
+                    "invalid_citations": [],
+                    "error": model_error,
+                }
+                _set_answer_trace_output(span, update, evidence=evidence, citations=citations, sources=sources)
+                return update
             with trace_answer_step(
                 "answer.citation_check",
                 state["question"],

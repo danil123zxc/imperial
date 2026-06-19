@@ -141,5 +141,12 @@ class OcrCache:
     def write(self, cache_key: str, result: OcrResult) -> None:
         self.store("cache_key", cache_key, result)
 
+    def __enter__(self) -> "OcrCache":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        self.close()
+        return False
+
     def close(self) -> None:
         self._conn.close()

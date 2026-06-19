@@ -11,6 +11,7 @@ from typing import Any
 
 from langchain_core.embeddings import Embeddings
 
+from imperial_rag.config import env_bool, env_optional_bool, env_optional_int, env_optional_str, env_str
 from imperial_rag.tracing import trace_embedding_step
 
 
@@ -38,41 +39,6 @@ class DashScopeProviderError(RuntimeError):
     pass
 
 
-def _env_str(name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip()
-
-
-def _env_optional_str(name: str) -> str | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return raw.strip()
-
-
-def _env_optional_int(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return int(raw)
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip().casefold() in {"1", "true", "yes", "on"}
-
-
-def _env_optional_bool(name: str) -> bool | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return raw.strip().casefold() in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class QwenProviderSettings:
     api_key: str | None
@@ -94,23 +60,23 @@ class QwenProviderSettings:
     @classmethod
     def from_env(cls) -> "QwenProviderSettings":
         return cls(
-            api_key=_env_optional_str("DASHSCOPE_API_KEY"),
-            region=_env_str("IMPERIAL_RAG_DASHSCOPE_REGION", "beijing"),
-            base_url=_env_str("IMPERIAL_RAG_DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL),
-            compat_base_url=_env_str("IMPERIAL_RAG_DASHSCOPE_COMPAT_BASE_URL", DEFAULT_DASHSCOPE_COMPAT_BASE_URL),
-            chat_model=_env_str("IMPERIAL_RAG_QWEN_CHAT_MODEL", DEFAULT_QWEN_CHAT_MODEL),
-            vision_model=_env_str("IMPERIAL_RAG_QWEN_VISION_MODEL", DEFAULT_QWEN_VISION_MODEL),
-            ocr_task=_env_str("IMPERIAL_RAG_QWEN_OCR_TASK", DEFAULT_QWEN_OCR_TASK),
-            ocr_min_pixels=_env_optional_int("IMPERIAL_RAG_QWEN_OCR_MIN_PIXELS"),
-            ocr_max_pixels=_env_optional_int("IMPERIAL_RAG_QWEN_OCR_MAX_PIXELS"),
-            ocr_enable_rotate=_env_optional_bool("IMPERIAL_RAG_QWEN_OCR_ENABLE_ROTATE"),
-            embedding_model=_env_str("IMPERIAL_RAG_QWEN_EMBEDDING_MODEL", DEFAULT_QWEN_EMBEDDING_MODEL),
-            embedding_dimensions=_env_optional_int("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS")
+            api_key=env_optional_str("DASHSCOPE_API_KEY"),
+            region=env_str("IMPERIAL_RAG_DASHSCOPE_REGION", "beijing"),
+            base_url=env_str("IMPERIAL_RAG_DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL),
+            compat_base_url=env_str("IMPERIAL_RAG_DASHSCOPE_COMPAT_BASE_URL", DEFAULT_DASHSCOPE_COMPAT_BASE_URL),
+            chat_model=env_str("IMPERIAL_RAG_QWEN_CHAT_MODEL", DEFAULT_QWEN_CHAT_MODEL),
+            vision_model=env_str("IMPERIAL_RAG_QWEN_VISION_MODEL", DEFAULT_QWEN_VISION_MODEL),
+            ocr_task=env_str("IMPERIAL_RAG_QWEN_OCR_TASK", DEFAULT_QWEN_OCR_TASK),
+            ocr_min_pixels=env_optional_int("IMPERIAL_RAG_QWEN_OCR_MIN_PIXELS"),
+            ocr_max_pixels=env_optional_int("IMPERIAL_RAG_QWEN_OCR_MAX_PIXELS"),
+            ocr_enable_rotate=env_optional_bool("IMPERIAL_RAG_QWEN_OCR_ENABLE_ROTATE"),
+            embedding_model=env_str("IMPERIAL_RAG_QWEN_EMBEDDING_MODEL", DEFAULT_QWEN_EMBEDDING_MODEL),
+            embedding_dimensions=env_optional_int("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS")
             if os.environ.get("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS", "").strip()
             else DEFAULT_QWEN_EMBEDDING_DIMENSIONS,
-            rerank_model=_env_str("IMPERIAL_RAG_QWEN_RERANK_MODEL", DEFAULT_QWEN_RERANK_MODEL),
-            allow_legacy_openai=_env_bool("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI"),
-            allow_legacy_cohere=_env_bool("IMPERIAL_RAG_ALLOW_LEGACY_COHERE"),
+            rerank_model=env_str("IMPERIAL_RAG_QWEN_RERANK_MODEL", DEFAULT_QWEN_RERANK_MODEL),
+            allow_legacy_openai=env_bool("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI"),
+            allow_legacy_cohere=env_bool("IMPERIAL_RAG_ALLOW_LEGACY_COHERE"),
         )
 
     def require_api_key(self) -> str:

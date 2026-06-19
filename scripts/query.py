@@ -61,15 +61,15 @@ def _query(settings: Any, question: str) -> dict[str, Any]:
 
 
 def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
-    from imperial_rag.tracing import configure_phoenix_tracing
+    from imperial_rag.cli import configure_tracing
 
-    configure_phoenix_tracing(settings, enabled=True if trace_phoenix else None)
+    configure_tracing(settings, trace_phoenix=trace_phoenix)
 
 
 def _trace_context(session_id: str):
-    from imperial_rag.tracing import phoenix_trace_context
+    from imperial_rag.cli import trace_context
 
-    return phoenix_trace_context(session_id, metadata={"entrypoint": "cli"}, tags=["imperial-rag", "cli"])
+    return trace_context(session_id)
 
 
 def _trace_session_id(explicit: str | None) -> str:
@@ -82,7 +82,7 @@ def _trace_session_id(explicit: str | None) -> str:
 
 
 def _configure_observability(settings: Any) -> None:
-    from imperial_rag.observability import configure_observability
+    from imperial_rag.cli import configure_observability
 
     configure_observability(settings)
 
@@ -101,27 +101,21 @@ def _log_query_completion(result: Any, started_at: float) -> None:
 
 
 def _log_failure(operation: str, exc: BaseException, started_at: float) -> None:
-    from imperial_rag.observability import log_failure
+    from imperial_rag.cli import log_failure
 
-    log_failure(operation, exc, component="cli", duration_ms=_duration_ms(started_at))
+    log_failure(operation, exc, started_at)
 
 
 def _build_settings(workspace_root: Path | None) -> Any:
-    from imperial_rag.config import Settings
+    from imperial_rag.cli import build_settings
 
-    if workspace_root is None:
-        return Settings()
-    try:
-        return Settings(workspace_root=workspace_root)
-    except TypeError:
-        os.environ["IMPERIAL_RAG_WORKSPACE_ROOT"] = str(workspace_root)
-        return Settings()
+    return build_settings(workspace_root)
 
 
 def _load_project_env(workspace_root: Path | None) -> None:
-    from imperial_rag.env import load_project_env
+    from imperial_rag.cli import load_project_environment
 
-    load_project_env(workspace_root)
+    load_project_environment(workspace_root)
 
 
 def _coerce_result(result: Any) -> dict[str, Any]:
@@ -169,7 +163,9 @@ def _query_log_fields(result: Any) -> dict[str, Any]:
 
 
 def _duration_ms(started_at: float) -> int:
-    return int((perf_counter() - started_at) * 1000)
+    from imperial_rag.cli import duration_ms
+
+    return duration_ms(started_at)
 
 
 def _ensure_src_on_path() -> None:

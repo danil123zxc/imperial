@@ -15,7 +15,7 @@ from opentelemetry.trace import Status, StatusCode
 from openinference.semconv.trace import DocumentAttributes, RerankerAttributes
 from phoenix.otel import SpanAttributes
 
-from imperial_rag.config import Settings
+from imperial_rag.config import Settings, env_bool, env_int
 
 
 _CONFIGURED_PROVIDER: object | None = None
@@ -240,9 +240,11 @@ def trace_candidate_documents_enabled() -> bool:
     return _env_flag("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS")
 
 
-def trace_user_id_from_email(email: str) -> str:
+def trace_user_id_from_email(email: str | None) -> str:
     """Return a pseudonymous Phoenix user ID."""
 
+    if not isinstance(email, str):
+        return ""
     normalized = str(email).strip().casefold()
     if not normalized:
         return ""
@@ -271,7 +273,7 @@ def retrieval_documents_preview(
                 "chunk_id": metadata.get("chunk_id"),
                 "file_name": metadata.get("file_name"),
                 "source_type": metadata.get("source_type"),
-                "preview": preview,
+                **({} if _hide_input_text() else {"preview": preview}),
             }
         )
     return previews
@@ -444,20 +446,11 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
 
 
 def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+    return env_bool(name)
 
 
 def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    if minimum is not None:
-        return max(value, minimum)
-    return value
+    return env_int(name, default, minimum=minimum, invalid="default")
 
 
 def _dedupe_trace_tags(tags: Sequence[str]) -> list[str]:
