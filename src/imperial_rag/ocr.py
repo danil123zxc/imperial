@@ -6,6 +6,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -144,7 +145,7 @@ class OcrCache:
     def __enter__(self) -> "OcrCache":
         return self
 
-    def __exit__(self, exc_type, exc, traceback) -> bool:
+    def __exit__(self, exc_type, exc, traceback) -> Literal[False]:
         self.close()
         return False
 

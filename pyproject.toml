@@ -36,6 +36,7 @@ dependencies = [
 dev = [
   "pytest",
   "pytest-cov",
+  "mypy>=1.18,<2",
   "ragas>=0.4,<0.5",
   "ruff>=0.14,<0.15",
 ]
@@ -57,3 +58,8 @@ source = ["imperial_rag"]
 
 [tool.coverage.report]
 skip_empty = true
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"

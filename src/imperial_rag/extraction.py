@@ -87,7 +87,7 @@ def _extract_docx(
     artifact_root: Path | None = None,
     warnings: list[str] | None = None,
 ) -> list[Document]:
-    docx = DocxDocument(record.absolute_path)
+    docx = DocxDocument(str(record.absolute_path))
     documents: list[Document] = []
     body_text = "\n".join(paragraph.text.strip() for paragraph in docx.paragraphs if paragraph.text.strip())
     if body_text:

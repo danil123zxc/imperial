@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
@@ -16,11 +16,16 @@ from imperial_rag.workflows import build_query_workflow
 MODEL_PROVIDER_ERROR_TEXT = "The model provider failed while answering. Check local logs and provider credentials, then try again."
 
 
+class SupportsInvoke(Protocol):
+    def invoke(self, messages: Any) -> Any:
+        ...
+
+
 @dataclass(frozen=True)
 class QueryDependencies:
     vector_search: object
     keyword_search: object
-    chat_model: object
+    chat_model: SupportsInvoke
 
 
 class _NoopVectorSearch:

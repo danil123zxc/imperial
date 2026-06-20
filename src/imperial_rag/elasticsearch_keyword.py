@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from langchain_core.callbacks import (
     AsyncCallbackManagerForRetrieverRun,
@@ -63,7 +63,7 @@ _HIT_SCORE_KEY = "__keyword_hit_score__"
 _HIT_ID_KEY = "__keyword_hit_id__"
 
 
-def _keyword_document_mapper(hit: dict[str, Any]) -> Document:
+def _keyword_document_mapper(hit: Mapping[Any, Any]) -> Document:
     source = dict(hit.get("_source") or {})
     metadata = dict(source.get("metadata") or {})
     content = str(source.get("text", ""))

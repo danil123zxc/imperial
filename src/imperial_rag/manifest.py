@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 
 class FileStatus(StrEnum):
@@ -218,7 +219,7 @@ class ManifestStore:
     def __enter__(self) -> "ManifestStore":
         return self
 
-    def __exit__(self, exc_type, exc, traceback) -> bool:
+    def __exit__(self, exc_type, exc, traceback) -> Literal[False]:
         self.close()
         return False
 

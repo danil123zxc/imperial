@@ -470,19 +470,19 @@ def _import_embedding_factory() -> Any:
 def _import_faithfulness_metric() -> Any:
     _install_ragas_langchain_community_compat()
     try:
-        from ragas.metrics.collections.faithfulness import Faithfulness
+        from ragas.metrics.collections.faithfulness import Faithfulness as CollectionsFaithfulness
 
-        return Faithfulness
+        return CollectionsFaithfulness
     except ImportError as collections_exc:
         try:
-            from ragas.metrics.collections import Faithfulness
+            from ragas.metrics.collections import Faithfulness as CollectionFaithfulness
 
-            return Faithfulness
+            return CollectionFaithfulness
         except ImportError:
             try:
-                from ragas.metrics import Faithfulness
+                from ragas.metrics import Faithfulness as MetricsFaithfulness
 
-                return Faithfulness
+                return MetricsFaithfulness
             except ImportError:
                 raise SystemExit("Ragas Faithfulness metric is not installed; run `uv sync --extra dev`.") from (
                     collections_exc
@@ -492,14 +492,14 @@ def _import_faithfulness_metric() -> Any:
 def _import_answer_relevancy_metric() -> Any:
     _install_ragas_langchain_community_compat()
     try:
-        from ragas.metrics.collections import AnswerRelevancy
+        from ragas.metrics.collections import AnswerRelevancy as CollectionsAnswerRelevancy
 
-        return AnswerRelevancy
+        return CollectionsAnswerRelevancy
     except ImportError as collections_exc:
         try:
-            from ragas.metrics import AnswerRelevancy
+            from ragas.metrics import AnswerRelevancy as MetricsAnswerRelevancy
 
-            return AnswerRelevancy
+            return MetricsAnswerRelevancy
         except ImportError:
             raise SystemExit("Ragas AnswerRelevancy metric is not installed; run `uv sync --extra dev`.") from (
                 collections_exc
@@ -509,14 +509,10 @@ def _import_answer_relevancy_metric() -> Any:
 def _import_id_based_context_recall_metric() -> Any:
     _install_ragas_langchain_community_compat()
     try:
-        from ragas.metrics.collections import IDBasedContextRecall
-
-        return IDBasedContextRecall
+        return getattr(importlib.import_module("ragas.metrics.collections"), "IDBasedContextRecall")
     except ImportError as collections_exc:
         try:
-            from ragas.metrics._context_recall import IDBasedContextRecall
-
-            return IDBasedContextRecall
+            return getattr(importlib.import_module("ragas.metrics._context_recall"), "IDBasedContextRecall")
         except ImportError:
             try:
                 with warnings.catch_warnings():
@@ -525,9 +521,7 @@ def _import_id_based_context_recall_metric() -> Any:
                         message="Importing IDBasedContextRecall from 'ragas.metrics' is deprecated.*",
                         category=DeprecationWarning,
                     )
-                    from ragas.metrics import IDBasedContextRecall
-
-                return IDBasedContextRecall
+                    return getattr(importlib.import_module("ragas.metrics"), "IDBasedContextRecall")
             except ImportError:
                 raise SystemExit(
                     "Ragas IDBasedContextRecall metric is not installed; run `uv sync --extra dev`."
@@ -563,7 +557,7 @@ def _install_ragas_langchain_community_compat() -> None:
     class ChatVertexAI:
         pass
 
-    module.ChatVertexAI = ChatVertexAI
+    setattr(module, "ChatVertexAI", ChatVertexAI)
     sys.modules[module_name] = module
 
 

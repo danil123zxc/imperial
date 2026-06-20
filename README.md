@@ -317,6 +317,14 @@ Run the full test suite:
 uv run python -m pytest -q
 ```
 
+Run the default offline quality gate before committing code changes:
+
+```bash
+./scripts/check.sh
+```
+
+That command runs Ruff, mypy over `src/imperial_rag`, pytest with coverage reporting, and a whitespace diff check.
+
 Live tests are opt-in so the default suite stays offline and free of paid network calls. The live API and live corpus consent flags must be set in the process environment; `.env` is used only for secrets after those flags are present.
 
 Run live DashScope/Qwen provider smoke and fixture integration tests only when real credentials are available:

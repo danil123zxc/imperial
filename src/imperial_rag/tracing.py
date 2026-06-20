@@ -419,11 +419,13 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
     key = (resolved_settings.phoenix_project_name, resolved_settings.phoenix_collector_endpoint)
     global _CONFIGURED_PROVIDER, _CONFIGURED_KEY
     if _CONFIGURED_PROVIDER is not None:
-        if _CONFIGURED_KEY == key:
+        configured_key = _CONFIGURED_KEY
+        if configured_key == key:
             return _CONFIGURED_PROVIDER
+        configured_project, configured_endpoint = configured_key or ("unknown", "unknown")
         raise RuntimeError(
             "Phoenix tracing is already configured for "
-            f"project={_CONFIGURED_KEY[0]!r}, endpoint={_CONFIGURED_KEY[1]!r}; "
+            f"project={configured_project!r}, endpoint={configured_endpoint!r}; "
             f"cannot reconfigure to project={key[0]!r}, endpoint={key[1]!r} in the same process."
         )
 

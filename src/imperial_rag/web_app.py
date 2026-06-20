@@ -63,20 +63,22 @@ def load_status_summary(settings: Any | None = None) -> str:
 
 
 def query_runtime(settings: Any, question: str) -> dict[str, Any]:
+    create_runtime_func: Any | None
     try:
-        from imperial_rag.runtime import create_runtime
+        from imperial_rag.runtime import create_runtime as create_runtime_func
     except (ImportError, AttributeError):
-        create_runtime = None
-    if create_runtime is not None:
+        create_runtime_func = None
+    if create_runtime_func is not None:
         return _coerce_result(_runtime_resource(settings).query(question))
 
+    RuntimeClass: Any | None
     try:
-        from imperial_rag.runtime import Runtime
+        from imperial_rag.runtime import Runtime as RuntimeClass
     except (ImportError, AttributeError):
-        Runtime = None
+        RuntimeClass = None
 
-    if Runtime is not None:
-        return _coerce_result(Runtime(settings=settings).query(question))
+    if RuntimeClass is not None:
+        return _coerce_result(RuntimeClass(settings=settings).query(question))
 
     from imperial_rag.runtime import build_live_query_workflow
 
@@ -84,12 +86,13 @@ def query_runtime(settings: Any, question: str) -> dict[str, Any]:
 
 
 def _runtime_resource(settings: Any) -> Any:
+    streamlit_module: Any | None
     try:
-        import streamlit as st
+        import streamlit as streamlit_module
     except ImportError:
-        st = None
+        streamlit_module = None
 
-    cache_resource = getattr(st, "cache_resource", None) if st is not None else None
+    cache_resource = getattr(streamlit_module, "cache_resource", None) if streamlit_module is not None else None
     if cache_resource is None:
         from imperial_rag.runtime import create_runtime
 

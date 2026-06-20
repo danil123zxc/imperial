@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
@@ -34,6 +35,11 @@ _CITATION_METADATA_KEYS = (
 )
 
 
+class SupportsAddDocuments(Protocol):
+    def add_documents(self, documents: Sequence[Document], ids: Sequence[str]) -> Sequence[str]:
+        ...
+
+
 def stable_chunk_id(document: Document) -> str:
     metadata = document.metadata or {}
     citation_metadata = {
@@ -54,7 +60,7 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def create_qdrant_vector_store(settings: Settings, embeddings: object | None = None) -> QdrantVectorStore:
+def create_qdrant_vector_store(settings: Settings, embeddings: Embeddings | None = None) -> QdrantVectorStore:
     if embeddings is None:
         ensure_vector_metadata_compatible(settings)
         embeddings = create_embeddings()
@@ -72,7 +78,7 @@ def embedding_model_identifier(provider_settings: QwenProviderSettings | None = 
     return resolved.embedding_model if dimensions is None else f"{resolved.embedding_model}:{dimensions}"
 
 
-def make_qdrant_store(qdrant_url: str, collection_name: str, embeddings: object | None = None) -> QdrantVectorStore:
+def make_qdrant_store(qdrant_url: str, collection_name: str, embeddings: Embeddings | None = None) -> QdrantVectorStore:
     return create_qdrant_vector_store(
         Settings(qdrant_url=qdrant_url, qdrant_collection=collection_name),
         embeddings=embeddings,
@@ -87,25 +93,26 @@ def index_vector_documents(
     chunks: Sequence[Document],
     *,
     settings: Settings | None = None,
-    vector_store: object | None = None,
-    embeddings: object | None = None,
+    vector_store: SupportsAddDocuments | None = None,
+    embeddings: Embeddings | None = None,
     ids: Sequence[str] | None = None,
 ) -> list[str]:
     documents = list(chunks)
     resolved_ids = list(ids) if ids is not None else stable_chunk_ids(documents)
     if len(resolved_ids) != len(documents):
         raise ValueError("ids length must match chunks length")
-    if vector_store is None:
+    resolved_vector_store: Any = vector_store
+    if resolved_vector_store is None:
         if settings is None:
             raise ValueError("settings is required when vector_store is not provided")
-        vector_store = create_qdrant_vector_store(settings, embeddings=embeddings)
-    added_ids = list(vector_store.add_documents(documents=documents, ids=resolved_ids))
+        resolved_vector_store = create_qdrant_vector_store(settings, embeddings=embeddings)
+    added_ids = list(resolved_vector_store.add_documents(documents=documents, ids=resolved_ids))
     if settings is not None:
         write_vector_metadata(settings, QwenProviderSettings.from_env().vector_metadata())
     return added_ids
 
 
-def index_documents(vector_store: object, documents: list[Document], ids: list[str] | None = None) -> list[str]:
+def index_documents(vector_store: SupportsAddDocuments, documents: list[Document], ids: list[str] | None = None) -> list[str]:
     return index_vector_documents(documents, vector_store=vector_store, ids=ids)
 
 

@@ -612,7 +612,7 @@ class RetrievalService:
 
 
 def _set_documents_span_output(span: Any, documents: list[Document], **metadata: Any) -> None:
-    output = {"count": len(documents)}
+    output: dict[str, Any] = {"count": len(documents)}
     for key, value in metadata.items():
         if value is not None:
             output[key] = _trace_output_value(value)
