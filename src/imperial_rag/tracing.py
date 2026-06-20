@@ -240,6 +240,30 @@ def trace_candidate_documents_enabled() -> bool:
     return _env_flag("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS")
 
 
+def trace_internal_spans_suppressed() -> bool:
+    return _env_flag("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", default=True)
+
+
+@contextmanager
+def suppress_internal_tracing() -> Iterator[None]:
+    """Hide framework auto-instrumentation inside Imperial-owned wrapper spans."""
+
+    if not trace_internal_spans_suppressed():
+        yield
+        return
+    try:
+        from phoenix.otel import suppress_tracing
+    except ImportError:
+        try:
+            from openinference.instrumentation import suppress_tracing
+        except ImportError:
+            yield
+            return
+
+    with suppress_tracing():
+        yield
+
+
 def trace_user_id_from_email(email: str | None) -> str:
     """Return a pseudonymous Phoenix user ID."""
 
@@ -447,8 +471,8 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
     return _CONFIGURED_PROVIDER
 
 
-def _env_flag(name: str) -> bool:
-    return env_bool(name)
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    return env_bool(name, default=default)
 
 
 def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:

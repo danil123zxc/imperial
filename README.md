@@ -235,7 +235,9 @@ uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --
 Query traces use a domain-first hierarchy: `imperial_rag.query` contains retrieval and answer phases,
 retrieval has child spans for vector search, keyword search, reranking, and final evidence selection, and answer
 generation has child spans for the model call and citation check. Merge/fusion counts stay on the parent
-`retrieval` span output. For rich local debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full
+`retrieval` span output. By default, Imperial suppresses framework-level retriever, fusion, and reranker child spans
+inside those wrapper spans; set `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=false` when you need to inspect those
+LangChain internals. For rich local debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full
 final evidence documents to the Phoenix-native `retrieval.final_evidence` document panel. Candidate spans remain
 compact. `OPENINFERENCE_HIDE_*` redaction settings still override document text and outputs.
 
@@ -397,6 +399,7 @@ Common settings:
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.final_evidence` when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`: opt into Phoenix/OpenInference framework auto-instrumentation for deep debugging; defaults to `false` so manual domain spans define the summary trace tree.
+- `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS`: suppress framework child spans inside Imperial wrapper spans by default; set to `false` for targeted LangChain internals debugging.
 - `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.
 - `IMPERIAL_RAG_TRACE_USER_HASH_SECRET`: optional local secret for HMAC-based Phoenix user IDs; leave unset to preserve current deterministic local trace correlation.
 - `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.

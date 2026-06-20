@@ -14,6 +14,7 @@ from imperial_rag.providers import QwenProviderSettings, create_reranker, dashsc
 from imperial_rag.tracing import (
     imperial_trace_attributes,
     retrieval_documents_preview,
+    suppress_internal_tracing,
     trace_candidate_documents_enabled,
     trace_retrieval_step,
 )
@@ -169,37 +170,39 @@ class HybridRetriever:
         )
 
     def _vector_docs(self, query: str) -> list[Document]:
-        if hasattr(self.vector_search, "invoke"):
-            docs = self.vector_search.invoke(
-                query,
-                k=self.settings.vector_k,
-                fetch_k=self.settings.vector_fetch_k,
-                lambda_mult=self.settings.mmr_lambda_mult,
-            )
-        elif hasattr(self.vector_search, "max_marginal_relevance_search"):
-            docs = self.vector_search.max_marginal_relevance_search(
-                query,
-                k=self.settings.vector_k,
-                fetch_k=self.settings.vector_fetch_k,
-                lambda_mult=self.settings.mmr_lambda_mult,
-            )
-        elif hasattr(self.vector_search, "similarity_search"):
-            docs = self.vector_search.similarity_search(query, k=self.settings.vector_k)
-        else:
-            docs = []
+        with suppress_internal_tracing():
+            if hasattr(self.vector_search, "invoke"):
+                docs = self.vector_search.invoke(
+                    query,
+                    k=self.settings.vector_k,
+                    fetch_k=self.settings.vector_fetch_k,
+                    lambda_mult=self.settings.mmr_lambda_mult,
+                )
+            elif hasattr(self.vector_search, "max_marginal_relevance_search"):
+                docs = self.vector_search.max_marginal_relevance_search(
+                    query,
+                    k=self.settings.vector_k,
+                    fetch_k=self.settings.vector_fetch_k,
+                    lambda_mult=self.settings.mmr_lambda_mult,
+                )
+            elif hasattr(self.vector_search, "similarity_search"):
+                docs = self.vector_search.similarity_search(query, k=self.settings.vector_k)
+            else:
+                docs = []
         return _annotate_retrieval_documents(docs, rank_key="_vector_rank")
 
     def _keyword_docs(self, query: str) -> list[Document]:
-        if hasattr(self.keyword_search, "invoke"):
-            docs = self.keyword_search.invoke(query, limit=self.settings.keyword_limit)
-            return _annotate_retrieval_documents(docs, rank_key="_keyword_rank")
-        if hasattr(self.keyword_search, "search_with_scores"):
-            hits = self.keyword_search.search_with_scores(query, limit=self.settings.keyword_limit)
-            return _annotate_retrieval_documents([hit.document for hit in hits], rank_key="_keyword_rank")
-        return _annotate_retrieval_documents(
-            self.keyword_search.search(query, limit=self.settings.keyword_limit),
-            rank_key="_keyword_rank",
-        )
+        with suppress_internal_tracing():
+            if hasattr(self.keyword_search, "invoke"):
+                docs = self.keyword_search.invoke(query, limit=self.settings.keyword_limit)
+                return _annotate_retrieval_documents(docs, rank_key="_keyword_rank")
+            if hasattr(self.keyword_search, "search_with_scores"):
+                hits = self.keyword_search.search_with_scores(query, limit=self.settings.keyword_limit)
+                return _annotate_retrieval_documents([hit.document for hit in hits], rank_key="_keyword_rank")
+            return _annotate_retrieval_documents(
+                self.keyword_search.search(query, limit=self.settings.keyword_limit),
+                rank_key="_keyword_rank",
+            )
 
 
 def _retrieval_id(document: Document) -> str:
@@ -343,7 +346,8 @@ class RrfCandidateFusion:
             c=rrf_k,
             id_key="_retrieval_id",
         )
-        return list(ensemble.invoke(""))
+        with suppress_internal_tracing():
+            return list(ensemble.invoke(""))
 
     def _rank_ordered(self, documents: list[Document], rank_key: str) -> list[Document]:
         ranked = [
@@ -487,7 +491,8 @@ class Reranker:
     def _dashscope_rerank(self, query: str, documents: list[Document], model_name: str) -> list[Document]:
         provider_settings = replace(QwenProviderSettings.from_env(), rerank_model=model_name)
         compressor = create_reranker(top_n=self.settings.rerank_top_n, settings=provider_settings)
-        return list(compressor.compress_documents(documents, query))
+        with suppress_internal_tracing():
+            return list(compressor.compress_documents(documents, query))
 
     def _fallback_rerank(self, query: str, documents: list[Document], diagnostics: dict[str, Any]) -> list[Document]:
         if self.settings.fallback_reranker != "fallback:deterministic":

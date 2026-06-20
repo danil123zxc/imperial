@@ -806,3 +806,14 @@ def test_trace_candidate_documents_enabled_reads_env(monkeypatch) -> None:
 
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "true")
     assert tracing_module.trace_candidate_documents_enabled() is True
+
+
+def test_trace_internal_spans_suppressed_defaults_to_true(monkeypatch) -> None:
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", raising=False)
+    assert tracing_module.trace_internal_spans_suppressed() is True
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", "false")
+    assert tracing_module.trace_internal_spans_suppressed() is False
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", "true")
+    assert tracing_module.trace_internal_spans_suppressed() is True

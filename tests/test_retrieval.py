@@ -5,6 +5,10 @@ from contextlib import contextmanager
 
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
+from openinference.instrumentation.langchain import LangChainInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import Field
 
 import imperial_rag.retrieval as retrieval_module
@@ -109,6 +113,20 @@ def capture_retrieval_spans(monkeypatch):
 
     monkeypatch.setattr(retrieval_module, "trace_retrieval_step", fake_trace_retrieval_step, raising=False)
     return records
+
+
+def capture_langchain_span_names(operation):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    instrumentor = LangChainInstrumentor()
+    instrumentor.instrument(tracer_provider=provider)
+    try:
+        result = operation()
+        span_names = [span.name for span in exporter.get_finished_spans()]
+    finally:
+        instrumentor.uninstrument()
+    return span_names, result
 
 
 def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
@@ -449,6 +467,72 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     ]
     assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
     assert result.diagnostics["final_evidence"] == 1
+
+
+def test_retrieval_service_suppresses_langchain_internal_spans_by_default(monkeypatch):
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", raising=False)
+    records = capture_retrieval_spans(monkeypatch)
+
+    class VectorStoreRetriever(FakeBaseRetriever):
+        pass
+
+    class ElasticsearchRetriever(FakeBaseRetriever):
+        pass
+
+    service = RetrievalService(
+        vector_search=VectorStoreRetriever(
+            docs=[Document(page_content="vector return", metadata={"citation_id": "v"})]
+        ),
+        keyword_search=ElasticsearchRetriever(
+            docs=[Document(page_content="keyword return", metadata={"citation_id": "k", "_keyword_score": 2.0})]
+        ),
+        settings=RetrievalSettings(rerank_top_n=1),
+    )
+
+    internal_span_names, result = capture_langchain_span_names(lambda: service.retrieve("возврат брака"))
+
+    assert [record["name"] for record in records] == [
+        "retrieval",
+        "retrieval.vector_search",
+        "retrieval.keyword_search",
+        "retrieval.rerank",
+        "retrieval.final_evidence",
+    ]
+    assert internal_span_names == []
+    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
+
+
+def test_retrieval_service_can_allow_langchain_internal_spans(monkeypatch):
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", "false")
+
+    class VectorStoreRetriever(FakeBaseRetriever):
+        pass
+
+    class ElasticsearchRetriever(FakeBaseRetriever):
+        pass
+
+    service = RetrievalService(
+        vector_search=VectorStoreRetriever(
+            docs=[Document(page_content="vector return", metadata={"citation_id": "v"})]
+        ),
+        keyword_search=ElasticsearchRetriever(
+            docs=[Document(page_content="keyword return", metadata={"citation_id": "k", "_keyword_score": 2.0})]
+        ),
+        settings=RetrievalSettings(rerank_top_n=1),
+    )
+
+    internal_span_names, result = capture_langchain_span_names(lambda: service.retrieve("возврат брака"))
+
+    assert internal_span_names == [
+        "VectorStoreRetriever",
+        "ElasticsearchRetriever",
+        "_StaticDocumentRetriever",
+        "_StaticDocumentRetriever",
+        "EnsembleRetriever",
+    ]
+    assert [doc.metadata["citation_id"] for doc in result.evidence] == ["k"]
 
 
 def test_retrieval_service_traces_candidate_documents_only_when_enabled(monkeypatch):
@@ -934,6 +1018,44 @@ def test_reranker_calls_compressor_compress_documents_directly(monkeypatch):
 
     assert [doc.metadata["citation_id"] for doc in reranked] == ["act", "return"]
     assert calls == [{"documents": docs[:2], "query": "возврат брака"}]
+    assert diagnostics["reranker"] == "dashscope:qwen3-rerank"
+
+
+def test_reranker_suppresses_dashscope_compressor_internals(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    docs = [
+        Document(page_content="Порядок возврата брака.", metadata={"citation_id": "return", "_keyword_rank": 0}),
+        Document(page_content="Возврат оформляется актом.", metadata={"citation_id": "act", "_keyword_rank": 1}),
+    ]
+    diagnostics = {"fallbacks": []}
+    suppress_state = {"active": False}
+    calls = []
+
+    @contextmanager
+    def fake_suppress_internal_tracing():
+        suppress_state["active"] = True
+        try:
+            yield
+        finally:
+            suppress_state["active"] = False
+
+    class FakeCompressor:
+        def compress_documents(self, documents, query):
+            calls.append({"suppressed": suppress_state["active"], "query": query})
+            return [documents[0]]
+
+    monkeypatch.setattr(retrieval_module, "suppress_internal_tracing", fake_suppress_internal_tracing, raising=False)
+    monkeypatch.setattr(retrieval_module, "dashscope_configured", lambda: True, raising=False)
+    monkeypatch.setattr(retrieval_module, "create_reranker", lambda top_n, settings: FakeCompressor(), raising=False)
+
+    reranked = Reranker(settings=RetrievalSettings(rerank_input_limit=2, rerank_top_n=1)).rerank(
+        "возврат брака",
+        docs,
+        diagnostics,
+    )
+
+    assert [doc.metadata["citation_id"] for doc in reranked] == ["return"]
+    assert calls == [{"suppressed": True, "query": "возврат брака"}]
     assert diagnostics["reranker"] == "dashscope:qwen3-rerank"
 
 
