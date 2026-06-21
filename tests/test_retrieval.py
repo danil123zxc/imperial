@@ -375,10 +375,29 @@ def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     vector_docs = [
-        Document(page_content="vector return", metadata={"citation_id": "v", "file_id": "f", "source_type": "body", "chunk_index": 0})
+        Document(
+            page_content="vector return",
+            metadata={
+                "citation_id": "v",
+                "file_id": "f",
+                "file_name": "vector.docx",
+                "source_type": "body",
+                "chunk_index": 0,
+            },
+        )
     ]
     keyword_docs = [
-        Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 1, "_keyword_rank": 0})
+        Document(
+            page_content="Порядок возврата брака",
+            metadata={
+                "citation_id": "k",
+                "file_id": "f",
+                "file_name": "return.docx",
+                "source_type": "body",
+                "chunk_index": 1,
+                "_keyword_rank": 0,
+            },
+        )
     ]
     service = RetrievalService(
         vector_search=FakeVectorSearch(vector_docs),
@@ -403,10 +422,29 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     records = capture_retrieval_spans(monkeypatch)
     vector_docs = [
-        Document(page_content="vector return", metadata={"citation_id": "v", "file_id": "f", "source_type": "body", "chunk_index": 0})
+        Document(
+            page_content="vector return",
+            metadata={
+                "citation_id": "v",
+                "file_id": "f",
+                "file_name": "vector.docx",
+                "source_type": "body",
+                "chunk_index": 0,
+            },
+        )
     ]
     keyword_docs = [
-        Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 1, "_keyword_rank": 0})
+        Document(
+            page_content="Порядок возврата брака",
+            metadata={
+                "citation_id": "k",
+                "file_id": "f",
+                "file_name": "return.docx",
+                "source_type": "body",
+                "chunk_index": 1,
+                "_keyword_rank": 0,
+            },
+        )
     ]
     service = RetrievalService(
         vector_search=FakeVectorSearch(vector_docs),
@@ -430,10 +468,14 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[0]["attributes"]["imperial.trace_schema_version"] == "rag-v2"
     assert records[1]["output"]["status"] == "ok"
     assert records[1]["output"]["count"] == 1
+    assert records[1]["output"]["top_document_ids"] == ["v"]
+    assert records[1]["output"]["top_document_files"] == ["vector.docx"]
     assert records[1]["output"]["top_documents"][0]["citation_id"] == "v"
     assert records[1]["set_attributes"] == {}
     assert records[2]["output"]["status"] == "ok"
     assert records[2]["output"]["count"] == 1
+    assert records[2]["output"]["top_document_ids"] == ["k"]
+    assert records[2]["output"]["top_document_files"] == ["return.docx"]
     assert records[2]["set_attributes"] == {}
     assert records[3]["kind"] == "RERANKER"
     assert records[3]["attributes"]["imperial.phase"] == "retrieval"
@@ -442,6 +484,8 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[3]["attributes"]["reranker.top_k"] == 1
     assert records[3]["set_attributes"]["reranker.model_name"] == "fallback:deterministic"
     assert records[3]["output"]["reranker"] == "fallback:deterministic"
+    assert records[3]["output"]["top_document_ids"] == ["k"]
+    assert records[3]["output"]["top_document_files"] == ["return.docx"]
     assert "reranker_missing_dashscope_api_key" in records[3]["output"]["fallbacks"]
     rerank_attributes = records[3]["set_attributes"]
     assert [rerank_attributes[f"reranker.input_documents.{index}.document.id"] for index in range(2)] == ["v", "k"]
@@ -453,6 +497,7 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[4]["set_attributes"]["retrieval.documents.0.document.content"] == "Порядок возврата брака"
     assert records[4]["output"]["count"] == 1
     assert records[4]["output"]["citation_ids"] == ["k"]
+    assert records[4]["output"]["files"] == ["return.docx"]
     assert records[4]["output"]["context_chars"] == 22
     assert records[0]["output"]["merged_candidates"] == 2
     assert records[0]["output"]["fused_candidates"] == 2

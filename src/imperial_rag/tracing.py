@@ -5,6 +5,7 @@ import os
 import hashlib
 import hmac
 import socket
+import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from typing import Any
@@ -234,6 +235,33 @@ def imperial_trace_attributes(
     }
     trace_attributes.update(dict(attributes or {}))
     return trace_attributes
+
+
+def trace_provenance_attributes(settings: Settings | None = None, *, run_id: str | None = None) -> dict[str, Any]:
+    """Return build/runtime markers that make fresh Phoenix traces attributable."""
+
+    resolved_settings = settings or Settings()
+    attrs: dict[str, Any] = {
+        "imperial.trace_run_id": run_id,
+        "imperial.phoenix_project": resolved_settings.phoenix_project_name,
+        "imperial.git_sha": _runtime_git_sha(resolved_settings),
+        "imperial.image_digest": _env_text("IMPERIAL_RAG_IMAGE_DIGEST"),
+        "imperial.image_tag": _env_text("IMPERIAL_RAG_IMAGE_TAG"),
+        "imperial.app_version": _env_text("IMPERIAL_RAG_APP_VERSION"),
+        "imperial.trace_auto_instrument": _env_flag("IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT"),
+        "imperial.trace_suppress_internals": trace_internal_spans_suppressed(),
+        "imperial.trace_candidate_documents": trace_candidate_documents_enabled(),
+        "imperial.trace_full_final_evidence": _trace_full_final_evidence(),
+        "imperial.trace_full_metadata": _env_flag("IMPERIAL_RAG_TRACE_FULL_METADATA"),
+        "openinference.hide_inputs": _hide_inputs(),
+        "openinference.hide_outputs": _hide_outputs(),
+        "openinference.hide_input_text": _hide_input_text(),
+        "openinference.hide_input_messages": _hide_input_messages(),
+        "openinference.hide_output_messages": _hide_output_messages(),
+        "openinference.hide_llm_prompts": _env_flag("OPENINFERENCE_HIDE_LLM_PROMPTS"),
+        "openinference.hide_llm_tools": _hide_llm_tools(),
+    }
+    return {key: value for key, value in attrs.items() if value not in (None, "")}
 
 
 def trace_candidate_documents_enabled() -> bool:
@@ -477,6 +505,30 @@ def _env_flag(name: str, *, default: bool = False) -> bool:
 
 def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     return env_int(name, default, minimum=minimum, invalid="default")
+
+
+def _env_text(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    return value or None
+
+
+def _runtime_git_sha(settings: Settings) -> str | None:
+    for name in ("IMPERIAL_RAG_GIT_SHA", "GIT_COMMIT", "SOURCE_VERSION"):
+        value = _env_text(name)
+        if value:
+            return value
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(settings.workspace_root),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    return result.stdout.strip() or "unavailable"
 
 
 def _dedupe_trace_tags(tags: Sequence[str]) -> list[str]:

@@ -817,3 +817,56 @@ def test_trace_internal_spans_suppressed_defaults_to_true(monkeypatch) -> None:
 
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", "true")
     assert tracing_module.trace_internal_spans_suppressed() is True
+
+
+def test_trace_provenance_attributes_include_runtime_identity_and_flags(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("IMPERIAL_RAG_GIT_SHA", "abc1234")
+    monkeypatch.setenv("IMPERIAL_RAG_IMAGE_DIGEST", "sha256:deadbeef")
+    monkeypatch.setenv("IMPERIAL_RAG_IMAGE_TAG", "imperial:test")
+    monkeypatch.setenv("IMPERIAL_RAG_APP_VERSION", "2026.06.22")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT", "false")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", "true")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "false")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE", "false")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_METADATA", "false")
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUTS", "true")
+    settings = Settings(
+        workspace_root=tmp_path,
+        phoenix_project_name="imperial-rag-readable",
+    )
+
+    attrs = tracing_module.trace_provenance_attributes(settings, run_id="run-123")
+
+    assert attrs == {
+        "imperial.trace_run_id": "run-123",
+        "imperial.phoenix_project": "imperial-rag-readable",
+        "imperial.git_sha": "abc1234",
+        "imperial.image_digest": "sha256:deadbeef",
+        "imperial.image_tag": "imperial:test",
+        "imperial.app_version": "2026.06.22",
+        "imperial.trace_auto_instrument": False,
+        "imperial.trace_suppress_internals": True,
+        "imperial.trace_candidate_documents": False,
+        "imperial.trace_full_final_evidence": False,
+        "imperial.trace_full_metadata": False,
+        "openinference.hide_inputs": True,
+        "openinference.hide_outputs": False,
+        "openinference.hide_input_text": True,
+        "openinference.hide_input_messages": True,
+        "openinference.hide_output_messages": False,
+        "openinference.hide_llm_prompts": False,
+        "openinference.hide_llm_tools": True,
+    }
+
+
+def test_trace_provenance_attributes_marks_unavailable_git_sha(monkeypatch, tmp_path: Path) -> None:
+    for name in ("IMPERIAL_RAG_GIT_SHA", "GIT_COMMIT", "SOURCE_VERSION"):
+        monkeypatch.delenv(name, raising=False)
+
+    def fail_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(tracing_module.subprocess, "run", fail_git)
+    attrs = tracing_module.trace_provenance_attributes(Settings(workspace_root=tmp_path), run_id="run-123")
+
+    assert attrs["imperial.git_sha"] == "unavailable"

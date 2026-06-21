@@ -621,10 +621,42 @@ def _set_documents_span_output(span: Any, documents: list[Document], **metadata:
     for key, value in metadata.items():
         if value is not None:
             output[key] = _trace_output_value(value)
+    output.update(_document_summary_output(documents))
     previews = retrieval_documents_preview(documents)
     if previews:
         output["top_documents"] = previews
     span.set_output(output)
+
+
+def _document_summary_output(documents: list[Document], *, limit: int = 5) -> dict[str, Any]:
+    top_ids: list[str] = []
+    top_files: list[str] = []
+    top_scores: list[float] = []
+    seen_files: set[str] = set()
+    for document in documents[:limit]:
+        metadata = dict(document.metadata or {})
+        document_id = _first_metadata_value(metadata, ("citation_id", "chunk_id", "_retrieval_id"))
+        if document_id is not None:
+            top_ids.append(document_id)
+        file_name = _first_metadata_value(metadata, ("file_name",))
+        if file_name is not None and file_name not in seen_files:
+            top_files.append(file_name)
+            seen_files.add(file_name)
+        score = _first_numeric_value(metadata, ("relevance_score", "_fallback_score", "_keyword_score", "_rrf_score"))
+        if score is not None:
+            top_scores.append(score)
+    output: dict[str, Any] = {}
+    if top_ids:
+        output["top_document_ids"] = top_ids
+    if top_files:
+        output["top_document_files"] = top_files
+    if top_scores:
+        output["top_score_summary"] = {
+            "max": max(top_scores),
+            "min": min(top_scores),
+            "count": len(top_scores),
+        }
+    return output
 
 
 def _final_evidence_span_output(documents: list[Document]) -> dict[str, Any]:
@@ -648,6 +680,24 @@ def _final_evidence_span_output(documents: list[Document]) -> dict[str, Any]:
         "files": files,
         "context_chars": context_chars,
     }
+
+
+def _first_metadata_value(metadata: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = metadata.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return None
+
+
+def _first_numeric_value(metadata: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
 def _retrieval_summary_output(diagnostics: dict[str, Any]) -> dict[str, Any]:

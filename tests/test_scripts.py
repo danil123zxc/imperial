@@ -29,6 +29,13 @@ def test_phoenix_eval_script_imports_and_defines_main():
     assert hasattr(module, "citation_behavior")
 
 
+def test_phoenix_trace_validator_script_imports_and_defines_main():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_script")
+
+    assert hasattr(module, "main")
+    assert hasattr(module, "validate_span_records")
+
+
 def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/ingest.py").read_text(encoding="utf-8")
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")
@@ -42,6 +49,83 @@ def test_entrypoint_scripts_configure_observability():
     assert "configure_observability" in Path("scripts/run_phoenix_eval.py").read_text(encoding="utf-8")
     assert "configure_observability" in Path("scripts/run_ragas_eval.py").read_text(encoding="utf-8")
     assert "configure_observability" in Path("scripts/run_all_evals.py").read_text(encoding="utf-8")
+
+
+def test_validate_phoenix_trace_accepts_compact_trace_with_provenance():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_contract")
+    records = [
+        {
+            "name": "imperial_rag.query",
+            "span_kind": "CHAIN",
+            "attributes": {
+                "imperial.trace_run_id": "run-123",
+                "imperial.git_sha": "abc1234",
+                "imperial.trace_suppress_internals": True,
+                "imperial.trace_auto_instrument": False,
+                "imperial.phoenix_project": "imperial-rag-readable",
+            },
+        },
+        {"name": "retrieval", "span_kind": "CHAIN", "attributes": {}},
+        {"name": "retrieval.vector_search", "span_kind": "RETRIEVER", "attributes": {}},
+        {"name": "retrieval.keyword_search", "span_kind": "RETRIEVER", "attributes": {}},
+        {"name": "retrieval.rerank", "span_kind": "RERANKER", "attributes": {}},
+        {"name": "retrieval.final_evidence", "span_kind": "RETRIEVER", "attributes": {}},
+        {"name": "answer.generate", "span_kind": "CHAIN", "attributes": {}},
+        {"name": "answer.call_model", "span_kind": "LLM", "attributes": {}},
+        {"name": "answer.citation_check", "span_kind": "CHAIN", "attributes": {}},
+    ]
+
+    assert module.validate_span_records(records, expected_run_id="run-123") == []
+
+
+def test_validate_phoenix_trace_accepts_phoenix_dataframe_attribute_columns():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_dataframe_columns")
+    records = [
+        {
+            "name": "imperial_rag.query",
+            "span_kind": "CHAIN",
+            "context.trace_id": "trace-1",
+            "attributes.imperial": {
+                "trace_run_id": "run-123",
+                "git_sha": "abc1234",
+                "trace_suppress_internals": True,
+                "trace_auto_instrument": False,
+                "phoenix_project": "imperial-rag-readable",
+            },
+        },
+        {"name": "retrieval", "span_kind": "CHAIN", "context.trace_id": "trace-1"},
+        {"name": "retrieval.vector_search", "span_kind": "RETRIEVER", "context.trace_id": "trace-1"},
+        {"name": "retrieval.keyword_search", "span_kind": "RETRIEVER", "context.trace_id": "trace-1"},
+        {"name": "retrieval.rerank", "span_kind": "RERANKER", "context.trace_id": "trace-1"},
+        {"name": "retrieval.final_evidence", "span_kind": "RETRIEVER", "context.trace_id": "trace-1"},
+        {"name": "answer.generate", "span_kind": "CHAIN", "context.trace_id": "trace-1"},
+        {"name": "answer.call_model", "span_kind": "LLM", "context.trace_id": "trace-1"},
+        {"name": "answer.citation_check", "span_kind": "CHAIN", "context.trace_id": "trace-1"},
+    ]
+
+    selected = module._select_trace_records(records, run_id="run-123")
+
+    assert [record["name"] for record in selected] == [record["name"] for record in records]
+    assert module.validate_span_records(selected, expected_run_id="run-123") == []
+
+
+def test_validate_phoenix_trace_rejects_stale_noise_and_missing_provenance():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_failures")
+    records = [
+        {
+            "name": "imperial_rag.query",
+            "span_kind": "CHAIN",
+            "attributes": {"imperial.trace_run_id": "run-123"},
+        },
+        {"name": "LangGraph", "span_kind": "CHAIN", "attributes": {}},
+        {"name": "retrieval", "span_kind": "CHAIN", "attributes": {}},
+    ]
+
+    errors = module.validate_span_records(records, expected_run_id="run-123")
+
+    assert "forbidden stale/internal span present: LangGraph" in errors
+    assert "missing required span: retrieval.vector_search" in errors
+    assert "root span missing provenance attribute: imperial.git_sha" in errors
 
 
 def test_query_script_logs_safe_completion_fields(monkeypatch, capsys):

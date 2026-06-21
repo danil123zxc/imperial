@@ -48,6 +48,17 @@ def test_runtime_query_wraps_workflow_in_chain_span(monkeypatch):
             }
 
     monkeypatch.setattr("imperial_rag.runtime.trace_pipeline_step", fake_trace_pipeline_step)
+    monkeypatch.setattr(
+        "imperial_rag.runtime.trace_provenance_attributes",
+        lambda settings, run_id=None: {
+            "imperial.trace_run_id": run_id,
+            "imperial.phoenix_project": settings.phoenix_project_name,
+            "imperial.git_sha": "abc1234",
+            "imperial.trace_auto_instrument": False,
+            "imperial.trace_suppress_internals": True,
+        },
+    )
+    monkeypatch.setattr("imperial_rag.runtime._new_trace_run_id", lambda: "run-123")
     runtime = Runtime(settings=Settings(), workflow=FakeWorkflow())
 
     assert runtime.query("Что делать с браком?")["answer"] == "Оформить акт. [S1]"
@@ -60,6 +71,11 @@ def test_runtime_query_wraps_workflow_in_chain_span(monkeypatch):
                 "imperial.step": "run",
                 "imperial.trace_schema_version": "rag-v2",
                 "runtime.workspace_root": "/Users/danil/Public/imperial",
+                "imperial.trace_run_id": "run-123",
+                "imperial.phoenix_project": "imperial-rag",
+                "imperial.git_sha": "abc1234",
+                "imperial.trace_auto_instrument": False,
+                "imperial.trace_suppress_internals": True,
             },
         },
         {

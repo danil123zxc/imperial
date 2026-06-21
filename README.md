@@ -232,6 +232,14 @@ uv run python scripts/query.py "question text" --trace-phoenix
 uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --trace-phoenix
 ```
 
+For a clean readability smoke check, set a run marker, generate one fresh query, then validate that Phoenix received the
+compact trace tree and root provenance:
+
+```bash
+IMPERIAL_RAG_TRACE_RUN_ID=readability-smoke uv run python scripts/query.py "question text" --trace-phoenix
+uv run python scripts/validate_phoenix_trace.py --run-id readability-smoke
+```
+
 Query traces use a domain-first hierarchy: `imperial_rag.query` contains retrieval and answer phases,
 retrieval has child spans for vector search, keyword search, reranking, and final evidence selection, and answer
 generation has child spans for the model call and citation check. Merge/fusion counts stay on the parent
@@ -396,6 +404,8 @@ Common settings:
 - `PHOENIX_CLIENT_ENDPOINT`: Phoenix client/UI endpoint.
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_SESSION_ID`: optional CLI Phoenix `session.id`; omitted values generate a per-run `cli_<uuid>`.
+- `IMPERIAL_RAG_TRACE_RUN_ID`: optional fixed root-span run marker for Phoenix filtering/validation; omitted query runs generate `query_<uuid>`.
+- `IMPERIAL_RAG_GIT_SHA`, `IMPERIAL_RAG_IMAGE_DIGEST`, `IMPERIAL_RAG_IMAGE_TAG`, and `IMPERIAL_RAG_APP_VERSION`: optional build/runtime provenance fields stamped onto root query spans when present; set `IMPERIAL_RAG_GIT_SHA` for exact container provenance, otherwise container traces mark the SHA as `unavailable`.
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.final_evidence` when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`: opt into Phoenix/OpenInference framework auto-instrumentation for deep debugging; defaults to `false` so manual domain spans define the summary trace tree.

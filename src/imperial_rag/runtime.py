@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any, Protocol
+import uuid
 
 from imperial_rag.answering import build_strict_messages
 from imperial_rag.config import Settings
@@ -10,7 +12,7 @@ from imperial_rag.indexing import make_qdrant_store
 from imperial_rag.observability import log_event
 from imperial_rag.providers import QwenProviderSettings, create_chat_model, dashscope_configured, vector_metadata_matches_config
 from imperial_rag.retrieval import RetrievalService, RetrievalSettings
-from imperial_rag.tracing import imperial_trace_attributes, trace_pipeline_step
+from imperial_rag.tracing import imperial_trace_attributes, trace_pipeline_step, trace_provenance_attributes
 from imperial_rag.workflows import build_query_workflow
 
 MODEL_PROVIDER_ERROR_TEXT = "The model provider failed while answering. Check local logs and provider credentials, then try again."
@@ -117,13 +119,17 @@ class Runtime:
     dependencies: QueryDependencies | None = None
 
     def query(self, question: str) -> dict:
+        run_id = _new_trace_run_id()
         with trace_pipeline_step(
             "imperial_rag.query",
             question,
             attributes=imperial_trace_attributes(
                 "query",
                 "run",
-                {"runtime.workspace_root": str(self.settings.workspace_root)},
+                {
+                    "runtime.workspace_root": str(self.settings.workspace_root),
+                    **trace_provenance_attributes(self.settings, run_id=run_id),
+                },
             ),
         ) as span:
             result = self.query_workflow().invoke({"question": question})
@@ -203,6 +209,13 @@ def build_live_query_workflow(settings: Settings | None = None):
 
 def _semantic_search_enabled() -> bool:
     return dashscope_configured()
+
+
+def _new_trace_run_id() -> str:
+    explicit = os.environ.get("IMPERIAL_RAG_TRACE_RUN_ID", "").strip()
+    if explicit:
+        return explicit
+    return f"query_{uuid.uuid4().hex}"
 
 
 def _qwen_llm_trace_attributes() -> dict[str, Any]:
