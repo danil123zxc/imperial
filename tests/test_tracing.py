@@ -802,10 +802,43 @@ def test_trace_user_id_from_email_uses_local_hmac_secret(monkeypatch) -> None:
 
 def test_trace_candidate_documents_enabled_reads_env(monkeypatch) -> None:
     monkeypatch.delenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     assert tracing_module.trace_candidate_documents_enabled() is False
 
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "true")
     assert tracing_module.trace_candidate_documents_enabled() is True
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "false")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "retrieval_debug")
+    assert tracing_module.trace_candidate_documents_enabled() is True
+
+
+def test_trace_mode_defaults_to_compact_and_accepts_retrieval_debug(monkeypatch) -> None:
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
+    assert tracing_module.trace_mode() == "compact"
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "retrieval_debug")
+    assert tracing_module.trace_mode() == "retrieval_debug"
+
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "unexpected")
+    assert tracing_module.trace_mode() == "compact"
+
+
+def test_retrieval_debug_redaction_hides_candidate_document_content(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    document = type("Document", (), {"page_content": "private corpus text", "metadata": {"chunk_id": "chunk-1"}})()
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "retrieval_debug")
+    monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_TEXT", "true")
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
+
+    with tracing_module.trace_retrieval_step("retrieval.vector_search", "private query") as span:
+        span.set_retrieval_documents([document])
+
+    recorded_span = records[0]["span"]
+    assert tracing_module.trace_candidate_documents_enabled() is True
+    assert "retrieval.documents.0.document.content" not in recorded_span.attributes
+    assert recorded_span.attributes["retrieval.documents.0.document.id"] == "chunk-1"
 
 
 def test_trace_internal_spans_suppressed_defaults_to_true(monkeypatch) -> None:
@@ -826,6 +859,7 @@ def test_trace_provenance_attributes_include_runtime_identity_and_flags(monkeypa
     monkeypatch.setenv("IMPERIAL_RAG_APP_VERSION", "2026.06.22")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT", "false")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", "true")
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "compact")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", "false")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE", "false")
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_FULL_METADATA", "false")
@@ -844,6 +878,7 @@ def test_trace_provenance_attributes_include_runtime_identity_and_flags(monkeypa
         "imperial.image_digest": "sha256:deadbeef",
         "imperial.image_tag": "imperial:test",
         "imperial.app_version": "2026.06.22",
+        "imperial.trace_mode": "compact",
         "imperial.trace_auto_instrument": False,
         "imperial.trace_suppress_internals": True,
         "imperial.trace_candidate_documents": False,

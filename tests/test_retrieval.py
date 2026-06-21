@@ -420,6 +420,8 @@ def test_retrieval_service_returns_final_evidence_and_diagnostics(monkeypatch):
 def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     records = capture_retrieval_spans(monkeypatch)
     vector_docs = [
         Document(
@@ -471,12 +473,18 @@ def test_retrieval_service_traces_each_retrieval_step(monkeypatch):
     assert records[1]["output"]["top_document_ids"] == ["v"]
     assert records[1]["output"]["top_document_files"] == ["vector.docx"]
     assert records[1]["output"]["top_documents"][0]["citation_id"] == "v"
-    assert records[1]["set_attributes"] == {}
+    assert records[1]["set_attributes"] == {
+        "retrieval.documents.omitted": True,
+        "retrieval.documents.omitted_reason": "candidate_tracing_disabled",
+    }
     assert records[2]["output"]["status"] == "ok"
     assert records[2]["output"]["count"] == 1
     assert records[2]["output"]["top_document_ids"] == ["k"]
     assert records[2]["output"]["top_document_files"] == ["return.docx"]
-    assert records[2]["set_attributes"] == {}
+    assert records[2]["set_attributes"] == {
+        "retrieval.documents.omitted": True,
+        "retrieval.documents.omitted_reason": "candidate_tracing_disabled",
+    }
     assert records[3]["kind"] == "RERANKER"
     assert records[3]["attributes"]["imperial.phase"] == "retrieval"
     assert records[3]["attributes"]["imperial.step"] == "rerank"
@@ -603,6 +611,37 @@ def test_retrieval_service_traces_candidate_documents_only_when_enabled(monkeypa
     assert records[1]["set_attributes"]["retrieval.documents.0.document.content"] == "vector return"
     assert records[2]["set_attributes"]["retrieval.documents.0.document.id"] == "keyword-chunk"
     assert records[2]["set_attributes"]["retrieval.documents.0.document.content"] == "keyword return"
+
+
+def test_retrieval_service_traces_candidate_documents_in_retrieval_debug_mode(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS", raising=False)
+    monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "retrieval_debug")
+    records = capture_retrieval_spans(monkeypatch)
+    vector_docs = [
+        Document(page_content="vector debug return", metadata={"citation_id": "v", "chunk_id": "vector-chunk"})
+    ]
+    keyword_docs = [
+        Document(
+            page_content="keyword debug return",
+            metadata={"citation_id": "k", "chunk_id": "keyword-chunk", "_keyword_rank": 0},
+        )
+    ]
+    service = RetrievalService(
+        vector_search=FakeVectorSearch(vector_docs),
+        keyword_search=FakeKeywordSearch(keyword_docs),
+        settings=RetrievalSettings(rerank_top_n=1),
+    )
+
+    service.retrieve("возврат брака")
+
+    assert records[1]["attributes"]["imperial.trace_mode"] == "retrieval_debug"
+    assert records[1]["set_attributes"]["retrieval.documents.0.document.id"] == "vector-chunk"
+    assert records[1]["set_attributes"]["retrieval.documents.0.document.content"] == "vector debug return"
+    assert records[2]["attributes"]["imperial.trace_mode"] == "retrieval_debug"
+    assert records[2]["set_attributes"]["retrieval.documents.0.document.id"] == "keyword-chunk"
+    assert records[2]["set_attributes"]["retrieval.documents.0.document.content"] == "keyword debug return"
 
 
 def test_retrieval_service_traces_search_fallbacks(monkeypatch):

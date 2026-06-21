@@ -35,9 +35,14 @@ FORBIDDEN_SPAN_NAMES = {
 ROOT_PROVENANCE_ATTRIBUTES = (
     "imperial.trace_run_id",
     "imperial.git_sha",
+    "imperial.trace_mode",
     "imperial.trace_suppress_internals",
     "imperial.trace_auto_instrument",
     "imperial.phoenix_project",
+)
+RETRIEVAL_DOCUMENT_SPANS = (
+    "retrieval.vector_search",
+    "retrieval.keyword_search",
 )
 
 
@@ -53,7 +58,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     project_name = args.project_name or settings.phoenix_project_name
     base_url = args.base_url or settings.phoenix_client_endpoint
     records = fetch_latest_span_records(project_name=project_name, base_url=base_url, run_id=args.run_id)
-    errors = validate_span_records(records, expected_run_id=args.run_id)
+    errors = validate_span_records(
+        records,
+        expected_run_id=args.run_id,
+        require_retrieval_documents=args.require_retrieval_documents,
+    )
     if args.json:
         print(json.dumps({"ok": not errors, "errors": errors, "span_count": len(records)}, ensure_ascii=False))
     elif errors:
@@ -69,6 +78,7 @@ def validate_span_records(
     records: Sequence[Mapping[str, Any]],
     *,
     expected_run_id: str | None = None,
+    require_retrieval_documents: bool = False,
 ) -> list[str]:
     normalized = [_normalize_record(record) for record in records]
     errors: list[str] = []
@@ -99,6 +109,13 @@ def validate_span_records(
         )
     if root_attrs.get("imperial.trace_suppress_internals") is not True:
         errors.append("root span must have imperial.trace_suppress_internals=true")
+    if require_retrieval_documents:
+        for name in RETRIEVAL_DOCUMENT_SPANS:
+            record = records_by_name.get(name)
+            if record is None:
+                continue
+            if not _has_retrieval_document_id_and_content(record["attributes"]):
+                errors.append(f"span {name} missing retrieval document id/content attributes")
     return errors
 
 
@@ -189,6 +206,49 @@ def _record_attributes(record: Mapping[str, Any]) -> dict[str, Any]:
     return attrs
 
 
+def _has_retrieval_document_id_and_content(attrs: Mapping[str, Any]) -> bool:
+    has_id = any(
+        key.startswith("retrieval.documents.") and key.endswith(".document.id")
+        for key in attrs
+    )
+    has_content = any(
+        key.startswith("retrieval.documents.") and key.endswith(".document.content")
+        for key in attrs
+    )
+    if has_id and has_content:
+        return True
+
+    documents = _coerce_documents(attrs.get("retrieval.documents"))
+    return any(_document_has_id(document) and _document_has_content(document) for document in documents)
+
+
+def _coerce_documents(value: Any) -> list[Any]:
+    if isinstance(value, str) and value.strip():
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    return list(value) if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)) else []
+
+
+def _document_has_id(document: Any) -> bool:
+    if not isinstance(document, Mapping):
+        return False
+    nested = document.get("document")
+    if isinstance(nested, Mapping):
+        return bool(nested.get("id") or nested.get("document.id"))
+    return bool(document.get("document.id") or document.get("id"))
+
+
+def _document_has_content(document: Any) -> bool:
+    if not isinstance(document, Mapping):
+        return False
+    nested = document.get("document")
+    if isinstance(nested, Mapping):
+        return bool(nested.get("content") or nested.get("document.content"))
+    return bool(document.get("document.content") or document.get("content"))
+
+
 def _is_missing(value: Any) -> bool:
     if value is None:
         return True
@@ -219,6 +279,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--project-name", help="Phoenix project name; defaults to Settings().phoenix_project_name.")
     parser.add_argument("--base-url", help="Phoenix client URL; defaults to Settings().phoenix_client_endpoint.")
     parser.add_argument("--run-id", help="Validate the trace containing this imperial.trace_run_id.")
+    parser.add_argument(
+        "--require-retrieval-documents",
+        action="store_true",
+        help="Require vector and keyword retriever spans to include retrieved document id/content attributes.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser.parse_args(argv)
 

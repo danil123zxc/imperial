@@ -240,6 +240,22 @@ IMPERIAL_RAG_TRACE_RUN_ID=readability-smoke uv run python scripts/query.py "ques
 uv run python scripts/validate_phoenix_trace.py --run-id readability-smoke
 ```
 
+To inspect the real chunks returned by vector and keyword retrieval in Phoenix, run a bounded retrieval-debug trace:
+
+```bash
+IMPERIAL_RAG_TRACE_RUN_ID=retrieval-debug-smoke \
+IMPERIAL_RAG_TRACE_MODE=retrieval_debug \
+IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT=5 \
+IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS=1200 \
+IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=false \
+uv run python scripts/query.py "question text" --trace-phoenix
+uv run python scripts/validate_phoenix_trace.py --run-id retrieval-debug-smoke --require-retrieval-documents
+```
+
+For Streamlit or Docker verification, set the same environment on the running app and restart it before querying;
+already-running processes do not reload `.env` changes. In Compose, use `docker compose restart app`, then ask a fresh
+question and inspect `retrieval.vector_search` and `retrieval.keyword_search` in Phoenix.
+
 Query traces use a domain-first hierarchy: `imperial_rag.query` contains retrieval and answer phases,
 retrieval has child spans for vector search, keyword search, reranking, and final evidence selection, and answer
 generation has child spans for the model call and citation check. Merge/fusion counts stay on the parent
@@ -247,9 +263,10 @@ generation has child spans for the model call and citation check. Merge/fusion c
 inside those wrapper spans; set `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=false` when you need to inspect those
 LangChain internals. For rich local debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full
 final evidence documents to the Phoenix-native `retrieval.final_evidence` document panel. Candidate spans remain
-compact. `OPENINFERENCE_HIDE_*` redaction settings still override document text and outputs.
+compact unless `IMPERIAL_RAG_TRACE_MODE=retrieval_debug` or `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS=true` is set.
+`OPENINFERENCE_HIDE_*` redaction settings still override document text and outputs.
 
-Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_*` and `IMPERIAL_RAG_TRACE_*` flags, spans can include raw user questions, model prompts, model answers, selected evidence text, and document metadata. Treat Phoenix access as access to private corpus-derived data.
+Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_*` and `IMPERIAL_RAG_TRACE_*` flags, spans can include raw user questions, model prompts, model answers, selected evidence text, candidate retrieval chunks, and document metadata. Treat Phoenix access as access to private corpus-derived data, and take care before sharing screenshots or exporting debug traces.
 
 ### Local Logs
 
@@ -408,6 +425,8 @@ Common settings:
 - `IMPERIAL_RAG_GIT_SHA`, `IMPERIAL_RAG_IMAGE_DIGEST`, `IMPERIAL_RAG_IMAGE_TAG`, and `IMPERIAL_RAG_APP_VERSION`: optional build/runtime provenance fields stamped onto root query spans when present; set `IMPERIAL_RAG_GIT_SHA` for exact container provenance, otherwise container traces mark the SHA as `unavailable`.
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.final_evidence` when explicitly enabled.
+- `IMPERIAL_RAG_TRACE_MODE`: `compact` by default; set `retrieval_debug` to attach bounded vector/keyword candidate chunks to Phoenix retriever document panels.
+- `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS`: low-level override that also attaches bounded vector/keyword candidate chunks when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`: opt into Phoenix/OpenInference framework auto-instrumentation for deep debugging; defaults to `false` so manual domain spans define the summary trace tree.
 - `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS`: suppress framework child spans inside Imperial wrapper spans by default; set to `false` for targeted LangChain internals debugging.
 - `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.

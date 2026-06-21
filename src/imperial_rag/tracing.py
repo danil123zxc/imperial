@@ -46,6 +46,9 @@ _JSON_MIME_TYPE = "application/json"
 _IMPERIAL_PHASE = "imperial.phase"
 _IMPERIAL_STEP = "imperial.step"
 _IMPERIAL_TRACE_SCHEMA_VERSION = "imperial.trace_schema_version"
+_IMPERIAL_TRACE_MODE = "imperial.trace_mode"
+_TRACE_MODE_COMPACT = "compact"
+_TRACE_MODE_RETRIEVAL_DEBUG = "retrieval_debug"
 _TRACE_METADATA_ALLOWLIST = frozenset(
     {
         "citation_id",
@@ -233,6 +236,8 @@ def imperial_trace_attributes(
         _IMPERIAL_STEP: step,
         _IMPERIAL_TRACE_SCHEMA_VERSION: _TRACE_SCHEMA_VERSION_VALUE,
     }
+    if phase == "retrieval":
+        trace_attributes[_IMPERIAL_TRACE_MODE] = trace_mode()
     trace_attributes.update(dict(attributes or {}))
     return trace_attributes
 
@@ -248,6 +253,7 @@ def trace_provenance_attributes(settings: Settings | None = None, *, run_id: str
         "imperial.image_digest": _env_text("IMPERIAL_RAG_IMAGE_DIGEST"),
         "imperial.image_tag": _env_text("IMPERIAL_RAG_IMAGE_TAG"),
         "imperial.app_version": _env_text("IMPERIAL_RAG_APP_VERSION"),
+        "imperial.trace_mode": trace_mode(),
         "imperial.trace_auto_instrument": _env_flag("IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT"),
         "imperial.trace_suppress_internals": trace_internal_spans_suppressed(),
         "imperial.trace_candidate_documents": trace_candidate_documents_enabled(),
@@ -265,7 +271,14 @@ def trace_provenance_attributes(settings: Settings | None = None, *, run_id: str
 
 
 def trace_candidate_documents_enabled() -> bool:
-    return _env_flag("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS")
+    return _env_flag("IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS") or trace_mode() == _TRACE_MODE_RETRIEVAL_DEBUG
+
+
+def trace_mode() -> str:
+    mode = os.environ.get("IMPERIAL_RAG_TRACE_MODE", "").strip().lower()
+    if mode in {_TRACE_MODE_COMPACT, _TRACE_MODE_RETRIEVAL_DEBUG}:
+        return mode
+    return _TRACE_MODE_COMPACT
 
 
 def trace_internal_spans_suppressed() -> bool:

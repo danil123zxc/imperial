@@ -60,6 +60,7 @@ def test_validate_phoenix_trace_accepts_compact_trace_with_provenance():
             "attributes": {
                 "imperial.trace_run_id": "run-123",
                 "imperial.git_sha": "abc1234",
+                "imperial.trace_mode": "compact",
                 "imperial.trace_suppress_internals": True,
                 "imperial.trace_auto_instrument": False,
                 "imperial.phoenix_project": "imperial-rag-readable",
@@ -88,6 +89,7 @@ def test_validate_phoenix_trace_accepts_phoenix_dataframe_attribute_columns():
             "attributes.imperial": {
                 "trace_run_id": "run-123",
                 "git_sha": "abc1234",
+                "trace_mode": "compact",
                 "trace_suppress_internals": True,
                 "trace_auto_instrument": False,
                 "phoenix_project": "imperial-rag-readable",
@@ -107,6 +109,43 @@ def test_validate_phoenix_trace_accepts_phoenix_dataframe_attribute_columns():
 
     assert [record["name"] for record in selected] == [record["name"] for record in records]
     assert module.validate_span_records(selected, expected_run_id="run-123") == []
+
+
+def test_validate_phoenix_trace_can_require_retrieval_documents():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_retrieval_documents")
+    records = _compact_trace_records(
+        vector_attrs={
+            "retrieval.documents.0.document.id": "vector-chunk",
+            "retrieval.documents.0.document.content": "vector content",
+        },
+        keyword_attrs={
+            "retrieval.documents.0.document.id": "keyword-chunk",
+            "retrieval.documents.0.document.content": "keyword content",
+        },
+    )
+
+    assert module.validate_span_records(
+        records,
+        expected_run_id="run-123",
+        require_retrieval_documents=True,
+    ) == []
+
+
+def test_validate_phoenix_trace_reports_missing_retrieval_documents():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_missing_documents")
+    records = _compact_trace_records(
+        vector_attrs={"retrieval.documents.0.document.id": "vector-chunk"},
+        keyword_attrs={},
+    )
+
+    errors = module.validate_span_records(
+        records,
+        expected_run_id="run-123",
+        require_retrieval_documents=True,
+    )
+
+    assert "span retrieval.vector_search missing retrieval document id/content attributes" in errors
+    assert "span retrieval.keyword_search missing retrieval document id/content attributes" in errors
 
 
 def test_validate_phoenix_trace_rejects_stale_noise_and_missing_provenance():
@@ -220,6 +259,31 @@ def test_ingest_script_logs_failed_file_completion(monkeypatch, capsys):
     assert events[0][1]["status"] == "failed_files"
     assert events[0][1]["total_files"] == 2
     assert events[0][1]["chunk_count"] == 8
+
+
+def _compact_trace_records(*, vector_attrs=None, keyword_attrs=None):
+    return [
+        {
+            "name": "imperial_rag.query",
+            "span_kind": "CHAIN",
+            "attributes": {
+                "imperial.trace_run_id": "run-123",
+                "imperial.git_sha": "abc1234",
+                "imperial.trace_mode": "retrieval_debug",
+                "imperial.trace_suppress_internals": True,
+                "imperial.trace_auto_instrument": False,
+                "imperial.phoenix_project": "imperial-rag-readable",
+            },
+        },
+        {"name": "retrieval", "span_kind": "CHAIN", "attributes": {}},
+        {"name": "retrieval.vector_search", "span_kind": "RETRIEVER", "attributes": dict(vector_attrs or {})},
+        {"name": "retrieval.keyword_search", "span_kind": "RETRIEVER", "attributes": dict(keyword_attrs or {})},
+        {"name": "retrieval.rerank", "span_kind": "RERANKER", "attributes": {}},
+        {"name": "retrieval.final_evidence", "span_kind": "RETRIEVER", "attributes": {}},
+        {"name": "answer.generate", "span_kind": "CHAIN", "attributes": {}},
+        {"name": "answer.call_model", "span_kind": "LLM", "attributes": {}},
+        {"name": "answer.citation_check", "span_kind": "CHAIN", "attributes": {}},
+    ]
 
 
 def test_ingest_ocr_gate_uses_dashscope_key(monkeypatch):

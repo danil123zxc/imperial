@@ -120,6 +120,8 @@ class HybridRetriever:
             )
             if trace_candidate_documents_enabled():
                 span.set_retrieval_documents(vector_docs)
+            elif vector_docs:
+                _set_candidate_documents_omitted(span)
 
         with trace_retrieval_step(
             "retrieval.keyword_search",
@@ -154,6 +156,8 @@ class HybridRetriever:
             )
             if trace_candidate_documents_enabled():
                 span.set_retrieval_documents(keyword_docs)
+            elif keyword_docs:
+                _set_candidate_documents_omitted(span)
 
         return RetrievalCandidateResult(
             vector_docs=vector_docs,
@@ -626,6 +630,11 @@ def _set_documents_span_output(span: Any, documents: list[Document], **metadata:
     if previews:
         output["top_documents"] = previews
     span.set_output(output)
+
+
+def _set_candidate_documents_omitted(span: Any) -> None:
+    span.set_attribute("retrieval.documents.omitted", True)
+    span.set_attribute("retrieval.documents.omitted_reason", "candidate_tracing_disabled")
 
 
 def _document_summary_output(documents: list[Document], *, limit: int = 5) -> dict[str, Any]:
