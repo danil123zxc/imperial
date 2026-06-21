@@ -9,9 +9,9 @@ from langchain_classic.retrievers import EnsembleRetriever
 
 from imperial_rag.config import env_float, env_int, env_str
 from imperial_rag.document_ids import content_key, document_key, metadata_or_content_id
-from imperial_rag.keyword import searchable_document_text
-from imperial_rag.providers import QwenProviderSettings, create_reranker, dashscope_configured
-from imperial_rag.tracing import (
+from imperial_rag.retrieval.lexical import searchable_document_text
+from imperial_rag.integrations.dashscope import QwenProviderSettings, create_reranker, dashscope_configured
+from imperial_rag.observability.phoenix import (
     imperial_trace_attributes,
     retrieval_documents_preview,
     suppress_internal_tracing,

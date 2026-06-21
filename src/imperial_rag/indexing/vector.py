@@ -11,7 +11,7 @@ from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
 from imperial_rag.config import Settings
-from imperial_rag.providers import (
+from imperial_rag.integrations.dashscope import (
     QwenProviderSettings,
     create_embeddings,
     ensure_vector_metadata_compatible,
