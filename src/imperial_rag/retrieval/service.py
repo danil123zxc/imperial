@@ -148,12 +148,14 @@ class HybridRetriever:
                 )
             else:
                 keyword_scores_available = False
+            keyword_match_mode = _keyword_match_mode(keyword_docs)
             _set_documents_span_output(
                 span,
                 keyword_docs,
                 status=keyword_status,
                 fallbacks=fallbacks,
                 keyword_scores_available=keyword_scores_available,
+                keyword_match_mode=keyword_match_mode,
             )
             if trace_candidate_documents_enabled():
                 span.set_retrieval_documents(keyword_docs)
@@ -170,6 +172,7 @@ class HybridRetriever:
                 "keyword_search_status": keyword_status,
                 **_vector_error_diagnostics(self.vector_search),
                 "keyword_scores_available": keyword_scores_available,
+                "keyword_match_mode": keyword_match_mode,
                 "fallbacks": fallbacks,
             },
         )
@@ -687,6 +690,21 @@ def _set_documents_span_output(span: Any, documents: list[Document], **metadata:
 def _set_candidate_documents_omitted(span: Any) -> None:
     span.set_attribute("retrieval.documents.omitted", True)
     span.set_attribute("retrieval.documents.omitted_reason", "candidate_tracing_disabled")
+
+
+def _keyword_match_mode(documents: list[Document]) -> str | None:
+    modes = sorted(
+        {
+            str(document.metadata.get("_keyword_match_mode"))
+            for document in documents
+            if document.metadata.get("_keyword_match_mode") is not None
+        }
+    )
+    if not modes:
+        return None
+    if len(modes) == 1:
+        return modes[0]
+    return f"mixed:{','.join(modes)}"
 
 
 def _compact_fusion_span_output(

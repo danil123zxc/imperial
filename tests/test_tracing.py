@@ -403,6 +403,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
                 "page_number": 7,
                 "sheet_name": "Returns",
                 "_keyword_score": -2.5,
+                "_keyword_match_mode": "relaxed_drop_one",
                 "file_path": "/private/docs/return.docx",
                 "file_hash": "secret-hash",
                 "parent_folder": "/private/docs",
@@ -425,6 +426,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
         "page_number": 7,
         "sheet_name": "Returns",
         "_keyword_score": -2.5,
+        "_keyword_match_mode": "relaxed_drop_one",
     }
     assert recorded_span.attributes["retrieval.documents.0.document.score"] == -2.5
 

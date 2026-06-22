@@ -50,6 +50,15 @@ def test_live_elasticsearch_keyword_index_roundtrip() -> None:
                     },
                 ),
                 Document(
+                    page_content="Регламент по ценоизменению",
+                    metadata={
+                        "citation_id": "price-policy",
+                        "file_name": "Регламент ПО ЦЕНОИЗМЕНЕНИЮ на подпись.docx",
+                        "section_heading": "Общие положения",
+                        "source_type": "body",
+                    },
+                ),
+                Document(
                     page_content="Смена начинается в 09:00",
                     metadata={
                         "citation_id": "sheet",
@@ -64,12 +73,15 @@ def test_live_elasticsearch_keyword_index_roundtrip() -> None:
         )
         strict_results = index.search("возврат брака", k=5)
         relaxed_results = index.search("Как оформить возврат брака из магазина?", k=5)
+        two_token_relaxed_results = index.search("Как регулируется ценоизменение?", k=5)
         sheet_results = index.search("график", k=5)
         page_results = index.search("2", k=5)
         retriever_results = index.retriever.invoke("возврат брака", limit=5)
 
         assert [result.metadata["citation_id"] for result in strict_results[:1]] == ["store"]
         assert [result.metadata["citation_id"] for result in relaxed_results[:1]] == ["store"]
+        assert [result.metadata["citation_id"] for result in two_token_relaxed_results[:1]] == ["price-policy"]
+        assert two_token_relaxed_results[0].metadata["_keyword_match_mode"] == "relaxed_drop_one"
         assert [result.metadata["citation_id"] for result in sheet_results[:1]] == ["sheet"]
         assert [result.metadata["citation_id"] for result in page_results[:1]] == ["sheet"]
         assert relaxed_results[0].metadata["_keyword_rank"] == 0

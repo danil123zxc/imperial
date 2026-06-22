@@ -65,6 +65,17 @@ def test_relaxed_query_token_sets_are_bounded_and_include_tail_pairs() -> None:
     assert ["термин18", "термин19"] in relaxed
 
 
+def test_relaxed_query_token_sets_keeps_one_token_queries_strict() -> None:
+    assert relaxed_query_token_sets(["ценоизменен"]) == []
+
+
+def test_relaxed_query_token_sets_recovers_two_token_domain_queries() -> None:
+    tokens = keyword_query_tokens("Как регулируется ценоизменение?")
+
+    assert tokens == ["регулируетс", "ценоизменен"]
+    assert relaxed_query_token_sets(tokens) == [["ценоизменен"], ["регулируетс"]]
+
+
 def test_searchable_document_text_includes_metadata_fields() -> None:
     document = Document(
         page_content="Регламент возврата брака",

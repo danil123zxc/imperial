@@ -297,6 +297,34 @@ def test_hybrid_retriever_reports_keyword_scores_unavailable_when_scores_are_abs
     assert result.diagnostics["keyword_scores_available"] is False
 
 
+def test_hybrid_retriever_traces_keyword_match_mode(monkeypatch):
+    monkeypatch.delenv("COHERE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    records = capture_retrieval_spans(monkeypatch)
+    vector = FakeVectorSearch([])
+    keyword = FakeKeywordSearch(
+        [
+            Document(
+                page_content="Регламент по ценоизменению",
+                metadata={
+                    "citation_id": "price",
+                    "_keyword_score": 29.442,
+                    "_keyword_match_mode": "relaxed_drop_one",
+                },
+            )
+        ]
+    )
+
+    result = HybridRetriever(vector_search=vector, keyword_search=keyword, settings=RetrievalSettings()).retrieve(
+        "Как регулируется ценоизменение?"
+    )
+
+    assert result.diagnostics["keyword_search_status"] == "ok"
+    assert result.diagnostics["keyword_match_mode"] == "relaxed_drop_one"
+    keyword_record = next(record for record in records if record["name"] == "retrieval.keyword_search")
+    assert keyword_record["output"]["keyword_match_mode"] == "relaxed_drop_one"
+
+
 def test_hybrid_retriever_degrades_when_vector_search_fails():
     class BrokenVector:
         def max_marginal_relevance_search(self, query, k, fetch_k, lambda_mult):

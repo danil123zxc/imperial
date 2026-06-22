@@ -21,6 +21,7 @@ from imperial_rag.indexing import stable_chunk_id
 from imperial_rag.keyword import (
     ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
     build_elasticsearch_token_query,
+    relaxed_query_token_sets,
 )
 
 
@@ -460,6 +461,73 @@ def test_search_uses_relaxed_queries_when_strict_search_misses(tmp_path: Path) -
         client.search_calls[1]["body"]["query"]["bool"]["must"]
         != client.search_calls[0]["body"]["query"]["bool"]["must"]
     )
+
+
+def test_search_with_scores_uses_two_token_relaxed_fallback_with_match_mode(tmp_path: Path) -> None:
+    client = FakeClient()
+    mark_index_exists(client)
+    client.search_responses.extend(
+        [
+            {"hits": {"hits": []}},
+            {
+                "hits": {
+                    "hits": [
+                        {
+                            "_id": "price-policy",
+                            "_score": 29.442,
+                            "_source": {
+                                "text": "Регламент по ценоизменению",
+                                "metadata": {"citation_id": "price"},
+                            },
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    index = make_index(tmp_path, client)
+
+    hits = index.search_with_scores("Как регулируется ценоизменение?", limit=1)
+
+    assert relaxed_query_token_sets(["регулируетс", "ценоизменен"]) == [
+        ["ценоизменен"],
+        ["регулируетс"],
+    ]
+    assert [hit.document.metadata["citation_id"] for hit in hits] == ["price"]
+    assert hits[0].score == 29.442
+    assert hits[0].document.metadata["_keyword_rank"] == 0
+    assert hits[0].document.metadata["_keyword_score"] == 29.442
+    assert hits[0].document.metadata["_retrieval_id"] == "price"
+    assert hits[0].document.metadata["_keyword_match_mode"] == "relaxed_drop_one"
+    assert len(client.search_calls) == 2
+    assert_fuzzy_token_query_body(client.search_calls[0]["body"], ["регулируетс", "ценоизменен"], size=1)
+    assert_fuzzy_token_query_body(client.search_calls[1]["body"], ["ценоизменен"], size=1)
+
+
+def test_search_with_scores_marks_strict_keyword_hits(tmp_path: Path) -> None:
+    client = FakeClient()
+    mark_index_exists(client)
+    client.search_responses.append(
+        {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 29.442,
+                        "_source": {
+                            "text": "Регламент по ценоизменению",
+                            "metadata": {"citation_id": "price"},
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    index = make_index(tmp_path, client)
+
+    hits = index.search_with_scores("ценоизменение", limit=5)
+
+    assert [hit.document.metadata["citation_id"] for hit in hits] == ["price"]
+    assert hits[0].document.metadata["_keyword_match_mode"] == "strict"
 
 
 def test_search_with_scores_preserves_elasticsearch_metadata_boost_order(tmp_path: Path) -> None:

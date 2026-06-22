@@ -67,6 +67,7 @@ _TRACE_METADATA_ALLOWLIST = frozenset(
         "image_index",
         "relevance_score",
         "_keyword_score",
+        "_keyword_match_mode",
         "_keyword_rank",
         "_vector_rank",
         "_fusion_rank",

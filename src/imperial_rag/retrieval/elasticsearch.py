@@ -191,9 +191,14 @@ class ElasticsearchKeywordIndex:
             return []
 
         hits = self._search_tokens(query_tokens, resolved_limit)
+        match_mode = "strict"
         if not hits:
             hits = self._search_relaxed(query_tokens, resolved_limit)
-        return [self._keyword_hit(hit, rank) for rank, hit in enumerate(hits[:resolved_limit])]
+            match_mode = "relaxed_drop_one" if hits else match_mode
+        return [
+            self._keyword_hit(hit, rank, match_mode=match_mode)
+            for rank, hit in enumerate(hits[:resolved_limit])
+        ]
 
     def _create_index(self) -> None:
         if self._index_exists():
@@ -237,11 +242,12 @@ class ElasticsearchKeywordIndex:
                     return ordered_hits
         return ordered_hits
 
-    def _keyword_hit(self, hit: ElasticsearchRetrieverHit, rank: int) -> KeywordHit:
+    def _keyword_hit(self, hit: ElasticsearchRetrieverHit, rank: int, *, match_mode: str) -> KeywordHit:
         metadata = dict(hit.document.metadata or {})
         metadata["_keyword_rank"] = rank
         metadata["_keyword_score"] = hit.score
         metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
+        metadata["_keyword_match_mode"] = match_mode
         return KeywordHit(
             document=Document(page_content=hit.document.page_content, metadata=metadata),
             score=hit.score,

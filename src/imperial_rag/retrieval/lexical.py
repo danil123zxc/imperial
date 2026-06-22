@@ -126,8 +126,11 @@ def _content_query_tokens(tokens: list[str]) -> list[str]:
 
 
 def relaxed_query_token_sets(tokens: list[str]) -> list[list[str]]:
-    if len(tokens) < 3:
+    if len(tokens) < 2:
         return []
+    if len(tokens) == 2:
+        ordered_tokens = sorted(enumerate(tokens), key=lambda item: (-len(item[1]), -item[0]))
+        return [[token] for _, token in ordered_tokens]
     relaxed: list[list[str]] = []
 
     if len(tokens) <= _MAX_ONE_DROP_RELAXATION_TOKENS:
