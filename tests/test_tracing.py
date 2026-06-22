@@ -364,6 +364,29 @@ def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch)
     assert records[1]["span"].status.status_code is tracing_module.StatusCode.OK
 
 
+def test_trace_lineage_attributes_are_applied_to_embedding_children(monkeypatch) -> None:
+    records: list[dict[str, object]] = []
+
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
+
+    with tracing_module.trace_lineage_attributes(
+        {
+            "imperial.ingest_run_id": "ingest_123",
+            "imperial.corpus_version": "corpus_sha256:aaa",
+            "imperial.embedding_model": "text-embedding-v4:2048",
+            "imperial.qdrant_collection": "imperial_chunks_qwen",
+        }
+    ):
+        with tracing_module.trace_embedding_step("embedding.dashscope.batch", "document"):
+            pass
+
+    assert records[0]["name"] == "embedding.dashscope.batch"
+    assert records[0]["attributes"]["imperial.ingest_run_id"] == "ingest_123"
+    assert records[0]["attributes"]["imperial.corpus_version"] == "corpus_sha256:aaa"
+    assert records[0]["attributes"]["imperial.embedding_model"] == "text-embedding-v4:2048"
+    assert records[0]["attributes"]["imperial.qdrant_collection"] == "imperial_chunks_qwen"
+
+
 def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
@@ -878,6 +901,10 @@ def test_trace_provenance_attributes_include_runtime_identity_and_flags(monkeypa
         "imperial.image_digest": "sha256:deadbeef",
         "imperial.image_tag": "imperial:test",
         "imperial.app_version": "2026.06.22",
+        "imperial.keyword_index": "imperial_keyword_chunks",
+        "imperial.qdrant_collection": "imperial_chunks_qwen",
+        "imperial.embedding_model": "text-embedding-v4:2048",
+        "imperial.index_fresh": "unknown",
         "imperial.trace_mode": "compact",
         "imperial.trace_auto_instrument": False,
         "imperial.trace_suppress_internals": True,
@@ -892,6 +919,68 @@ def test_trace_provenance_attributes_include_runtime_identity_and_flags(monkeypa
         "openinference.hide_llm_prompts": False,
         "openinference.hide_llm_tools": True,
     }
+
+
+def test_trace_provenance_attributes_include_latest_index_lineage(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("IMPERIAL_RAG_GIT_SHA", "abc1234")
+    settings = Settings(
+        workspace_root=tmp_path,
+        elasticsearch_index="keyword_live",
+        qdrant_collection="qdrant_live",
+    )
+    settings.extraction_root.mkdir(parents=True)
+    (settings.extraction_root / "index-lineage.json").write_text(
+        json.dumps(
+            {
+                "ingest_run_id": "ingest_123",
+                "corpus_version": "corpus_sha256:aaa",
+                "index_version": "index_sha256:bbb",
+                "keyword_index": "keyword_live",
+                "qdrant_collection": "qdrant_live",
+                "embedding_model": "text-embedding-v4:2048",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    attrs = tracing_module.trace_provenance_attributes(settings, run_id="run-123")
+
+    assert attrs["imperial.ingest_run_id"] == "ingest_123"
+    assert attrs["imperial.corpus_version"] == "corpus_sha256:aaa"
+    assert attrs["imperial.index_version"] == "index_sha256:bbb"
+    assert attrs["imperial.keyword_index"] == "keyword_live"
+    assert attrs["imperial.qdrant_collection"] == "qdrant_live"
+    assert attrs["imperial.embedding_model"] == "text-embedding-v4:2048"
+    assert attrs["imperial.index_fresh"] == "fresh"
+
+
+def test_trace_provenance_attributes_marks_lineage_stale(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("IMPERIAL_RAG_GIT_SHA", "abc1234")
+    settings = Settings(
+        workspace_root=tmp_path,
+        elasticsearch_index="keyword_current",
+        qdrant_collection="qdrant_current",
+    )
+    settings.extraction_root.mkdir(parents=True)
+    (settings.extraction_root / "index-lineage.json").write_text(
+        json.dumps(
+            {
+                "ingest_run_id": "ingest_123",
+                "corpus_version": "corpus_sha256:aaa",
+                "index_version": "index_sha256:bbb",
+                "keyword_index": "keyword_old",
+                "qdrant_collection": "qdrant_current",
+                "embedding_model": "text-embedding-v4:2048",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    attrs = tracing_module.trace_provenance_attributes(settings, run_id="run-123")
+
+    assert attrs["imperial.keyword_index"] == "keyword_old"
+    assert attrs["imperial.current_keyword_index"] == "keyword_current"
+    assert attrs["imperial.index_fresh"] == "stale"
 
 
 def test_trace_provenance_attributes_marks_unavailable_git_sha(monkeypatch, tmp_path: Path) -> None:

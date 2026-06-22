@@ -257,13 +257,22 @@ already-running processes do not reload `.env` changes. In Compose, use `docker 
 question and inspect `retrieval.vector_search` and `retrieval.keyword_search` in Phoenix.
 
 Query traces use a domain-first hierarchy: `imperial_rag.query` contains retrieval and answer phases,
-retrieval has child spans for vector search, keyword search, reranking, and final evidence selection, and answer
-generation has child spans for the model call and citation check. Merge/fusion counts stay on the parent
-`retrieval` span output. By default, Imperial suppresses framework-level retriever, fusion, and reranker child spans
-inside those wrapper spans; set `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=false` when you need to inspect those
-LangChain internals. For rich local debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full
-final evidence documents to the Phoenix-native `retrieval.final_evidence` document panel. Candidate spans remain
-compact unless `IMPERIAL_RAG_TRACE_MODE=retrieval_debug` or `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS=true` is set.
+retrieval has child spans for vector search, keyword search, compact `retrieval.fusion`, reranking, and final evidence
+selection, and answer generation has child spans for the model call and citation check. Compact fusion explains merge
+and RRF counts, source mix, dedupe count, and bounded top IDs without raw candidate text. In
+`IMPERIAL_RAG_TRACE_MODE=retrieval_debug`, that boundary splits into `retrieval.merge_candidates` and
+`retrieval.rrf_fusion` for duplicate groups and rank movements. By default, Imperial suppresses framework-level
+retriever, fusion, and reranker child spans inside those wrapper spans; set
+`IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=false` when you need to inspect those LangChain internals. For rich local
+debugging, set `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=true` to attach full final evidence documents to the
+Phoenix-native `retrieval.final_evidence` document panel. Candidate spans remain compact unless
+`IMPERIAL_RAG_TRACE_MODE=retrieval_debug` or `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS=true` is set.
+
+Ingestion traces keep the stable `ingest.corpus` root with `ingest.scan_files`, `ingest.extract_files`,
+`ingest.build_chunks`, `ingest.keyword_index`, and optional `ingest.vector_index` children. Ingest writes
+`.imperial_rag/extracted/index-lineage.json`; later query root spans read it to stamp `imperial.ingest_run_id`,
+`imperial.corpus_version`, `imperial.index_version`, `imperial.keyword_index`, `imperial.qdrant_collection`,
+`imperial.embedding_model`, and `imperial.index_fresh` (`fresh`, `stale`, or `unknown`).
 `OPENINFERENCE_HIDE_*` redaction settings still override document text and outputs.
 
 Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_*` and `IMPERIAL_RAG_TRACE_*` flags, spans can include raw user questions, model prompts, model answers, selected evidence text, candidate retrieval chunks, and document metadata. Treat Phoenix access as access to private corpus-derived data, and take care before sharing screenshots or exporting debug traces.
@@ -468,10 +477,11 @@ Common settings:
 - `PHOENIX_TRACING_ENABLED` or `IMPERIAL_RAG_TRACING_ENABLED`: enables tracing when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_SESSION_ID`: optional CLI Phoenix `session.id`; omitted values generate a per-run `cli_<uuid>`.
 - `IMPERIAL_RAG_TRACE_RUN_ID`: optional fixed root-span run marker for Phoenix filtering/validation; omitted query runs generate `query_<uuid>`.
+- `IMPERIAL_RAG_INGEST_RUN_ID`: optional fixed ingest run marker; omitted ingest runs generate `ingest_<uuid>`.
 - `IMPERIAL_RAG_GIT_SHA`, `IMPERIAL_RAG_IMAGE_DIGEST`, `IMPERIAL_RAG_IMAGE_TAG`, and `IMPERIAL_RAG_APP_VERSION`: optional build/runtime provenance fields stamped onto root query spans when present; set `IMPERIAL_RAG_GIT_SHA` for exact container provenance, otherwise container traces mark the SHA as `unavailable`.
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.final_evidence` when explicitly enabled.
-- `IMPERIAL_RAG_TRACE_MODE`: `compact` by default; set `retrieval_debug` to attach bounded vector/keyword candidate chunks to Phoenix retriever document panels.
+- `IMPERIAL_RAG_TRACE_MODE`: `compact` by default; set `retrieval_debug` to split fusion into merge/RRF diagnostic spans and attach bounded vector/keyword candidate chunks to Phoenix retriever document panels.
 - `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS`: low-level override that also attaches bounded vector/keyword candidate chunks when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`: opt into Phoenix/OpenInference framework auto-instrumentation for deep debugging; defaults to `false` so manual domain spans define the summary trace tree.
 - `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS`: suppress framework child spans inside Imperial wrapper spans by default; set to `false` for targeted LangChain internals debugging.

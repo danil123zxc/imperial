@@ -117,6 +117,7 @@ def test_validate_phoenix_trace_accepts_compact_trace_with_provenance():
         {"name": "retrieval", "span_kind": "CHAIN", "attributes": {}},
         {"name": "retrieval.vector_search", "span_kind": "RETRIEVER", "attributes": {}},
         {"name": "retrieval.keyword_search", "span_kind": "RETRIEVER", "attributes": {}},
+        {"name": "retrieval.fusion", "span_kind": "CHAIN", "attributes": {}},
         {"name": "retrieval.rerank", "span_kind": "RERANKER", "attributes": {}},
         {"name": "retrieval.final_evidence", "span_kind": "RETRIEVER", "attributes": {}},
         {"name": "answer.generate", "span_kind": "CHAIN", "attributes": {}},
@@ -146,6 +147,7 @@ def test_validate_phoenix_trace_accepts_phoenix_dataframe_attribute_columns():
         {"name": "retrieval", "span_kind": "CHAIN", "context.trace_id": "trace-1"},
         {"name": "retrieval.vector_search", "span_kind": "RETRIEVER", "context.trace_id": "trace-1"},
         {"name": "retrieval.keyword_search", "span_kind": "RETRIEVER", "context.trace_id": "trace-1"},
+        {"name": "retrieval.fusion", "span_kind": "CHAIN", "context.trace_id": "trace-1"},
         {"name": "retrieval.rerank", "span_kind": "RERANKER", "context.trace_id": "trace-1"},
         {"name": "retrieval.final_evidence", "span_kind": "RETRIEVER", "context.trace_id": "trace-1"},
         {"name": "answer.generate", "span_kind": "CHAIN", "context.trace_id": "trace-1"},
@@ -194,6 +196,24 @@ def test_validate_phoenix_trace_reports_missing_retrieval_documents():
 
     assert "span retrieval.vector_search missing retrieval document id/content attributes" in errors
     assert "span retrieval.keyword_search missing retrieval document id/content attributes" in errors
+
+
+def test_validate_phoenix_trace_allows_empty_retrieval_document_span():
+    module = _load_script("scripts/validate_phoenix_trace.py", "validate_phoenix_trace_empty_documents")
+    records = _compact_trace_records(
+        vector_attrs={
+            "output.value": '{"count": 1}',
+            "retrieval.documents.0.document.id": "vector-chunk",
+            "retrieval.documents.0.document.content": "vector content",
+        },
+        keyword_attrs={"output.value": '{"count": 0}'},
+    )
+
+    assert module.validate_span_records(
+        records,
+        expected_run_id="run-123",
+        require_retrieval_documents=True,
+    ) == []
 
 
 def test_validate_phoenix_trace_rejects_stale_noise_and_missing_provenance():
@@ -326,6 +346,8 @@ def _compact_trace_records(*, vector_attrs=None, keyword_attrs=None):
         {"name": "retrieval", "span_kind": "CHAIN", "attributes": {}},
         {"name": "retrieval.vector_search", "span_kind": "RETRIEVER", "attributes": dict(vector_attrs or {})},
         {"name": "retrieval.keyword_search", "span_kind": "RETRIEVER", "attributes": dict(keyword_attrs or {})},
+        {"name": "retrieval.merge_candidates", "span_kind": "CHAIN", "attributes": {}},
+        {"name": "retrieval.rrf_fusion", "span_kind": "CHAIN", "attributes": {}},
         {"name": "retrieval.rerank", "span_kind": "RERANKER", "attributes": {}},
         {"name": "retrieval.final_evidence", "span_kind": "RETRIEVER", "attributes": {}},
         {"name": "answer.generate", "span_kind": "CHAIN", "attributes": {}},

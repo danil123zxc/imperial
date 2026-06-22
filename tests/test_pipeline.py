@@ -33,6 +33,7 @@ class FakeSettings:
     workspace_root: Path
     elasticsearch_url: str = "http://127.0.0.1:9200"
     elasticsearch_index: str = "test_keyword_chunks"
+    qdrant_collection: str = "test_qdrant_chunks"
 
     @property
     def documents_root(self) -> Path:
@@ -176,7 +177,20 @@ def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path,
         "ingest.build_chunks",
         "ingest.keyword_index",
     ]
-    assert records[0]["output"] == {
+    assert {
+        key: records[0]["output"][key]
+        for key in (
+            "total_files",
+            "indexed_files",
+            "manifest_only_files",
+            "no_text_files",
+            "unsupported_files",
+            "failed_files",
+            "chunk_count",
+            "keyword_indexed",
+            "vector_indexed",
+        )
+    } == {
         "total_files": 1,
         "indexed_files": 1,
         "manifest_only_files": 0,
@@ -187,14 +201,35 @@ def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path,
         "keyword_indexed": True,
         "vector_indexed": False,
     }
-    assert records[1]["output"] == {"total_files": 1}
+    assert records[0]["output"]["corpus_version"].startswith("corpus_sha256:")
+    assert records[0]["output"]["index_version"].startswith("index_sha256:")
+    assert records[0]["output"]["keyword_index"] == "test_keyword_chunks"
+    assert records[1]["output"] == {
+        "total_files": 1,
+        "supported_files": 1,
+        "unsupported_files": 0,
+        "extension_counts": {".txt": 1},
+        "duplicate_group_count": 0,
+    }
     assert records[2]["output"] == {
         "document_count": 1,
         "status_counts": {"indexed": 1},
+        "extraction_methods": {"fake": 1},
         "failed_file_count": 0,
     }
-    assert records[3]["output"] == {"document_count": 1, "chunk_count": 1, "chunk_size": 400, "chunk_overlap": 50}
-    assert records[4]["output"] == {"chunk_count": 1, "indexed": True}
+    assert {
+        key: records[3]["output"][key]
+        for key in ("document_count", "chunk_count", "chunk_size", "chunk_overlap")
+    } == {"document_count": 1, "chunk_count": 1, "chunk_size": 400, "chunk_overlap": 50}
+    assert records[3]["output"]["corpus_version"].startswith("corpus_sha256:")
+    assert records[3]["output"]["chunk_hashes"]["count"] == 1
+    assert records[4]["output"] == {
+        "chunk_count": 1,
+        "indexed": True,
+        "elasticsearch_index": "test_keyword_chunks",
+        "indexed_count": 1,
+        "replace_all_success": True,
+    }
 
 
 def test_run_ingestion_traces_vector_stage_only_when_enabled(tmp_path, monkeypatch):
@@ -217,7 +252,80 @@ def test_run_ingestion_traces_vector_stage_only_when_enabled(tmp_path, monkeypat
         "ingest.keyword_index",
         "ingest.vector_index",
     ]
-    assert records[5]["output"] == {"chunk_count": 1, "indexed": True}
+    assert records[5]["output"] == {
+        "chunk_count": 1,
+        "indexed": True,
+        "qdrant_collection": "test_qdrant_chunks",
+        "added_id_count": 1,
+        "embedding_model": "text-embedding-v4:2048",
+        "embedding_dimensions": 2048,
+    }
+
+
+def test_run_ingestion_traces_lineage_and_index_metadata(tmp_path, monkeypatch):
+    from imperial_rag import pipeline as pipeline_module
+
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch)
+    records = _capture_pipeline_spans(monkeypatch, pipeline_module)
+
+    run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=True)
+
+    ingest_run_id = records[0]["attributes"]["imperial.ingest_run_id"]
+    assert ingest_run_id
+    assert records[0]["attributes"]["imperial.phase"] == "ingest"
+    assert records[0]["attributes"]["imperial.step"] == "corpus"
+    assert records[0]["attributes"]["imperial.trace_schema_version"] == "rag-v2"
+    for record in records[1:]:
+        assert record["attributes"]["imperial.ingest_run_id"] == ingest_run_id
+        assert record["attributes"]["imperial.trace_schema_version"] == "rag-v2"
+
+    assert records[1]["output"] == {
+        "total_files": 1,
+        "supported_files": 1,
+        "unsupported_files": 0,
+        "extension_counts": {".txt": 1},
+        "duplicate_group_count": 0,
+    }
+    assert records[3]["output"]["corpus_version"].startswith("corpus_sha256:")
+    assert records[3]["output"]["chunk_hashes"]["count"] == 1
+    assert records[3]["output"]["chunk_hashes"]["top"][0].startswith("content_sha256:")
+    assert records[4]["attributes"]["imperial.keyword_index"] == "test_keyword_chunks"
+    assert records[4]["output"] == {
+        "chunk_count": 1,
+        "indexed": True,
+        "elasticsearch_index": "test_keyword_chunks",
+        "indexed_count": 1,
+        "replace_all_success": True,
+    }
+    assert records[5]["attributes"]["imperial.qdrant_collection"] == "test_qdrant_chunks"
+    assert records[5]["attributes"]["imperial.embedding_model"] == "text-embedding-v4:2048"
+    assert records[5]["output"] == {
+        "chunk_count": 1,
+        "indexed": True,
+        "qdrant_collection": "test_qdrant_chunks",
+        "added_id_count": 1,
+        "embedding_model": "text-embedding-v4:2048",
+        "embedding_dimensions": 2048,
+    }
+    assert records[0]["output"]["corpus_version"] == records[3]["output"]["corpus_version"]
+    assert records[0]["output"]["index_version"].startswith("index_sha256:")
+    assert records[0]["output"]["keyword_index"] == "test_keyword_chunks"
+    assert records[0]["output"]["qdrant_collection"] == "test_qdrant_chunks"
+    assert records[0]["output"]["embedding_model"] == "text-embedding-v4:2048"
+    lineage = json.loads((tmp_path / ".imperial_rag" / "extracted" / "index-lineage.json").read_text(encoding="utf-8"))
+    assert lineage == {
+        "ingest_run_id": ingest_run_id,
+        "corpus_version": records[0]["output"]["corpus_version"],
+        "index_version": records[0]["output"]["index_version"],
+        "keyword_index": "test_keyword_chunks",
+        "qdrant_collection": "test_qdrant_chunks",
+        "embedding_model": "text-embedding-v4:2048",
+        "keyword_indexed": True,
+        "vector_indexed": True,
+    }
 
 
 def test_run_ingestion_traces_extraction_failure_summary(tmp_path, monkeypatch):
@@ -237,6 +345,7 @@ def test_run_ingestion_traces_extraction_failure_summary(tmp_path, monkeypatch):
     assert records[2]["output"] == {
         "document_count": 1,
         "status_counts": {"failed": 1, "indexed": 1},
+        "extraction_methods": {"fake": 1, "python_docx": 1},
         "failed_file_count": 1,
         "failed_files": [{"file_id": "file3", "message": "extract failed"}],
     }

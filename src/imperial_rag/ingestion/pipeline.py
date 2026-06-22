@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import uuid
+import hashlib
 from collections import Counter
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from imperial_rag.observability.phoenix import trace_pipeline_step
+from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_lineage_attributes, trace_pipeline_step
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,24 @@ class IngestionSummary:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _new_ingest_run_id() -> str:
+    explicit = os.environ.get("IMPERIAL_RAG_INGEST_RUN_ID", "").strip()
+    if explicit:
+        return explicit
+    return f"ingest_{uuid.uuid4().hex}"
+
+
+def _ingest_trace_attributes(step: str, ingest_run_id: str, attributes: dict[str, Any] | None = None) -> dict[str, Any]:
+    return imperial_trace_attributes(
+        "ingest",
+        step,
+        {
+            "imperial.ingest_run_id": ingest_run_id,
+            **dict(attributes or {}),
+        },
+    )
 
 
 def run_ingestion(
@@ -71,14 +92,19 @@ def _run(
     vector_store: Any | None,
     index_vectors: bool,
 ) -> IngestionSummary:
+    ingest_run_id = _new_ingest_run_id()
     with trace_pipeline_step(
         "ingest.corpus",
         "corpus",
-        attributes={
-            "ingest.workspace_root": str(getattr(settings, "workspace_root", "")),
-            "ingest.index_vectors": index_vectors,
-            "ingest.ocr_enabled": ocr_client is not None,
-        },
+        attributes=_ingest_trace_attributes(
+            "corpus",
+            ingest_run_id,
+            {
+                "ingest.workspace_root": str(getattr(settings, "workspace_root", "")),
+                "ingest.index_vectors": index_vectors,
+                "ingest.ocr_enabled": ocr_client is not None,
+            },
+        ),
     ) as corpus_span:
         extraction_root = Path(settings.extraction_root)
         extraction_root.mkdir(parents=True, exist_ok=True)
@@ -86,10 +112,14 @@ def _run(
         with trace_pipeline_step(
             "ingest.scan_files",
             "corpus",
-            attributes={"ingest.documents_root": str(settings.documents_root)},
+            attributes=_ingest_trace_attributes(
+                "scan_files",
+                ingest_run_id,
+                {"ingest.documents_root": str(settings.documents_root)},
+            ),
         ) as scan_span:
             records = deps["assign_duplicate_groups"](deps["scan_files"](Path(settings.documents_root)))
-            scan_span.set_output({"total_files": len(records)})
+            scan_span.set_output(_scan_trace_output(records))
 
         with ExitStack() as resources:
             manifest_store = resources.enter_context(deps["ManifestStore"](Path(settings.manifest_db_path)))
@@ -106,7 +136,11 @@ def _run(
             with trace_pipeline_step(
                 "ingest.extract_files",
                 "corpus",
-                attributes={"ingest.total_files": len(records), "ingest.ocr_enabled": ocr_client is not None},
+                attributes=_ingest_trace_attributes(
+                    "extract_files",
+                    ingest_run_id,
+                    {"ingest.total_files": len(records), "ingest.ocr_enabled": ocr_client is not None},
+                ),
             ) as extract_span:
                 for record in records:
                     file_id = str(record.file_id)
@@ -142,6 +176,7 @@ def _run(
                     _extraction_trace_output(
                         extracted_documents=extracted_documents,
                         status_by_file=status_by_file,
+                        method_by_file=method_by_file,
                         error_by_file=error_by_file,
                         failed_status=deps["FileStatus"].FAILED,
                     )
@@ -151,11 +186,15 @@ def _run(
             with trace_pipeline_step(
                 "ingest.build_chunks",
                 "corpus",
-                attributes={
-                    "ingest.document_count": len(extracted_documents),
-                    "ingest.chunk_size": retrieval_settings.chunk_size,
-                    "ingest.chunk_overlap": retrieval_settings.chunk_overlap,
-                },
+                attributes=_ingest_trace_attributes(
+                    "build_chunks",
+                    ingest_run_id,
+                    {
+                        "ingest.document_count": len(extracted_documents),
+                        "ingest.chunk_size": retrieval_settings.chunk_size,
+                        "ingest.chunk_overlap": retrieval_settings.chunk_overlap,
+                    },
+                ),
             ) as chunk_span:
                 chunks = list(
                     deps["build_chunks"](
@@ -165,34 +204,66 @@ def _run(
                     )
                 )
                 _write_chunks(extraction_root, chunks)
+                corpus_version = _corpus_version(chunks)
+                chunk_span.set_attribute("imperial.corpus_version", corpus_version)
                 chunk_span.set_output(
-                    {
-                        "document_count": len(extracted_documents),
-                        "chunk_count": len(chunks),
-                        "chunk_size": retrieval_settings.chunk_size,
-                        "chunk_overlap": retrieval_settings.chunk_overlap,
-                    }
+                    _chunk_trace_output(
+                        chunks=chunks,
+                        document_count=len(extracted_documents),
+                        chunk_size=retrieval_settings.chunk_size,
+                        chunk_overlap=retrieval_settings.chunk_overlap,
+                        corpus_version=corpus_version,
+                    )
                 )
 
             with trace_pipeline_step(
                 "ingest.keyword_index",
                 "corpus",
-                attributes={"ingest.chunk_count": len(chunks)},
+                attributes=_ingest_trace_attributes(
+                    "keyword_index",
+                    ingest_run_id,
+                    {
+                        "imperial.corpus_version": corpus_version,
+                        "imperial.keyword_index": getattr(settings, "elasticsearch_index", None),
+                        "ingest.chunk_count": len(chunks),
+                    },
+                ),
             ) as keyword_span:
                 keyword_indexed = _replace_keyword_index(deps["KeywordSearchIndex"], settings, chunks)
-                keyword_span.set_output({"chunk_count": len(chunks), "indexed": keyword_indexed})
+                keyword_span.set_output(_keyword_index_trace_output(settings, chunks, keyword_indexed))
 
             vector_indexed = False
+            vector_added_ids: list[str] = []
+            embedding_model = deps["embedding_model_identifier"]() if vector_store is not None else None
             if vector_store is not None:
                 with trace_pipeline_step(
                     "ingest.vector_index",
                     "corpus",
-                    attributes={"ingest.chunk_count": len(chunks)},
+                    attributes=_ingest_trace_attributes(
+                        "vector_index",
+                        ingest_run_id,
+                        {
+                            "imperial.corpus_version": corpus_version,
+                            "imperial.embedding_model": embedding_model,
+                            "imperial.qdrant_collection": getattr(settings, "qdrant_collection", None),
+                            "ingest.chunk_count": len(chunks),
+                        },
+                    ),
                 ) as vector_span:
-                    vector_indexed = _index_with_vector_store(
-                        deps["index_vector_documents"], settings, vector_store, chunks
+                    with trace_lineage_attributes(
+                        {
+                            "imperial.ingest_run_id": ingest_run_id,
+                            "imperial.corpus_version": corpus_version,
+                            "imperial.embedding_model": embedding_model,
+                            "imperial.qdrant_collection": getattr(settings, "qdrant_collection", None),
+                        }
+                    ):
+                        vector_indexed, vector_added_ids = _index_with_vector_store(
+                            deps["index_vector_documents"], settings, vector_store, chunks
+                        )
+                    vector_span.set_output(
+                        _vector_index_trace_output(settings, chunks, vector_indexed, vector_added_ids, embedding_model)
                     )
-                    vector_span.set_output({"chunk_count": len(chunks), "indexed": vector_indexed})
 
             chunk_count_by_file = _count_chunks_by_file(chunks)
 
@@ -216,7 +287,7 @@ def _run(
                     keyword_indexed=keyword_indexed,
                     index_vectors=index_vectors,
                     vector_indexed=vector_indexed,
-                    embedding_model=deps["embedding_model_identifier"]() if vector_indexed else None,
+                    embedding_model=embedding_model if vector_indexed else None,
                 )
 
             status_counts = Counter(_status_value(status) for status in status_by_file.values())
@@ -232,7 +303,34 @@ def _run(
                 vector_indexed=vector_indexed,
                 extraction_root=str(extraction_root),
             )
-            corpus_span.set_output(_summary_trace_output(summary))
+            index_version = _index_version(
+                corpus_version=corpus_version,
+                settings=settings,
+                keyword_indexed=keyword_indexed,
+                vector_indexed=vector_indexed,
+                embedding_model=embedding_model if vector_indexed else None,
+            )
+            lineage = _index_lineage_payload(
+                ingest_run_id=ingest_run_id,
+                corpus_version=corpus_version,
+                index_version=index_version,
+                settings=settings,
+                keyword_indexed=keyword_indexed,
+                vector_indexed=vector_indexed,
+                embedding_model=embedding_model if vector_indexed else None,
+            )
+            _write_index_lineage(extraction_root, lineage)
+            corpus_span.set_attribute("imperial.corpus_version", corpus_version)
+            corpus_span.set_attribute("imperial.index_version", index_version)
+            corpus_span.set_output(
+                _summary_trace_output(
+                    summary,
+                    corpus_version=corpus_version,
+                    index_version=index_version,
+                    settings=settings,
+                    embedding_model=embedding_model if vector_indexed else None,
+                )
+            )
             return summary
 
 
@@ -272,7 +370,32 @@ def _load_dependencies() -> dict[str, Any]:
     }
 
 
-def _summary_trace_output(summary: IngestionSummary) -> dict[str, Any]:
+def _scan_trace_output(records: list[Any]) -> dict[str, Any]:
+    extensions = [_record_extension(record) for record in records]
+    unsupported = sum(1 for extension in extensions if extension in {".doc", ".rar", ".zip", ".7z"})
+    duplicate_groups = {
+        str(group_id)
+        for record in records
+        if (group_id := getattr(record, "duplicate_group_id", None)) not in (None, "")
+        and int(getattr(record, "duplicate_group_size", 0) or 0) > 1
+    }
+    return {
+        "total_files": len(records),
+        "supported_files": len(records) - unsupported,
+        "unsupported_files": unsupported,
+        "extension_counts": dict(sorted(Counter(extensions).items())),
+        "duplicate_group_count": len(duplicate_groups),
+    }
+
+
+def _summary_trace_output(
+    summary: IngestionSummary,
+    *,
+    corpus_version: str | None = None,
+    index_version: str | None = None,
+    settings: Any | None = None,
+    embedding_model: str | None = None,
+) -> dict[str, Any]:
     return {
         "total_files": summary.total_files,
         "indexed_files": summary.indexed_files,
@@ -283,6 +406,15 @@ def _summary_trace_output(summary: IngestionSummary) -> dict[str, Any]:
         "chunk_count": summary.chunk_count,
         "keyword_indexed": summary.keyword_indexed,
         "vector_indexed": summary.vector_indexed,
+        **({} if corpus_version is None else {"corpus_version": corpus_version}),
+        **({} if index_version is None else {"index_version": index_version}),
+        **({} if settings is None else {"keyword_index": getattr(settings, "elasticsearch_index", None)}),
+        **(
+            {}
+            if settings is None or not summary.vector_indexed
+            else {"qdrant_collection": getattr(settings, "qdrant_collection", None)}
+        ),
+        **({} if embedding_model is None else {"embedding_model": embedding_model}),
     }
 
 
@@ -290,12 +422,16 @@ def _extraction_trace_output(
     *,
     extracted_documents: list[Any],
     status_by_file: dict[str, Any],
+    method_by_file: dict[str, str | None],
     error_by_file: dict[str, str | None],
     failed_status: Any,
 ) -> dict[str, Any]:
     output: dict[str, Any] = {
         "document_count": len(extracted_documents),
         "status_counts": dict(sorted(Counter(_status_value(status) for status in status_by_file.values()).items())),
+        "extraction_methods": dict(
+            sorted(Counter(method for method in method_by_file.values() if method).items())
+        ),
     }
     failed_status_value = _status_value(failed_status)
     failed_files = [
@@ -309,6 +445,138 @@ def _extraction_trace_output(
     if failed_files:
         output["failed_files"] = failed_files
     return output
+
+
+def _chunk_trace_output(
+    *,
+    chunks: list[Any],
+    document_count: int,
+    chunk_size: int,
+    chunk_overlap: int,
+    corpus_version: str,
+) -> dict[str, Any]:
+    chunk_hashes = [_chunk_content_hash(chunk) for chunk in chunks]
+    return {
+        "document_count": document_count,
+        "chunk_count": len(chunks),
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap,
+        "corpus_version": corpus_version,
+        "chunk_hashes": {
+            "count": len(chunk_hashes),
+            "top": chunk_hashes[:10],
+        },
+    }
+
+
+def _keyword_index_trace_output(settings: Any, chunks: list[Any], indexed: bool) -> dict[str, Any]:
+    return {
+        "chunk_count": len(chunks),
+        "indexed": indexed,
+        "elasticsearch_index": getattr(settings, "elasticsearch_index", None),
+        "indexed_count": len(chunks) if indexed else 0,
+        "replace_all_success": indexed,
+    }
+
+
+def _vector_index_trace_output(
+    settings: Any,
+    chunks: list[Any],
+    indexed: bool,
+    added_ids: list[str],
+    embedding_model: str | None,
+) -> dict[str, Any]:
+    return {
+        "chunk_count": len(chunks),
+        "indexed": indexed,
+        "qdrant_collection": getattr(settings, "qdrant_collection", None),
+        "added_id_count": len(added_ids),
+        "embedding_model": embedding_model,
+        "embedding_dimensions": _embedding_dimensions_from_identifier(embedding_model),
+    }
+
+
+def _corpus_version(chunks: list[Any]) -> str:
+    payload = "\n".join(_chunk_signature(chunk) for chunk in chunks)
+    return f"corpus_sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _index_version(
+    *,
+    corpus_version: str,
+    settings: Any,
+    keyword_indexed: bool,
+    vector_indexed: bool,
+    embedding_model: str | None,
+) -> str:
+    payload = {
+        "corpus_version": corpus_version,
+        "keyword_index": getattr(settings, "elasticsearch_index", None),
+        "keyword_indexed": keyword_indexed,
+        "qdrant_collection": getattr(settings, "qdrant_collection", None) if vector_indexed else None,
+        "vector_indexed": vector_indexed,
+        "embedding_model": embedding_model,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return f"index_sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _index_lineage_payload(
+    *,
+    ingest_run_id: str,
+    corpus_version: str,
+    index_version: str,
+    settings: Any,
+    keyword_indexed: bool,
+    vector_indexed: bool,
+    embedding_model: str | None,
+) -> dict[str, Any]:
+    return {
+        "ingest_run_id": ingest_run_id,
+        "corpus_version": corpus_version,
+        "index_version": index_version,
+        "keyword_index": getattr(settings, "elasticsearch_index", None),
+        "qdrant_collection": getattr(settings, "qdrant_collection", None) if vector_indexed else None,
+        "embedding_model": embedding_model,
+        "keyword_indexed": keyword_indexed,
+        "vector_indexed": vector_indexed,
+    }
+
+
+def _write_index_lineage(extraction_root: Path, payload: dict[str, Any]) -> None:
+    target = _safe_artifact_path(extraction_root, "index-lineage.json")
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _chunk_signature(chunk: Any) -> str:
+    payload = {
+        "page_content": str(getattr(chunk, "page_content", "")),
+        "metadata": dict(getattr(chunk, "metadata", {}) or {}),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _chunk_content_hash(chunk: Any) -> str:
+    content = str(getattr(chunk, "page_content", ""))
+    return f"content_sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+
+
+def _record_extension(record: Any) -> str:
+    extension = str(getattr(record, "extension", "") or "").casefold()
+    if extension:
+        return extension
+    path = getattr(record, "relative_path", None) or getattr(record, "absolute_path", None) or getattr(record, "filename", "")
+    return Path(path).suffix.casefold()
+
+
+def _embedding_dimensions_from_identifier(identifier: str | None) -> int | None:
+    if not identifier or ":" not in identifier:
+        return None
+    raw = identifier.rsplit(":", 1)[-1]
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 def _build_ocr_client(enable_ocr: bool) -> Any | None:
@@ -417,11 +685,11 @@ def _replace_keyword_index(keyword_index_cls: Any, settings: Any, chunks: list[A
     return True
 
 
-def _index_with_vector_store(index_vector_documents: Any, settings: Any, vector_store: Any, chunks: list[Any]) -> bool:
+def _index_with_vector_store(index_vector_documents: Any, settings: Any, vector_store: Any, chunks: list[Any]) -> tuple[bool, list[str]]:
     if not chunks:
-        return True
-    index_vector_documents(chunks, settings=settings, vector_store=vector_store)
-    return True
+        return True, []
+    added_ids = index_vector_documents(chunks, settings=settings, vector_store=vector_store)
+    return True, [str(added_id) for added_id in (added_ids or [])]
 
 
 def _update_index_status(

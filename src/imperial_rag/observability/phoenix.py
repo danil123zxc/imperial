@@ -8,6 +8,7 @@ import socket
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlparse
 
@@ -49,6 +50,10 @@ _IMPERIAL_TRACE_SCHEMA_VERSION = "imperial.trace_schema_version"
 _IMPERIAL_TRACE_MODE = "imperial.trace_mode"
 _TRACE_MODE_COMPACT = "compact"
 _TRACE_MODE_RETRIEVAL_DEBUG = "retrieval_debug"
+_TRACE_LINEAGE_ATTRIBUTES: ContextVar[Mapping[str, Any]] = ContextVar(
+    "imperial_rag_trace_lineage_attributes",
+    default={},
+)
 _TRACE_METADATA_ALLOWLIST = frozenset(
     {
         "citation_id",
@@ -139,6 +144,9 @@ def trace_openinference_step(
     if not _hide_span_input(kind):
         span_attributes[_INPUT_VALUE] = input_value
         span_attributes[_INPUT_MIME_TYPE] = _TEXT_MIME_TYPE
+    for key, value in _TRACE_LINEAGE_ATTRIBUTES.get().items():
+        if value is not None and not _attribute_hidden(key, kind):
+            span_attributes[key] = _attribute_value(value)
     for key, value in (attributes or {}).items():
         if value is not None and not _attribute_hidden(key, kind):
             span_attributes[key] = _attribute_value(value)
@@ -246,6 +254,7 @@ def trace_provenance_attributes(settings: Settings | None = None, *, run_id: str
     """Return build/runtime markers that make fresh Phoenix traces attributable."""
 
     resolved_settings = settings or Settings()
+    index_lineage_attrs = _index_lineage_trace_attributes(resolved_settings)
     attrs: dict[str, Any] = {
         "imperial.trace_run_id": run_id,
         "imperial.phoenix_project": resolved_settings.phoenix_project_name,
@@ -266,6 +275,7 @@ def trace_provenance_attributes(settings: Settings | None = None, *, run_id: str
         "openinference.hide_output_messages": _hide_output_messages(),
         "openinference.hide_llm_prompts": _env_flag("OPENINFERENCE_HIDE_LLM_PROMPTS"),
         "openinference.hide_llm_tools": _hide_llm_tools(),
+        **index_lineage_attrs,
     }
     return {key: value for key, value in attrs.items() if value not in (None, "")}
 
@@ -283,6 +293,19 @@ def trace_mode() -> str:
 
 def trace_internal_spans_suppressed() -> bool:
     return _env_flag("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", default=True)
+
+
+@contextmanager
+def trace_lineage_attributes(attributes: Mapping[str, Any]) -> Iterator[None]:
+    current = dict(_TRACE_LINEAGE_ATTRIBUTES.get())
+    for key, value in dict(attributes or {}).items():
+        if value is not None:
+            current[str(key)] = value
+    token = _TRACE_LINEAGE_ATTRIBUTES.set(current)
+    try:
+        yield
+    finally:
+        _TRACE_LINEAGE_ATTRIBUTES.reset(token)
 
 
 @contextmanager
@@ -510,6 +533,66 @@ def configure_phoenix_tracing(settings: Settings | None = None, enabled: bool | 
     )
     _CONFIGURED_KEY = key
     return _CONFIGURED_PROVIDER
+
+
+def _index_lineage_trace_attributes(settings: Settings) -> dict[str, Any]:
+    current_keyword_index = settings.elasticsearch_index
+    current_qdrant_collection = settings.qdrant_collection
+    current_embedding_model = _current_embedding_model_identifier()
+    lineage = _read_index_lineage(settings)
+    if not lineage:
+        return {
+            "imperial.keyword_index": current_keyword_index,
+            "imperial.qdrant_collection": current_qdrant_collection,
+            "imperial.embedding_model": current_embedding_model,
+            "imperial.index_fresh": "unknown",
+        }
+
+    keyword_index = _lineage_text(lineage, "keyword_index") or current_keyword_index
+    qdrant_collection = _lineage_text(lineage, "qdrant_collection") or current_qdrant_collection
+    embedding_model = _lineage_text(lineage, "embedding_model") or current_embedding_model
+    stale_fields: dict[str, Any] = {}
+    if keyword_index != current_keyword_index:
+        stale_fields["imperial.current_keyword_index"] = current_keyword_index
+    if qdrant_collection != current_qdrant_collection:
+        stale_fields["imperial.current_qdrant_collection"] = current_qdrant_collection
+    if embedding_model != current_embedding_model:
+        stale_fields["imperial.current_embedding_model"] = current_embedding_model
+    return {
+        "imperial.ingest_run_id": _lineage_text(lineage, "ingest_run_id"),
+        "imperial.corpus_version": _lineage_text(lineage, "corpus_version"),
+        "imperial.index_version": _lineage_text(lineage, "index_version"),
+        "imperial.keyword_index": keyword_index,
+        "imperial.qdrant_collection": qdrant_collection,
+        "imperial.embedding_model": embedding_model,
+        "imperial.index_fresh": "stale" if stale_fields else "fresh",
+        **stale_fields,
+    }
+
+
+def _read_index_lineage(settings: Settings) -> dict[str, Any]:
+    path = settings.extraction_root / "index-lineage.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _lineage_text(lineage: Mapping[str, Any], key: str) -> str | None:
+    value = lineage.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _current_embedding_model_identifier() -> str | None:
+    try:
+        from imperial_rag.indexing import embedding_model_identifier
+    except ImportError:
+        return None
+    return embedding_model_identifier()
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:

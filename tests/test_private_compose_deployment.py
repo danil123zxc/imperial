@@ -179,6 +179,7 @@ def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
     assert "OTEL_BSP_SCHEDULE_DELAY=5000" in lines
     assert "OTEL_BSP_MAX_QUEUE_SIZE=2048" in lines
     assert "OTEL_BSP_MAX_EXPORT_BATCH_SIZE=512" in lines
+    assert "IMPERIAL_RAG_INGEST_RUN_ID=" in lines
     assert "IMPERIAL_RAG_TRACE_FULL_METADATA=false" in lines
     assert "IMPERIAL_RAG_TRACE_MODE=compact" in lines
     assert "IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS=false" in lines

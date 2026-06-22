@@ -16,6 +16,7 @@ from imperial_rag.observability.phoenix import (
     retrieval_documents_preview,
     suppress_internal_tracing,
     trace_candidate_documents_enabled,
+    trace_mode,
     trace_retrieval_step,
 )
 
@@ -558,12 +559,63 @@ class RetrievalService:
             diagnostics = dict(candidates.diagnostics)
             merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
             diagnostics["merged_candidates"] = len(merged)
+            diagnostics["deduped_candidates"] = _deduped_candidate_count(candidates.vector_docs, candidates.keyword_docs, merged)
             fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
             rerank_input = fused[: self.settings.rerank_input_limit]
             diagnostics["fusion"] = "rrf"
             diagnostics["fusion_rrf_k"] = self.settings.rrf_k
             diagnostics["fused_candidates"] = len(fused)
             diagnostics["rerank_input_candidates"] = len(rerank_input)
+            if trace_mode() == "retrieval_debug":
+                with trace_retrieval_step(
+                    "retrieval.merge_candidates",
+                    query,
+                    kind="CHAIN",
+                    attributes=imperial_trace_attributes(
+                        "retrieval",
+                        "merge_candidates",
+                        {"retrieval.merge_strategy": "dedupe_by_document_or_content"},
+                    ),
+                ) as span:
+                    span.set_output(
+                        _merge_candidates_span_output(
+                            candidates.vector_docs,
+                            candidates.keyword_docs,
+                            merged,
+                        )
+                    )
+                with trace_retrieval_step(
+                    "retrieval.rrf_fusion",
+                    query,
+                    kind="CHAIN",
+                    attributes=imperial_trace_attributes(
+                        "retrieval",
+                        "rrf_fusion",
+                        {"retrieval.fusion": "rrf", "retrieval.fusion_rrf_k": self.settings.rrf_k},
+                    ),
+                ) as span:
+                    span.set_output(_rrf_fusion_span_output(merged, fused, self.settings.rrf_k))
+            else:
+                with trace_retrieval_step(
+                    "retrieval.fusion",
+                    query,
+                    kind="CHAIN",
+                    attributes=imperial_trace_attributes(
+                        "retrieval",
+                        "fusion",
+                        {"retrieval.fusion": "rrf", "retrieval.fusion_rrf_k": self.settings.rrf_k},
+                    ),
+                ) as span:
+                    span.set_output(
+                        _compact_fusion_span_output(
+                            candidates.vector_docs,
+                            candidates.keyword_docs,
+                            merged,
+                            fused,
+                            rerank_input,
+                            self.settings.rrf_k,
+                        )
+                    )
 
             with trace_retrieval_step(
                 "retrieval.rerank",
@@ -635,6 +687,159 @@ def _set_documents_span_output(span: Any, documents: list[Document], **metadata:
 def _set_candidate_documents_omitted(span: Any) -> None:
     span.set_attribute("retrieval.documents.omitted", True)
     span.set_attribute("retrieval.documents.omitted_reason", "candidate_tracing_disabled")
+
+
+def _compact_fusion_span_output(
+    vector_docs: list[Document],
+    keyword_docs: list[Document],
+    merged: list[Document],
+    fused: list[Document],
+    rerank_input: list[Document],
+    rrf_k: int,
+) -> dict[str, Any]:
+    return {
+        "vector_candidates": len(vector_docs),
+        "keyword_candidates": len(keyword_docs),
+        "merged_candidates": len(merged),
+        "deduped_candidates": _deduped_candidate_count(vector_docs, keyword_docs, merged),
+        "fused_candidates": len(fused),
+        "rerank_input_candidates": len(rerank_input),
+        "fusion": "rrf",
+        "fusion_rrf_k": rrf_k,
+        "source_mix": _source_mix(merged),
+        "merged_top_ids": _top_trace_ids(merged),
+        "fused_top_ids": _top_trace_ids(fused),
+        "rerank_input_top_ids": _top_trace_ids(rerank_input),
+    }
+
+
+def _merge_candidates_span_output(
+    vector_docs: list[Document],
+    keyword_docs: list[Document],
+    merged: list[Document],
+) -> dict[str, Any]:
+    return {
+        "vector_candidates": len(vector_docs),
+        "keyword_candidates": len(keyword_docs),
+        "merged_candidates": len(merged),
+        "deduped_candidates": _deduped_candidate_count(vector_docs, keyword_docs, merged),
+        "source_mix": _source_mix(merged),
+        "merged_top_ids": _top_trace_ids(merged),
+        "duplicate_groups": _duplicate_groups(vector_docs, keyword_docs),
+    }
+
+
+def _rrf_fusion_span_output(merged: list[Document], fused: list[Document], rrf_k: int) -> dict[str, Any]:
+    return {
+        "fusion": "rrf",
+        "fusion_rrf_k": rrf_k,
+        "input_candidates": len(merged),
+        "fused_candidates": len(fused),
+        "input_top_ids": _top_trace_ids(merged),
+        "fused_top_ids": _top_trace_ids(fused),
+        "rank_movements": _rank_movements(fused),
+    }
+
+
+def _deduped_candidate_count(vector_docs: list[Document], keyword_docs: list[Document], merged: list[Document]) -> int:
+    return max(len(vector_docs) + len(keyword_docs) - len(merged), 0)
+
+
+def _source_mix(documents: list[Document]) -> dict[str, int]:
+    counts = {"hybrid": 0, "keyword_only": 0, "vector_only": 0}
+    for document in documents:
+        metadata = dict(document.metadata or {})
+        has_vector = _rank_value(metadata.get("_vector_rank")) is not None
+        has_keyword = _rank_value(metadata.get("_keyword_rank")) is not None
+        if has_vector and has_keyword:
+            counts["hybrid"] += 1
+        elif has_keyword:
+            counts["keyword_only"] += 1
+        elif has_vector:
+            counts["vector_only"] += 1
+    return counts
+
+
+def _top_trace_ids(documents: list[Document], *, limit: int = 10) -> list[str]:
+    return [_retrieval_id(document) for document in documents[:limit]]
+
+
+def _duplicate_groups(vector_docs: list[Document], keyword_docs: list[Document], *, limit: int = 10) -> list[dict[str, Any]]:
+    index_by_key: dict[str, int] = {}
+    index_by_content: dict[str, int] = {}
+    retained: list[dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
+    for source, documents in (("vector", vector_docs), ("keyword", keyword_docs)):
+        for document in documents:
+            candidate_document_key = document_key(document)
+            candidate_content_key = content_key(document)
+            existing_index = index_by_key.get(candidate_document_key)
+            if existing_index is None:
+                existing_index = index_by_content.get(candidate_content_key)
+            if existing_index is not None:
+                retained_entry = retained[existing_index]
+                group = retained_entry.get("group")
+                if group is None:
+                    group = {
+                        "retained_id": retained_entry["id"],
+                        "dropped_ids": [],
+                        "sources": set(retained_entry["sources"]),
+                    }
+                    retained_entry["group"] = group
+                    groups.append(group)
+                group["dropped_ids"].append(_retrieval_id(document))
+                group["sources"].add(source)
+                index_by_key.setdefault(candidate_document_key, existing_index)
+                index_by_content.setdefault(candidate_content_key, existing_index)
+                continue
+
+            index = len(retained)
+            index_by_key[candidate_document_key] = index
+            index_by_content[candidate_content_key] = index
+            retained.append({"id": _retrieval_id(document), "sources": {source}, "group": None})
+
+    return [
+        {
+            "retained_id": str(group["retained_id"]),
+            "dropped_ids": [str(document_id) for document_id in group["dropped_ids"][:limit]],
+            "sources": sorted(str(source) for source in group["sources"]),
+        }
+        for group in groups[:limit]
+    ]
+
+
+def _rank_movements(documents: list[Document], *, limit: int = 10) -> list[dict[str, Any]]:
+    movements: list[dict[str, Any]] = []
+    for fusion_rank, document in enumerate(documents[:limit]):
+        metadata = dict(document.metadata or {})
+        vector_rank = _rank_value(metadata.get("_vector_rank"))
+        keyword_rank = _rank_value(metadata.get("_keyword_rank"))
+        original_ranks = [rank for rank in (vector_rank, keyword_rank) if rank is not None]
+        best_original_rank = min(original_ranks) if original_ranks else None
+        rrf_score = _numeric_value(metadata.get("_rrf_score"))
+        movements.append(
+            {
+                "id": _retrieval_id(document),
+                "vector_rank": vector_rank,
+                "keyword_rank": keyword_rank,
+                "fusion_rank": fusion_rank,
+                "rank_delta": None if best_original_rank is None else fusion_rank - best_original_rank,
+                "rrf_score": None if rrf_score is None else round(rrf_score, 10),
+            }
+        )
+    return movements
+
+
+def _rank_value(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
+def _numeric_value(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _document_summary_output(documents: list[Document], *, limit: int = 5) -> dict[str, Any]:
@@ -715,6 +920,7 @@ def _retrieval_summary_output(diagnostics: dict[str, Any]) -> dict[str, Any]:
         "vector_candidates",
         "keyword_candidates",
         "merged_candidates",
+        "deduped_candidates",
         "fused_candidates",
         "rerank_input_candidates",
         "fusion",

@@ -13,12 +13,23 @@ REQUIRED_SPANS: dict[str, str] = {
     "retrieval": "CHAIN",
     "retrieval.vector_search": "RETRIEVER",
     "retrieval.keyword_search": "RETRIEVER",
-    "retrieval.rerank": "RERANKER",
-    "retrieval.final_evidence": "RETRIEVER",
     "answer.generate": "CHAIN",
     "answer.call_model": "LLM",
     "answer.citation_check": "CHAIN",
 }
+COMPACT_REQUIRED_SPANS: dict[str, str] = {
+    "retrieval.fusion": "CHAIN",
+    "retrieval.rerank": "RERANKER",
+    "retrieval.final_evidence": "RETRIEVER",
+}
+RETRIEVAL_DEBUG_REQUIRED_SPANS: dict[str, str] = {
+    "retrieval.merge_candidates": "CHAIN",
+    "retrieval.rrf_fusion": "CHAIN",
+    "retrieval.rerank": "RERANKER",
+    "retrieval.final_evidence": "RETRIEVER",
+}
+COMPACT_ONLY_SPANS = {"retrieval.fusion"}
+RETRIEVAL_DEBUG_ONLY_SPANS = {"retrieval.merge_candidates", "retrieval.rrf_fusion"}
 FORBIDDEN_SPAN_NAMES = {
     "LangGraph",
     "normalize_query",
@@ -83,7 +94,13 @@ def validate_span_records(
     normalized = [_normalize_record(record) for record in records]
     errors: list[str] = []
     records_by_name = {record["name"]: record for record in normalized if record["name"]}
-    for name, expected_kind in REQUIRED_SPANS.items():
+    root = records_by_name.get("imperial_rag.query")
+    trace_mode = str(root["attributes"].get("imperial.trace_mode") if root else "compact")
+    required_spans = dict(REQUIRED_SPANS)
+    required_spans.update(
+        RETRIEVAL_DEBUG_REQUIRED_SPANS if trace_mode == "retrieval_debug" else COMPACT_REQUIRED_SPANS
+    )
+    for name, expected_kind in required_spans.items():
         record = records_by_name.get(name)
         if record is None:
             errors.append(f"missing required span: {name}")
@@ -95,7 +112,14 @@ def validate_span_records(
         name = str(record["name"])
         if name in FORBIDDEN_SPAN_NAMES:
             errors.append(f"forbidden stale/internal span present: {name}")
-    root = records_by_name.get("imperial_rag.query")
+    if trace_mode == "retrieval_debug":
+        for name in COMPACT_ONLY_SPANS:
+            if name in records_by_name:
+                errors.append(f"compact-only span present in retrieval_debug trace: {name}")
+    else:
+        for name in RETRIEVAL_DEBUG_ONLY_SPANS:
+            if name in records_by_name:
+                errors.append(f"retrieval-debug span present in compact trace: {name}")
     if root is None:
         return errors
     root_attrs = root["attributes"]
@@ -113,6 +137,8 @@ def validate_span_records(
         for name in RETRIEVAL_DOCUMENT_SPANS:
             record = records_by_name.get(name)
             if record is None:
+                continue
+            if _retrieval_output_count(record["attributes"]) == 0:
                 continue
             if not _has_retrieval_document_id_and_content(record["attributes"]):
                 errors.append(f"span {name} missing retrieval document id/content attributes")
@@ -229,6 +255,21 @@ def _coerce_documents(value: Any) -> list[Any]:
         except json.JSONDecodeError:
             return []
     return list(value) if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)) else []
+
+
+def _retrieval_output_count(attrs: Mapping[str, Any]) -> int | None:
+    output = attrs.get("output.value") or attrs.get("output")
+    if isinstance(output, str) and output.strip():
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(output, Mapping):
+        return None
+    count = output.get("count")
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return count
 
 
 def _document_has_id(document: Any) -> bool:
