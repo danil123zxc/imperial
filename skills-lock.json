@@ -95,7 +95,7 @@
       "source": "langfuse/skills",
       "sourceType": "github",
       "skillPath": "skills/langfuse/SKILL.md",
-      "computedHash": "bef547e21d59cc32f84120e83295e54560935132b5870bf16f3383faae32acba"
+      "computedHash": "4c5fd7416a341ca8b56b2efcd96f68f867205f0b774ecb12f3078db490c0d5f3"
     },
     "langgraph-cli": {
       "source": "langchain-ai/langchain-skills",
@@ -143,7 +143,7 @@
       "source": "langchain-ai/langchain-skills",
       "sourceType": "github",
       "skillPath": "config/skills/managed-deep-agents/SKILL.md",
-      "computedHash": "e034c44bf34dd2cef494fb223a18ff0d65836ea98e61a8d6b16d1a1306535ad6"
+      "computedHash": "e731af48cd4293b2d3606a1b066a9ca0aaca1c421e8190f5668caf95a65f38e0"
     },
     "observability-edot-python-instrument": {
       "source": "elastic/agent-skills",

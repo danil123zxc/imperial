@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phoenix Trace Readability Council</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5d6978;
+      --line: #d8dee6;
+      --soft: #f6f8fb;
+      --accent: #1f6feb;
+      --good: #1a7f37;
+      --warn: #9a6700;
+      --bad: #cf222e;
+    }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 24px 56px;
+    }
+    h1, h2, h3 {
+      line-height: 1.18;
+      margin: 0 0 12px;
+    }
+    h1 {
+      font-size: 32px;
+    }
+    h2 {
+      margin-top: 34px;
+      font-size: 22px;
+    }
+    h3 {
+      margin-top: 18px;
+      font-size: 17px;
+    }
+    p {
+      margin: 0 0 14px;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+      background: #eef2f7;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .lede {
+      color: var(--muted);
+      font-size: 17px;
+      max-width: 820px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: var(--soft);
+      margin: 18px 0;
+    }
+    .verdict {
+      border-left: 4px solid var(--accent);
+      background: #f5f9ff;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+    .tile {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+    }
+    .label {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .status-good { color: var(--good); font-weight: 700; }
+    .status-warn { color: var(--warn); font-weight: 700; }
+    .status-bad { color: var(--bad); font-weight: 700; }
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin: 10px 0;
+      background: #fff;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+    ul, ol {
+      margin-top: 8px;
+      padding-left: 22px;
+    }
+    li {
+      margin: 6px 0;
+    }
+    footer {
+      margin-top: 42px;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Phoenix Trace Readability Council</h1>
+    <p class="lede">Question: check the Imperial RAG Phoenix tracing and propose a plan to make it more human-readable and intuitive using Phoenix/OpenInference best practices.</p>
+
+    <section class="panel verdict">
+      <h2>Council Verdict</h2>
+      <p>The current local code is already pointed in the right direction: a compact domain-first tree using Phoenix-native span kinds. The immediate problem is runtime truth. The running Docker app image is stale, and the live Phoenix project is dominated by older noisy traces, so Phoenix still mostly shows the old mixed tree.</p>
+      <p>Do not start with another broad trace refactor. Start by rebuilding the app image, generating a fresh trace, and proving the live trace matches the source tree. Then make the compact tree a maintained contract with provenance, privacy checks, and a programmatic golden-trace smoke test.</p>
+    </section>
+
+    <h2>Agreement Map</h2>
+    <div class="grid">
+      <div class="tile">
+        <div class="label">Current code shape</div>
+        <p class="status-good">Mostly right</p>
+        <p>Use <code>CHAIN</code>, <code>RETRIEVER</code>, <code>RERANKER</code>, and <code>LLM</code> for the reader-facing RAG story.</p>
+      </div>
+      <div class="tile">
+        <div class="label">Live Phoenix view</div>
+        <p class="status-bad">Currently misleading</p>
+        <p>Newest live traces still show stale framework/provider internals and old span names.</p>
+      </div>
+      <div class="tile">
+        <div class="label">First action</div>
+        <p class="status-warn">Operational parity</p>
+        <p>Rebuild/restart app, verify container code, then run one known query and inspect only post-cutoff traces.</p>
+      </div>
+      <div class="tile">
+        <div class="label">Missing guard</div>
+        <p class="status-warn">Provenance</p>
+        <p>Add git SHA, image/build ID, active trace flags, schema version, project, and run ID to root traces.</p>
+      </div>
+    </div>
+
+    <h2>Recommended Plan</h2>
+    <ol>
+      <li><strong>Task 0: Live trace parity.</strong> Rebuild and restart only the app container. Verify `/app/src/imperial_rag/tracing.py` contains `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS`, `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`, and that `/app/src/imperial_rag/retrieval.py` emits `retrieval.final_evidence` instead of the old merge/fuse spans.</li>
+      <li><strong>Generate a fresh validation trace.</strong> Run one known Streamlit query with `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT=false`, `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=true`, candidate documents off, and full final evidence off.</li>
+      <li><strong>Use a clean comparison surface.</strong> Either validate in a fresh Phoenix project such as `imperial-rag-readable-v2`, or record a cutoff timestamp/run tag and ignore older spans. The current `imperial-rag` project contains many obsolete traces.</li>
+      <li><strong>Lock the reader-facing tree.</strong> The expected query trace should be `imperial_rag.query` -> `retrieval` -> `retrieval.vector_search`, `retrieval.keyword_search`, `retrieval.rerank`, `retrieval.final_evidence`; and `answer.generate` -> `answer.call_model`, `answer.citation_check`.</li>
+      <li><strong>Add root provenance.</strong> Attach git SHA, Docker image tag or digest, build time if available, trace schema version, Phoenix project, run ID, and effective tracing flags to the root span so stale-image problems are visible inside Phoenix.</li>
+      <li><strong>Improve payload readability, not span count.</strong> Keep the compact tree. Add concise fields for normalized query, retrieval statuses, candidate counts, final evidence count, source labels, rerank model/top-k/top scores, LLM model/tokens, answer length, and citation pass/fail.</li>
+      <li><strong>Preserve privacy defaults.</strong> Any new field must respect `OPENINFERENCE_HIDE_*` settings. Keep raw candidate documents and full final evidence behind explicit opt-in flags.</li>
+      <li><strong>Make it machine-verifiable.</strong> Add a golden trace smoke test that queries Phoenix after a known run and fails if expected spans/kinds/provenance are missing, framework noise appears under default suppression, or redaction behavior regresses.</li>
+    </ol>
+
+    <h2>Evidence Checked</h2>
+    <ul>
+      <li>Current local HEAD: `7281db7 fix: suppress noisy internal trace spans`.</li>
+      <li>Local focused tests: `46 passed, 54 deselected` for tracing/retrieval/workflow trace checks.</li>
+      <li>Docker stack is healthy: app on `127.0.0.1:8501`, Phoenix on `127.0.0.1:6006`.</li>
+      <li>Running app container is stale: container code lacks suppression/env flags and still contains old merge/fuse span names.</li>
+      <li>Live Phoenix project has 679 spans; old noisy names dominate. A clean compact trace exists, but it is not the newest live trace.</li>
+      <li>Context7 Phoenix docs resolved to `/websites/arize_phoenix`; guidance confirms manual OpenInference span kinds, session/user/metadata/tag helpers, RAG span querying, and production privacy controls.</li>
+    </ul>
+
+    <h2>Advisor Notes</h2>
+    <details>
+      <summary>Contrarian</summary>
+      <p>The plan fails if it treats readability as only a source-code issue. Phoenix currently shows old noisy spans, and the running container is stale. Make live trace parity Task 0 before tuning attributes.</p>
+    </details>
+    <details>
+      <summary>First Principles</summary>
+      <p>The trace should answer: what question ran, what evidence was gathered, how it was narrowed, what model was called, and whether citations passed. The compact tree is already the right product shape.</p>
+    </details>
+    <details>
+      <summary>Expansionist</summary>
+      <p>Phoenix can become the explanation surface for the whole RAG system. Improve payload clarity inside the compact tree and add a golden trace regression guard.</p>
+    </details>
+    <details>
+      <summary>Outsider</summary>
+      <p>"Current tracing" is ambiguous: source code and live Phoenix disagree. Rebuild, validate after a cutoff, and keep old traces from shaping the verdict.</p>
+    </details>
+    <details>
+      <summary>Executor</summary>
+      <p>Rebuild the app, verify the code inside `/app`, run one fresh query, validate exact spans, then add compact human fields and a trace test.</p>
+    </details>
+    <details>
+      <summary>Peer Review Highlights</summary>
+      <p>Peer reviewers favored the runtime-parity-first plans and repeatedly flagged one missing guard: root-span provenance and a machine-verifiable parity gate. They also warned that richer fields need explicit privacy regression checks.</p>
+    </details>
+
+    <footer>
+      Generated 2026-06-22 02:05:27 Asia/Seoul for the Imperial RAG Phoenix tracing review.
+    </footer>
+  </main>
+</body>
+</html>
