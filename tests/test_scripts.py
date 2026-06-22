@@ -36,6 +36,13 @@ def test_phoenix_trace_validator_script_imports_and_defines_main():
     assert hasattr(module, "validate_span_records")
 
 
+def test_event_log_setup_script_imports_and_defines_main():
+    module = _load_script("scripts/setup_event_logs.py", "setup_event_logs_script")
+
+    assert hasattr(module, "main")
+    assert hasattr(module, "setup_event_log_streams")
+
+
 def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/ingest.py").read_text(encoding="utf-8")
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")
@@ -49,6 +56,47 @@ def test_entrypoint_scripts_configure_observability():
     assert "configure_observability" in Path("scripts/run_phoenix_eval.py").read_text(encoding="utf-8")
     assert "configure_observability" in Path("scripts/run_ragas_eval.py").read_text(encoding="utf-8")
     assert "configure_observability" in Path("scripts/run_all_evals.py").read_text(encoding="utf-8")
+
+
+def test_event_log_setup_creates_templates_policies_and_streams():
+    module = _load_script("scripts/setup_event_logs.py", "setup_event_logs_contract")
+    calls = []
+
+    class FakeIlm:
+        def put_lifecycle(self, **kwargs):
+            calls.append(("put_lifecycle", kwargs))
+
+    class FakeIndices:
+        def __init__(self) -> None:
+            self.existing = set()
+
+        def put_index_template(self, **kwargs):
+            calls.append(("put_index_template", kwargs))
+
+        def exists_data_stream(self, *, name):
+            return name in self.existing
+
+        def create_data_stream(self, *, name):
+            calls.append(("create_data_stream", name))
+            self.existing.add(name)
+
+    class FakeClient:
+        ilm = FakeIlm()
+
+        def __init__(self) -> None:
+            self.indices = FakeIndices()
+
+    client = FakeClient()
+
+    module.setup_event_log_streams(client, event_stream="imperial-rag-events-v1", eval_stream="imperial-rag-eval-v1")
+
+    assert [call[0] for call in calls].count("put_lifecycle") == 2
+    templates = [payload for name, payload in calls if name == "put_index_template"]
+    assert templates[0]["template"]["mappings"]["dynamic"] == "strict"
+    assert templates[0]["template"]["mappings"]["properties"]["event"] == {"type": "keyword"}
+    assert templates[0]["template"]["mappings"]["properties"]["duration_ms"] == {"type": "long"}
+    assert ("create_data_stream", "imperial-rag-events-v1") in calls
+    assert ("create_data_stream", "imperial-rag-eval-v1") in calls
 
 
 def test_validate_phoenix_trace_accepts_compact_trace_with_provenance():

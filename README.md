@@ -270,11 +270,57 @@ Phoenix traces are private diagnostic records. Depending on `OPENINFERENCE_HIDE_
 
 ### Local Logs
 
-The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr, so they are captured wherever the process is launched. In the Compose-owned local stack, Docker's `json-file` logging is the canonical captured log store and `docker compose logs -f app` is the normal inspection path.
+The app emits local newline-delimited JSON logs for CLI runs and Streamlit query handling. Logs go to process stderr,
+so they are captured wherever the process is launched. In the Compose-owned local stack, Docker's `json-file` logging
+is the canonical short-term captured log store and `docker compose logs -f app` is the normal live inspection path.
+Compose caps each service's local Docker log files with `max-size: "10m"` and `max-file: "10"` so stderr capture does
+not grow without bound.
 
-Phoenix remains the trace and evaluation system. This v1 logging layer writes sanitized operational events to stderr only; it does not send app logs to Elasticsearch, Sentry, or any other external service. Future Kibana log views should link to Phoenix only by request/session identifiers, and those links must be treated as links into private traces rather than sanitized public records.
+Phoenix remains the trace and evaluation system. Phoenix traces are richer and more private than operational logs, and
+should be treated as short-lived private diagnostics unless a specific eval/debug run needs to be preserved.
 
 If stderr is redirected to a local file during an ad hoc non-Compose run, rotate or delete that file according to the machine's privacy requirements.
+
+#### Searchable Event Logs
+
+Searchable event logs are optional and local-only. When enabled, the app writes a separate closed-schema operational
+event document to Elasticsearch after the normal stderr log line. It does not scrape Docker log files and it does not
+index free-form log payloads. Enable it only while Elasticsearch/Kibana are still bound to `127.0.0.1` or after adding
+auth and TLS:
+
+```bash
+uv run python scripts/setup_event_logs.py
+IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_ENABLED=true docker compose up -d app
+```
+
+The default local data streams are:
+
+- `imperial-rag-events-v1`: query, web query, ingest, dependency, and app operational events; delete after 30 days.
+- `imperial-rag-eval-summaries-v1`: eval summary events without private text; delete after 90 days.
+
+Allowed event documents include timings, counts, enum statuses, provider/reranker names, error type/code,
+request/session IDs, pseudonymous user hashes, Phoenix trace/session IDs, and build/runtime provenance. They must not
+include raw questions, answers, prompts, messages, document text, snippets, citations, source lists, filenames, paths,
+raw document metadata, raw exception messages, tracebacks, credentials, or provider API responses. Redaction is a cleanup
+layer; closed schema validation is the privacy boundary.
+
+Useful operator workflows:
+
+- Watch live app logs: `docker compose logs -f app`.
+- Search recent operational history: open Kibana at `http://127.0.0.1:5601`, create a data view for
+  `imperial-rag-events-v1`, and filter by `event`, `status`, `request_id`, `session_id`, `user_hash`, or `error_type`.
+- Open a private trace from a log: use `phoenix_trace_id` or `phoenix_session_id` in Kibana, then inspect Phoenix at
+  `http://127.0.0.1:6006`. Treat the linked trace as private corpus-derived data.
+- Purge telemetry: delete the two event data streams from Elasticsearch/Kibana and prune Phoenix data according to the
+  local retention decision; never delete `documents/` or `.imperial_rag/` as if they were logs.
+
+Suggested Kibana saved searches:
+
+- Query latency: `event: ("query.completed" or "web_query.completed")`, sort by `duration_ms`.
+- Failure rate: `status: (error or failed_files) or event: *.failed`.
+- Retrieval degradation: `event: "dependency.unavailable" or fallback_count > 0`.
+- Provider/model errors: `error_type:* or model_error_type:*`.
+- Eval summaries: data view `imperial-rag-eval-summaries-v1`, filter `event: "eval.completed"`.
 
 ## Evaluation
 
@@ -434,6 +480,10 @@ Common settings:
 - `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.
 - `IMPERIAL_RAG_LOG_LEVEL`: local structured log level, defaulting to `INFO`.
 - `IMPERIAL_RAG_LOG_FORMAT`: local structured log format; v1 supports `json`.
+- `IMPERIAL_RAG_SERVICE_NAME` and `IMPERIAL_RAG_ENVIRONMENT`: optional structured event provenance fields.
+- `IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_ENABLED`: opt into local Elasticsearch event logging; defaults to `false`.
+- `IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_DATA_STREAM`: operational event data stream, defaulting to `imperial-rag-events-v1`.
+- `IMPERIAL_RAG_EVENTLOG_EVAL_DATA_STREAM`: eval summary data stream, defaulting to `imperial-rag-eval-summaries-v1`.
 - `IMPERIAL_RAG_ADMIN_EMAIL` and `IMPERIAL_RAG_ADMIN_PASSWORD`: bootstrap the first approved Streamlit admin account for granting chat access.
 - `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, and `COHERE_API_KEY`: legacy debugging compatibility only when `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE` is enabled.
 

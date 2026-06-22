@@ -86,6 +86,8 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
                 operation="build_query_dependencies",
                 status="warning",
                 component="runtime",
+                dependency="qdrant",
+                dependency_status="unavailable",
                 error_type=type(exc).__name__,
             )
     elif semantic_search_enabled:

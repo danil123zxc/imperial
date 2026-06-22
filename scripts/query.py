@@ -28,9 +28,9 @@ def main(argv: list[str] | None = None) -> None:
         with _trace_context(trace_session_id):
             result = _query(settings=settings, question=args.question)
     except (Exception, SystemExit) as exc:
-        _log_failure("query", exc, started_at)
+        _log_failure("query", exc, started_at, phoenix_session_id=trace_session_id, session_id=trace_session_id)
         raise
-    _log_query_completion(result, started_at)
+    _log_query_completion(result, started_at, phoenix_session_id=trace_session_id, session_id=trace_session_id)
     print(str(_result_value(result, "answer", "")))
     sources = _result_value(result, "sources", None) or _result_value(result, "citations", []) or []
     for source in sources:
@@ -87,7 +87,7 @@ def _configure_observability(settings: Any) -> None:
     configure_observability(settings)
 
 
-def _log_query_completion(result: Any, started_at: float) -> None:
+def _log_query_completion(result: Any, started_at: float, **fields: Any) -> None:
     from imperial_rag.observability import log_event
 
     log_event(
@@ -96,14 +96,15 @@ def _log_query_completion(result: Any, started_at: float) -> None:
         status="success",
         component="cli",
         duration_ms=_duration_ms(started_at),
+        **fields,
         **_query_log_fields(result),
     )
 
 
-def _log_failure(operation: str, exc: BaseException, started_at: float) -> None:
+def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
     from imperial_rag.cli import log_failure
 
-    log_failure(operation, exc, started_at)
+    log_failure(operation, exc, started_at, **fields)
 
 
 def _build_settings(workspace_root: Path | None) -> Any:

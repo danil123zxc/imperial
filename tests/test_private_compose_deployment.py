@@ -76,6 +76,9 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
 
     required_snippets = [
         "x-imperial-app-base:",
+        "driver: json-file",
+        'max-size: "10m"',
+        'max-file: "10"',
         "app:",
         "ingest:",
         "elasticsearch:",
@@ -116,6 +119,11 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     assert compose.count("condition: service_healthy") >= 2
     assert "phoenix:\n      condition: service_healthy" not in app_base
     assert "ports:" not in ingest
+    assert "logging: &imperial-json-log-options" in app_base
+    assert "logging: *imperial-json-log-options" in phoenix
+    assert "logging: *imperial-json-log-options" in qdrant
+    assert "logging: *imperial-json-log-options" in elasticsearch
+    assert "logging: *imperial-json-log-options" in kibana
     assert '"127.0.0.1:8501:8501"' in app
     assert '"127.0.0.1:6333:6333"' in qdrant
     assert '"127.0.0.1:9200:9200"' in elasticsearch
@@ -182,6 +190,19 @@ def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
     assert "IMPERIAL_RAG_TRACE_USER_HASH_SECRET=" in lines
 
 
+def test_env_example_documents_local_event_log_knobs() -> None:
+    env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
+
+    assert "IMPERIAL_RAG_LOG_LEVEL=INFO" in lines
+    assert "IMPERIAL_RAG_LOG_FORMAT=json" in lines
+    assert "IMPERIAL_RAG_SERVICE_NAME=imperial-rag" in lines
+    assert "IMPERIAL_RAG_ENVIRONMENT=local" in lines
+    assert "IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_ENABLED=false" in lines
+    assert "IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_DATA_STREAM=imperial-rag-events-v1" in lines
+    assert "IMPERIAL_RAG_EVENTLOG_EVAL_DATA_STREAM=imperial-rag-eval-summaries-v1" in lines
+
+
 def test_readme_documents_private_compose_deployment() -> None:
     readme = _read("README.md")
 
@@ -193,7 +214,8 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "http://127.0.0.1:5601" in readme
     assert "unauthenticated by default and are safe only while bound to `127.0.0.1`" in readme
     assert "Phoenix traces are private diagnostic records" in readme
-    assert "Future Kibana log views should link to Phoenix only by request/session identifiers" in readme
+    assert "Searchable event logs are optional and local-only." in readme
+    assert "closed schema validation is the privacy boundary" in readme
 
 
 def test_compose_documents_local_only_unauthenticated_observability_services() -> None:

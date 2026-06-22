@@ -35,9 +35,18 @@ def main(argv: list[str] | None = None) -> None:
             started_at,
             enable_ocr=args.enable_ocr,
             index_vectors=args.index_vectors,
+            phoenix_session_id=trace_session_id,
+            session_id=trace_session_id,
         )
         raise
-    _log_ingest_completion(summary, started_at, enable_ocr=args.enable_ocr, index_vectors=args.index_vectors)
+    _log_ingest_completion(
+        summary,
+        started_at,
+        enable_ocr=args.enable_ocr,
+        index_vectors=args.index_vectors,
+        phoenix_session_id=trace_session_id,
+        session_id=trace_session_id,
+    )
     print_summary(summary)
 
 
@@ -84,7 +93,14 @@ def _configure_observability(settings: Any) -> None:
     configure_observability(settings)
 
 
-def _log_ingest_completion(summary: Any, started_at: float, *, enable_ocr: bool, index_vectors: bool) -> None:
+def _log_ingest_completion(
+    summary: Any,
+    started_at: float,
+    *,
+    enable_ocr: bool,
+    index_vectors: bool,
+    **extra_fields: Any,
+) -> None:
     from imperial_rag.observability import log_event
 
     fields = _summary_log_fields(summary)
@@ -98,6 +114,7 @@ def _log_ingest_completion(summary: Any, started_at: float, *, enable_ocr: bool,
         duration_ms=_duration_ms(started_at),
         enable_ocr=enable_ocr,
         index_vectors=index_vectors,
+        **extra_fields,
         **fields,
     )
 

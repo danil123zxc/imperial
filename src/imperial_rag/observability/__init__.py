@@ -4,6 +4,7 @@ import sys
 import types
 
 from imperial_rag.observability import logging as _logging
+from imperial_rag.observability.eventlog import *  # noqa: F403
 from imperial_rag.observability.logging import *  # noqa: F403
 
 for _name in dir(_logging):

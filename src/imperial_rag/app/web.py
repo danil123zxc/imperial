@@ -253,13 +253,15 @@ def main() -> None:
     with st.chat_message("user"):
         st.write(question)
 
+    from imperial_rag.tracing import trace_user_id_from_email
+
+    user_hash = trace_user_id_from_email(current_user.email)
+    phoenix_session_id = st.session_state.phoenix_trace_session_id
     started_at = perf_counter()
     try:
-        from imperial_rag.tracing import trace_user_id_from_email
-
         with phoenix_trace_context(
-            st.session_state.phoenix_trace_session_id,
-            user_id=trace_user_id_from_email(current_user.email),
+            phoenix_session_id,
+            user_id=user_hash,
             metadata={"entrypoint": "streamlit"},
             tags=["imperial-rag", "streamlit"],
         ):
@@ -267,7 +269,15 @@ def main() -> None:
     except Exception as exc:
         from imperial_rag.observability import log_failure
 
-        log_failure("web_query", exc, component="streamlit", duration_ms=_duration_ms(started_at))
+        log_failure(
+            "web_query",
+            exc,
+            component="streamlit",
+            duration_ms=_duration_ms(started_at),
+            phoenix_session_id=phoenix_session_id,
+            session_id=phoenix_session_id,
+            user_hash=user_hash,
+        )
         with st.chat_message("assistant"):
             st.error("Something went wrong while answering. Check local logs for details.")
         return
@@ -279,6 +289,9 @@ def main() -> None:
         status="success",
         component="streamlit",
         duration_ms=_duration_ms(started_at),
+        phoenix_session_id=phoenix_session_id,
+        session_id=phoenix_session_id,
+        user_hash=user_hash,
         **_query_log_fields(result),
     )
     answer = str(result.get("answer", ""))

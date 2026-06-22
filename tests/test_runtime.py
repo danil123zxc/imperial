@@ -400,6 +400,8 @@ def test_build_query_dependencies_marks_vector_construction_failure_unavailable(
                 "operation": "build_query_dependencies",
                 "status": "warning",
                 "component": "runtime",
+                "dependency": "qdrant",
+                "dependency_status": "unavailable",
                 "error_type": "RuntimeError",
             },
         )
