@@ -14,6 +14,12 @@ from typing import Any
 DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
 DEFAULT_RETRIEVAL_METRIC_K = 5
+VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
+CITE_ANSWER_BEHAVIOR = "cite_answer"
+ANSWER_QUALITY_METRIC_KEYS = {
+    "faithfulness": "ragas_faithfulness",
+    "answer_relevancy": "ragas_answer_relevancy",
+}
 REFUSAL_FALLBACKS = (
     "I could not find this clearly in the indexed documents.",
     "не удалось найти",
@@ -26,14 +32,56 @@ _RAGAS_ANSWER_RELEVANCY_SCORER: Any | None = None
 
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    seen_ids: set[str] = set()
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
         payload = json.loads(line)
-        if not payload.get("question"):
-            raise ValueError(f"missing question on line {line_number}")
+        errors.extend(_validate_question_row(payload, line_number=line_number, seen_ids=seen_ids))
         rows.append(payload)
+    if errors:
+        raise ValueError("; ".join(errors))
     return rows
+
+
+def _validate_question_row(
+    payload: Mapping[str, Any],
+    *,
+    line_number: int,
+    seen_ids: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    row_id = str(payload.get("id") or "").strip()
+    if not row_id:
+        errors.append(f"line {line_number}: missing id")
+    elif row_id in seen_ids:
+        errors.append(f"line {line_number}: duplicate id {row_id}")
+    else:
+        seen_ids.add(row_id)
+
+    if not str(payload.get("suite") or "").strip():
+        errors.append(f"line {line_number}: missing suite")
+    if not payload.get("question"):
+        errors.append(f"line {line_number}: missing question")
+    if payload.get("expected_behavior") not in VALID_EXPECTED_BEHAVIORS:
+        errors.append(f"line {line_number}: invalid expected_behavior")
+    if not str(payload.get("reference_answer") or "").strip():
+        errors.append(f"line {line_number}: missing reference_answer")
+
+    source_hints = payload.get("expected_source_hints", [])
+    if not isinstance(source_hints, list) or any(not isinstance(hint, str) for hint in source_hints):
+        errors.append(f"line {line_number}: expected_source_hints must be a list of strings")
+    tags = payload.get("tags", [])
+    if not isinstance(tags, list) or any(not isinstance(tag, str) or not tag.strip() for tag in tags):
+        errors.append(f"line {line_number}: tags must be a list of non-empty strings")
+    if "reference_context_ids" in payload:
+        context_ids = payload.get("reference_context_ids")
+        if not isinstance(context_ids, list) or any(
+            not isinstance(context_id, str) or not context_id.strip() for context_id in context_ids
+        ):
+            errors.append(f"line {line_number}: reference_context_ids must be a list of non-empty strings")
+    return errors
 
 
 def target(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +200,8 @@ def phoenix_ragas_faithfulness(
 ) -> dict[str, Any]:
     from imperial_rag.ragas_eval import score_faithfulness_for_phoenix
 
+    if not _answer_quality_metric_applies(expected or input or {}):
+        return _metric_not_applicable_result("faithfulness", expected or input or {})
     return score_faithfulness_for_phoenix(
         input=input or {},
         output=output or {},
@@ -166,6 +216,8 @@ def phoenix_ragas_answer_relevancy(
 ) -> dict[str, Any]:
     from imperial_rag.ragas_eval import score_answer_relevancy_for_phoenix
 
+    if not _answer_quality_metric_applies(expected or input or {}):
+        return _metric_not_applicable_result("answer_relevancy", expected or input or {})
     return score_answer_relevancy_for_phoenix(
         input=input or {},
         output=output or {},
@@ -307,9 +359,12 @@ def run_phoenix_experiment(
     except ImportError as exc:
         raise SystemExit("Phoenix client is not installed; install arize-phoenix-client.") from exc
 
-    if "faithfulness" in resolved_ragas_metric_names:
+    has_answer_quality_rows = any(
+        example.get("expected_behavior") == CITE_ANSWER_BEHAVIOR for example in examples
+    )
+    if "faithfulness" in resolved_ragas_metric_names and has_answer_quality_rows:
         _get_ragas_faithfulness_scorer()
-    if "answer_relevancy" in resolved_ragas_metric_names:
+    if "answer_relevancy" in resolved_ragas_metric_names and has_answer_quality_rows:
         _get_ragas_answer_relevancy_scorer()
     client = Client(base_url=settings.phoenix_client_endpoint)
     inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
@@ -472,6 +527,10 @@ def _to_phoenix_dataset_rows(
         inputs.append({"question": example["question"]})
         outputs.append(expected)
         metadata.append({"id": example_id, "row_index": row_index, "source": str(DEFAULT_QUESTIONS_PATH)})
+        if example.get("suite"):
+            metadata[-1]["suite"] = example["suite"]
+        if "tags" in example:
+            metadata[-1]["tags"] = list(example.get("tags") or [])
     return inputs, outputs, metadata
 
 
@@ -570,6 +629,116 @@ def log_phoenix_eval_annotations(
             ],
             sync=sync,
         )
+
+
+def build_eval_artifact_row(
+    *,
+    example: Mapping[str, Any],
+    output: Mapping[str, Any],
+    ragas_results: Mapping[str, Mapping[str, Any]] | None = None,
+    phoenix_experiment: str | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import retrieved_context_ids_from_output
+
+    inputs = {"question": example["question"]}
+    reference_outputs = {
+        "expected_behavior": example["expected_behavior"],
+        "expected_source_hints": example.get("expected_source_hints", []),
+        "reference_context_ids": list(example.get("reference_context_ids") or []),
+    }
+    citation_verdict = citation_behavior(inputs, dict(output), reference_outputs)["score"]
+    source_hint_verdict = source_hint_behavior(inputs, dict(output), reference_outputs)["score"]
+    retrieval_metrics = retrieval_relevance_metrics(inputs, dict(output), reference_outputs)
+    retrieval_metadata = retrieval_metrics.get("metadata", {})
+    deterministic = {
+        "citation_behavior": citation_verdict,
+        "source_hint_behavior": source_hint_verdict,
+        f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
+            f"hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+        ),
+        f"retrieval_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
+            f"precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+        ),
+        f"retrieval_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
+            f"ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+        ),
+    }
+    resolved_ragas_results = ragas_results or {}
+    ragas_scores = {name: result.get("score") for name, result in resolved_ragas_results.items()}
+    ragas_explanations = {name: result.get("explanation") for name, result in resolved_ragas_results.items()}
+    return {
+        "id": example.get("id"),
+        "suite": example.get("suite"),
+        "tags": list(example.get("tags") or []),
+        "question": example["question"],
+        "expected_behavior": example["expected_behavior"],
+        "answer": str(output.get("answer") or ""),
+        "citations": list(output.get("citations") or output.get("sources") or []),
+        "retrieved_context_ids": retrieved_context_ids_from_output(dict(output)),
+        "reference_context_ids": list(example.get("reference_context_ids") or []),
+        "deterministic": deterministic,
+        "ragas_scores": ragas_scores,
+        "ragas_explanations": ragas_explanations,
+        "phoenix_experiment": phoenix_experiment,
+        "failure_class": classify_eval_failure(
+            expected_behavior=str(example.get("expected_behavior") or ""),
+            deterministic=deterministic,
+            ragas_scores=ragas_scores,
+        ),
+    }
+
+
+def classify_eval_failure(
+    *,
+    expected_behavior: str,
+    deterministic: Mapping[str, Any],
+    ragas_scores: Mapping[str, Any],
+) -> str | None:
+    if expected_behavior == "refuse_if_not_found" and deterministic.get("citation_behavior") is not True:
+        return "bad_refusal"
+    if expected_behavior == "surface_conflict" and deterministic.get("citation_behavior") is not True:
+        return "bad_conflict_handling"
+    if expected_behavior == "cite_answer" and deterministic.get("citation_behavior") is not True:
+        return "missing_citation"
+    if deterministic.get(f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}") is False:
+        return "retrieval_miss"
+    if deterministic.get("source_hint_behavior") is False:
+        return "noisy_retrieval"
+    if _below_threshold(ragas_scores.get("faithfulness")):
+        return "ungrounded_answer"
+    if _below_threshold(ragas_scores.get("answer_relevancy")):
+        return "irrelevant_answer"
+    if _below_threshold(ragas_scores.get("factual_correctness")):
+        return "incorrect_answer"
+    return None
+
+
+def _answer_quality_metric_applies(reference: Mapping[str, Any]) -> bool:
+    behavior = reference.get("expected_behavior")
+    return behavior in (None, "", CITE_ANSWER_BEHAVIOR)
+
+
+def _metric_not_applicable_result(metric_name: str, reference: Mapping[str, Any]) -> dict[str, Any]:
+    metric_key = ANSWER_QUALITY_METRIC_KEYS[metric_name]
+    return {
+        "score": None,
+        "label": "skipped",
+        "explanation": "Ragas answer-quality metrics are only applicable to cite_answer rows.",
+        "metadata": {
+            "metric": metric_key,
+            "reason": "metric_not_applicable_for_behavior",
+            "expected_behavior": reference.get("expected_behavior"),
+        },
+    }
+
+
+def _below_threshold(value: Any, threshold: float = 0.5) -> bool:
+    if value is None:
+        return False
+    try:
+        return float(value) < threshold
+    except (TypeError, ValueError):
+        return False
 
 
 def _configure_tracing(settings: Any, enabled: bool) -> None:

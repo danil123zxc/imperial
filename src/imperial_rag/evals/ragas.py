@@ -229,10 +229,17 @@ def score_id_context_recall_for_phoenix(
     resolved_input = input or {}
     resolved_output = output or {}
     resolved_expected = expected or resolved_input
+    reference_context_ids = _clean_context_ids(resolved_expected.get("reference_context_ids") or [])
+    if not reference_context_ids:
+        return _id_context_recall_not_applicable_result(
+            "missing_reference_context_ids",
+            retrieved_context_count=len(retrieved_context_ids_from_output(resolved_output)),
+            reference_context_count=0,
+        )
     row = {
         "user_input": str(resolved_input.get("question") or resolved_input.get("user_input") or ""),
         "retrieved_context_ids": retrieved_context_ids_from_output(resolved_output),
-        "reference_context_ids": _clean_context_ids(resolved_expected.get("reference_context_ids") or []),
+        "reference_context_ids": reference_context_ids,
     }
     return score_id_context_recall_row(row, scorer=scorer)
 
@@ -427,15 +434,47 @@ def _score_id_context_recall_with_ragas(
     retrieved_context_ids: list[str],
     reference_context_ids: list[str],
 ) -> Any:
-    sample = _import_single_turn_sample()(
-        retrieved_context_ids=retrieved_context_ids,
-        reference_context_ids=reference_context_ids,
+    sample = single_turn_sample_from_row(
+        {
+            "retrieved_context_ids": retrieved_context_ids,
+            "reference_context_ids": reference_context_ids,
+        }
     )
     if hasattr(scorer, "single_turn_ascore"):
         return _resolve_awaitable(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
         return _resolve_awaitable(scorer.score(sample))
     raise TypeError("Ragas IDBasedContextRecall scorer does not expose single_turn_ascore/score methods.")
+
+
+def single_turn_sample_from_row(row: Mapping[str, Any]) -> Any:
+    kwargs: dict[str, Any] = {}
+    for source_key, target_key in (
+        ("user_input", "user_input"),
+        ("response", "response"),
+        ("reference", "reference"),
+    ):
+        value = str(row.get(source_key) or "").strip()
+        if value:
+            kwargs[target_key] = value
+
+    retrieved_contexts = _clean_texts(row.get("retrieved_contexts") or [])
+    if retrieved_contexts:
+        kwargs["retrieved_contexts"] = retrieved_contexts
+    retrieved_context_ids = _clean_context_ids(row.get("retrieved_context_ids") or [])
+    if retrieved_context_ids:
+        kwargs["retrieved_context_ids"] = retrieved_context_ids
+    reference_context_ids = _clean_context_ids(row.get("reference_context_ids") or [])
+    if reference_context_ids:
+        kwargs["reference_context_ids"] = reference_context_ids
+
+    return _import_single_turn_sample()(**kwargs)
+
+
+def evaluation_dataset_from_rows(rows: Sequence[Mapping[str, Any]]) -> Any:
+    return _import_evaluation_dataset()(
+        samples=[single_turn_sample_from_row(row) for row in rows],
+    )
 
 
 def _import_async_openai() -> Any:
@@ -535,6 +574,15 @@ def _import_single_turn_sample() -> Any:
     except ImportError as exc:
         raise SystemExit("Ragas SingleTurnSample is not installed; run `uv sync --extra dev`.") from exc
     return SingleTurnSample
+
+
+def _import_evaluation_dataset() -> Any:
+    _install_ragas_langchain_community_compat()
+    try:
+        from ragas import EvaluationDataset
+    except ImportError as exc:
+        raise SystemExit("Ragas EvaluationDataset is not installed; run `uv sync --extra dev`.") from exc
+    return EvaluationDataset
 
 
 def _install_ragas_langchain_community_compat() -> None:
@@ -667,6 +715,25 @@ def _id_context_recall_skipped_result(
         "score": None,
         "label": "skipped",
         "explanation": explanation,
+        "metadata": {
+            "metric": ID_CONTEXT_RECALL_METADATA_KEY,
+            "reason": reason,
+            "retrieved_context_id_count": retrieved_context_count,
+            "reference_context_id_count": reference_context_count,
+        },
+    }
+
+
+def _id_context_recall_not_applicable_result(
+    reason: str,
+    *,
+    retrieved_context_count: int,
+    reference_context_count: int,
+) -> dict[str, Any]:
+    return {
+        "score": None,
+        "label": "not_applicable",
+        "explanation": "Ragas ID context recall is only applicable to rows with reference_context_ids.",
         "metadata": {
             "metric": ID_CONTEXT_RECALL_METADATA_KEY,
             "reason": reason,

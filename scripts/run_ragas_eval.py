@@ -24,6 +24,7 @@ from imperial_rag.ragas_eval import (
     REFERENCE_REQUIRED_RAGAS_METRICS,
     SUPPORTED_RAGAS_METRICS,
     answer_relevancy_row_from_run_output,
+    evaluation_dataset_from_rows,
     evaluate_answer_relevancy_rows,
     evaluate_id_context_recall_rows,
     evaluate_faithfulness_rows,
@@ -50,7 +51,7 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
     rows: list[dict[str, Any]] = []
     skipped = 0
     for example in examples:
-        if example.get("expected_behavior") == "refuse_if_not_found":
+        if example.get("expected_behavior") != "cite_answer":
             skipped += 1
             continue
         outputs = run_target({"question": example["question"]}, runtime=resolved_runtime)
@@ -58,6 +59,12 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
         if row is None:
             skipped += 1
             continue
+        if "id" in example:
+            row["id"] = example["id"]
+        if "suite" in example:
+            row["suite"] = example["suite"]
+        if "tags" in example:
+            row["tags"] = list(example.get("tags") or [])
         retrieved_contexts = retrieved_contexts_from_output(outputs)
         if retrieved_contexts:
             row["retrieved_contexts"] = retrieved_contexts
@@ -127,21 +134,7 @@ def evaluate_ragas_rows(
 
 
 def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
-    _install_ragas_langchain_community_compat()
-    try:
-        import ragas
-    except ImportError as exc:
-        raise SystemExit("Ragas is not installed; run `uv sync --extra dev`.") from exc
-
-    EvaluationDataset = getattr(ragas, "EvaluationDataset", None)
-    if EvaluationDataset is not None:
-        return EvaluationDataset.from_list(rows)
-
-    try:
-        from datasets import Dataset
-    except ImportError as exc:
-        raise SystemExit("Ragas dataset fallback requires the `datasets` package.") from exc
-    return Dataset.from_list(rows)
+    return evaluation_dataset_from_rows(rows)
 
 
 def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any]:

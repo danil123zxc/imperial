@@ -310,6 +310,63 @@ def test_score_id_context_recall_row_skips_missing_ids():
     assert missing_retrieved["metadata"]["reason"] == "missing_retrieved_context_ids"
 
 
+def test_single_turn_sample_from_row_populates_text_and_context_id_fields(monkeypatch):
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeSingleTurnSample:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(ragas_eval, "_import_single_turn_sample", lambda: FakeSingleTurnSample)
+
+    sample = ragas_eval.single_turn_sample_from_row(
+        {
+            "user_input": " Что делать с браком? ",
+            "response": " Оформить возврат. ",
+            "retrieved_contexts": [" Регламент возврата. ", ""],
+            "reference": "Возврат оформляется по регламенту.",
+            "retrieved_context_ids": ["file-a", "file-a", ""],
+            "reference_context_ids": ["file-b", " "],
+        }
+    )
+
+    assert isinstance(sample, FakeSingleTurnSample)
+    assert captured == {
+        "user_input": "Что делать с браком?",
+        "response": "Оформить возврат.",
+        "retrieved_contexts": ["Регламент возврата."],
+        "reference": "Возврат оформляется по регламенту.",
+        "retrieved_context_ids": ["file-a"],
+        "reference_context_ids": ["file-b"],
+    }
+
+
+def test_evaluation_dataset_from_rows_uses_single_turn_samples(monkeypatch):
+    from imperial_rag import ragas_eval
+
+    captured: dict[str, object] = {}
+
+    class FakeDataset:
+        def __init__(self, *, samples):
+            self.samples = samples
+            captured["samples"] = samples
+
+    monkeypatch.setattr(ragas_eval, "_import_evaluation_dataset", lambda: FakeDataset)
+    monkeypatch.setattr(ragas_eval, "single_turn_sample_from_row", lambda row: {"sample": row["user_input"]})
+
+    dataset = ragas_eval.evaluation_dataset_from_rows(
+        [
+            {"user_input": "q1", "response": "a1"},
+            {"user_input": "q2", "response": "a2"},
+        ]
+    )
+
+    assert isinstance(dataset, FakeDataset)
+    assert captured["samples"] == [{"sample": "q1"}, {"sample": "q2"}]
+
+
 def test_parse_ragas_metric_names_accepts_id_context_recall_aliases():
     from imperial_rag import ragas_eval
 
@@ -464,6 +521,32 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
     ]
 
 
+def test_build_ragas_rows_skips_conflict_rows_for_answer_quality_metrics():
+    module = _load_ragas_runner()
+    examples = [
+        {
+            "id": "imperial-conflict-001",
+            "question": "Какая версия регламента действует?",
+            "expected_behavior": "surface_conflict",
+            "expected_source_hints": ["регламент"],
+            "reference_answer": "Ответ должен показать конфликт.",
+        }
+    ]
+
+    class FakeRuntime:
+        def query(self, question: str) -> dict[str, object]:
+            return {
+                "answer": "Документы противоречат друг другу. [a] [b]",
+                "citations": ["[a]", "[b]"],
+                "evidence": [{"page_content": "Версия А", "metadata": {"file_id": "file-a"}}],
+            }
+
+    prepared = module.build_ragas_rows(examples, runtime=FakeRuntime())
+
+    assert prepared.skipped == 1
+    assert prepared.rows == []
+
+
 def test_validate_metric_requirements_rejects_reference_metrics_without_reference():
     module = _load_ragas_runner()
 
@@ -561,6 +644,21 @@ def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
             "metrics": ["metric:context_recall"],
         },
     }
+
+
+def test_build_ragas_dataset_uses_structured_evaluation_dataset(monkeypatch):
+    module = _load_ragas_runner()
+    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"], "reference": "ref"}]
+    captured: dict[str, object] = {}
+
+    def fake_evaluation_dataset_from_rows(received_rows):
+        captured["rows"] = received_rows
+        return {"structured_dataset": received_rows}
+
+    monkeypatch.setattr(module, "evaluation_dataset_from_rows", fake_evaluation_dataset_from_rows)
+
+    assert module.build_ragas_dataset(rows) == {"structured_dataset": rows}
+    assert captured == {"rows": rows}
 
 
 def test_build_evaluator_llm_uses_modern_ragas_dashscope_client(monkeypatch):
