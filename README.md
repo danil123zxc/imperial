@@ -245,7 +245,6 @@ To inspect the real chunks returned by vector and keyword retrieval in Phoenix, 
 ```bash
 IMPERIAL_RAG_TRACE_RUN_ID=retrieval-debug-smoke \
 IMPERIAL_RAG_TRACE_MODE=retrieval_debug \
-IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT=5 \
 IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS=1200 \
 IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE=false \
 uv run python scripts/query.py "question text" --trace-phoenix
@@ -481,11 +480,11 @@ Common settings:
 - `IMPERIAL_RAG_GIT_SHA`, `IMPERIAL_RAG_IMAGE_DIGEST`, `IMPERIAL_RAG_IMAGE_TAG`, and `IMPERIAL_RAG_APP_VERSION`: optional build/runtime provenance fields stamped onto root query spans when present; set `IMPERIAL_RAG_GIT_SHA` for exact container provenance, otherwise container traces mark the SHA as `unavailable`.
 - `IMPERIAL_RAG_TRACE_FULL_METADATA`: include full document metadata in retrieval/reranker traces when explicitly enabled.
 - `IMPERIAL_RAG_TRACE_FULL_FINAL_EVIDENCE`: attach uncapped final evidence document text to `retrieval.final_evidence` when explicitly enabled.
-- `IMPERIAL_RAG_TRACE_MODE`: `compact` by default; set `retrieval_debug` to split fusion into merge/RRF diagnostic spans and attach bounded vector/keyword candidate chunks to Phoenix retriever document panels.
-- `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS`: low-level override that also attaches bounded vector/keyword candidate chunks when set to a truthy value.
+- `IMPERIAL_RAG_TRACE_MODE`: `compact` by default; set `retrieval_debug` to split fusion into merge/RRF diagnostic spans and attach vector/keyword candidate chunks to Phoenix retriever document panels.
+- `IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS`: low-level override that also attaches vector/keyword candidate chunks when set to a truthy value.
 - `IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT`: opt into Phoenix/OpenInference framework auto-instrumentation for deep debugging; defaults to `false` so manual domain spans define the summary trace tree.
 - `IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS`: suppress framework child spans inside Imperial wrapper spans by default; set to `false` for targeted LangChain internals debugging.
-- `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: bound traced document count and content length.
+- `IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT` and `IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS`: leave the document limit unset to trace every document handled by each retrieval/reranker step, or set an integer to cap traced document count; content length is still bounded.
 - `IMPERIAL_RAG_TRACE_USER_HASH_SECRET`: optional local secret for HMAC-based Phoenix user IDs; leave unset to preserve current deterministic local trace correlation.
 - `OPENINFERENCE_HIDE_*` and `OTEL_BSP_*`: optional OpenInference privacy and batch-export controls; see `.env.example`.
 - `IMPERIAL_RAG_LOG_LEVEL`: local structured log level, defaulting to `INFO`.

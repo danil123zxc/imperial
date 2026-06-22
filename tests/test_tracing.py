@@ -429,7 +429,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     assert recorded_span.attributes["retrieval.documents.0.document.score"] == -2.5
 
 
-def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -> None:
+def test_trace_span_traces_all_native_retrieval_documents_by_default(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
     documents = [
@@ -450,9 +450,8 @@ def test_trace_span_caps_and_truncates_native_retrieval_documents(monkeypatch) -
 
     recorded_span = records[0]["span"]
     assert recorded_span.attributes["retrieval.documents.0.document.content"] == f"doc-0 {'x' * 794}..."
-    assert recorded_span.attributes["retrieval.documents.9.document.id"] == "chunk-9"
-    assert "retrieval.documents.10.document.content" not in recorded_span.attributes
-    assert "retrieval.documents.10.document.id" not in recorded_span.attributes
+    assert recorded_span.attributes["retrieval.documents.10.document.id"] == "chunk-10"
+    assert recorded_span.attributes["retrieval.documents.10.document.content"] == f"doc-10 {'x' * 793}..."
 
 
 def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> None:
@@ -622,7 +621,7 @@ def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
     assert recorded_span.attributes["reranker.output_documents.0.document.id"] == "out"
 
 
-def test_trace_span_caps_and_truncates_native_reranker_documents(monkeypatch) -> None:
+def test_trace_span_traces_all_native_reranker_documents_by_default(monkeypatch) -> None:
     records: list[dict[str, object]] = []
 
     documents = [
@@ -644,9 +643,9 @@ def test_trace_span_caps_and_truncates_native_reranker_documents(monkeypatch) ->
 
     recorded_span = records[0]["span"]
     assert recorded_span.attributes["reranker.input_documents.0.document.content"] == f"candidate-0 {'y' * 788}..."
-    assert recorded_span.attributes["reranker.output_documents.9.document.id"] == "candidate-9"
-    assert "reranker.input_documents.10.document.content" not in recorded_span.attributes
-    assert "reranker.output_documents.10.document.content" not in recorded_span.attributes
+    assert recorded_span.attributes["reranker.output_documents.10.document.id"] == "candidate-10"
+    assert recorded_span.attributes["reranker.input_documents.10.document.content"] == f"candidate-10 {'y' * 787}..."
+    assert recorded_span.attributes["reranker.output_documents.10.document.content"] == f"candidate-10 {'y' * 787}..."
 
 
 def test_retrieval_documents_preview_keeps_trace_payload_compact() -> None:

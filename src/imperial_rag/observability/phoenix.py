@@ -39,7 +39,6 @@ _DOCUMENT_ID = DocumentAttributes.DOCUMENT_ID
 _DOCUMENT_METADATA = DocumentAttributes.DOCUMENT_METADATA
 _DOCUMENT_SCORE = DocumentAttributes.DOCUMENT_SCORE
 _RETRIEVAL_PREVIEW_LIMIT = 3
-_TRACE_DOCUMENT_LIMIT = 10
 _TRACE_DOCUMENT_CONTENT_CHARS = 800
 _TRACE_SCHEMA_VERSION_VALUE = "rag-v2"
 _TEXT_MIME_TYPE = "text/plain"
@@ -375,17 +374,14 @@ def openinference_document_attributes(
     content_chars: int | None = None,
 ) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
-    resolved_document_limit = (
-        _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", _TRACE_DOCUMENT_LIMIT, minimum=0)
-        if document_limit is None
-        else max(document_limit, 0)
-    )
+    document_list = list(documents)
+    resolved_document_limit = _trace_document_limit(len(document_list), document_limit)
     resolved_content_chars = (
         _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", _TRACE_DOCUMENT_CONTENT_CHARS)
         if content_chars is None
         else content_chars
     )
-    for index, document in enumerate(list(documents)[:resolved_document_limit]):
+    for index, document in enumerate(document_list[:resolved_document_limit]):
         content = _compact_text(str(getattr(document, "page_content", "")), resolved_content_chars)
         metadata = dict(getattr(document, "metadata", {}) or {})
         document_id = _document_id(metadata)
@@ -402,6 +398,15 @@ def openinference_document_attributes(
         if score is not None:
             attributes[f"{prefix}.{_DOCUMENT_SCORE}"] = score
     return attributes
+
+
+def _trace_document_limit(total_documents: int, explicit_limit: int | None = None) -> int:
+    if explicit_limit is not None:
+        return max(explicit_limit, 0)
+    raw_value = os.environ.get("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", "").strip()
+    if not raw_value:
+        return total_documents
+    return _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", total_documents, minimum=0)
 
 
 def _trace_document_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
