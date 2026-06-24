@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -15,12 +16,27 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--workspace-root", type=Path, help="Workspace root containing documents/.")
     parser.add_argument("--enable-ocr", action="store_true", help="Use the configured paid OCR client.")
     parser.add_argument("--index-vectors", action="store_true", help="Index chunks into the configured vector store.")
+    parser.add_argument(
+        "--index-suffix",
+        help="Append a suffix to Elasticsearch index and Qdrant collection names for shadow ingestion.",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        type=Path,
+        help="Write extracted artifacts to this root instead of the canonical .imperial_rag/extracted root.",
+    )
+    parser.add_argument(
+        "--baseline-artifact-root",
+        type=Path,
+        help="Read old chunks for old-to-new ID mapping from this immutable baseline artifact root.",
+    )
     parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
     parser.add_argument("--trace-session-id", help="Phoenix session.id for grouping traces.")
     args = parser.parse_args(argv)
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
+    settings = _settings_with_shadow_targets(settings, args.index_suffix, args.artifact_root, args.baseline_artifact_root)
     _configure_observability(settings)
     _configure_tracing(settings, args.trace_phoenix)
     trace_session_id = _trace_session_id(args.trace_session_id)
@@ -190,6 +206,32 @@ def _build_settings(workspace_root: Path | None) -> Any:
     from imperial_rag.cli import build_settings
 
     return build_settings(workspace_root)
+
+
+def _settings_with_shadow_targets(
+    settings: Any,
+    suffix: str | None,
+    artifact_root: Path | None,
+    baseline_artifact_root: Path | None,
+) -> Any:
+    updates: dict[str, Any] = {}
+    if suffix is not None and suffix.strip():
+        clean = suffix.strip().replace(" ", "_")
+        updates["elasticsearch_index"] = f"{settings.elasticsearch_index}_{clean}"
+        updates["qdrant_collection"] = f"{settings.qdrant_collection}_{clean}"
+    if artifact_root is not None:
+        updates["extraction_root_override"] = _resolve_artifact_root(settings, artifact_root)
+    if baseline_artifact_root is not None:
+        updates["baseline_extraction_root"] = _resolve_artifact_root(settings, baseline_artifact_root)
+    if not updates:
+        return settings
+    return replace(settings, **updates)
+
+
+def _resolve_artifact_root(settings: Any, artifact_root: Path) -> Path:
+    if artifact_root.is_absolute():
+        return artifact_root
+    return Path(settings.workspace_root) / artifact_root
 
 
 def _load_project_env(workspace_root: Path | None) -> None:

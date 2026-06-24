@@ -203,7 +203,10 @@ def _run(
                         chunk_overlap=retrieval_settings.chunk_overlap,
                     )
                 )
+                baseline_root = Path(getattr(settings, "baseline_extraction_root", None) or extraction_root)
+                previous_chunk_rows = _read_existing_chunks(baseline_root / "chunks.jsonl")
                 _write_chunks(extraction_root, chunks)
+                _write_old_to_new_id_map(extraction_root, previous_chunk_rows, chunks)
                 corpus_version = _corpus_version(chunks)
                 chunk_span.set_attribute("imperial.corpus_version", corpus_version)
                 chunk_span.set_output(
@@ -659,6 +662,61 @@ def _write_chunks(extraction_root: Path, chunks: list[Any]) -> None:
                 )
                 + "\n"
             )
+
+
+def _read_existing_chunks(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def _write_old_to_new_id_map(extraction_root: Path, old_rows: list[dict[str, Any]], chunks: list[Any]) -> None:
+    new_by_file: dict[str, list[dict[str, Any]]] = {}
+    for chunk in chunks:
+        metadata = dict(getattr(chunk, "metadata", {}) or {})
+        file_id = metadata.get("file_id")
+        if file_id is not None:
+            new_by_file.setdefault(str(file_id), []).append(metadata)
+
+    rows: list[dict[str, Any]] = []
+    for row in old_rows:
+        old = dict(row.get("metadata") or {})
+        file_id = str(old.get("file_id") or "")
+        new_candidates = new_by_file.get(file_id, [])
+        new = new_candidates.pop(0) if new_candidates else {}
+        rows.append(
+            {
+                "file_id": file_id,
+                "old_chunk_id": old.get("chunk_id"),
+                "old_citation_id": old.get("citation_id"),
+                "new_chunk_id": new.get("chunk_id"),
+                "new_citation_id": new.get("citation_id"),
+                "source_locator": new.get("source_locator"),
+                "status": "mapped" if new.get("chunk_id") else "unmapped",
+            }
+        )
+
+    for file_id, remaining in sorted(new_by_file.items()):
+        for new in remaining:
+            rows.append(
+                {
+                    "file_id": file_id,
+                    "old_chunk_id": None,
+                    "old_citation_id": None,
+                    "new_chunk_id": new.get("chunk_id"),
+                    "new_citation_id": new.get("citation_id"),
+                    "source_locator": new.get("source_locator"),
+                    "status": "new_only",
+                }
+            )
+
+    payload = {"schema_version": "old-to-new-id-map-v1", "rows": rows}
+    target = _safe_artifact_path(extraction_root, "old-to-new-id-map.json")
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _safe_artifact_path(root: Path, filename: str) -> Path:

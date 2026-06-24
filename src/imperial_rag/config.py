@@ -102,6 +102,8 @@ class Settings:
     )
     log_level: str = field(default_factory=_log_level_from_env)
     log_format: str = field(default_factory=_log_format_from_env)
+    extraction_root_override: Path | None = None
+    baseline_extraction_root: Path | None = None
 
     @property
     def documents_root(self) -> Path:
@@ -121,4 +123,6 @@ class Settings:
 
     @property
     def extraction_root(self) -> Path:
+        if self.extraction_root_override is not None:
+            return self.extraction_root_override
         return self.processed_root / "extracted"

@@ -52,6 +52,15 @@ def test_settings_reads_environment_overrides_including_qdrant_collection(monkey
     assert settings.log_format == "plain"
 
 
+def test_settings_allows_extraction_root_override(tmp_path):
+    shadow_root = tmp_path / ".imperial_rag" / "extracted-shadow-v2"
+
+    settings = Settings(workspace_root=tmp_path, extraction_root_override=shadow_root)
+
+    assert settings.processed_root == tmp_path / ".imperial_rag"
+    assert settings.extraction_root == shadow_root
+
+
 def test_load_project_env_reads_workspace_dotenv_without_overriding_exported_values(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text(

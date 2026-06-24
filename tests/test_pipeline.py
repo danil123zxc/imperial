@@ -34,6 +34,8 @@ class FakeSettings:
     elasticsearch_url: str = "http://127.0.0.1:9200"
     elasticsearch_index: str = "test_keyword_chunks"
     qdrant_collection: str = "test_qdrant_chunks"
+    extraction_root_override: Path | None = None
+    baseline_extraction_root: Path | None = None
 
     @property
     def documents_root(self) -> Path:
@@ -45,6 +47,8 @@ class FakeSettings:
 
     @property
     def extraction_root(self) -> Path:
+        if self.extraction_root_override is not None:
+            return self.extraction_root_override
         return self.workspace_root / ".imperial_rag" / "extracted"
 
 
@@ -220,7 +224,7 @@ def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path,
     assert {
         key: records[3]["output"][key]
         for key in ("document_count", "chunk_count", "chunk_size", "chunk_overlap")
-    } == {"document_count": 1, "chunk_count": 1, "chunk_size": 400, "chunk_overlap": 50}
+    } == {"document_count": 1, "chunk_count": 1, "chunk_size": 650, "chunk_overlap": 80}
     assert records[3]["output"]["corpus_version"].startswith("corpus_sha256:")
     assert records[3]["output"]["chunk_hashes"]["count"] == 1
     assert records[4]["output"] == {
@@ -351,6 +355,58 @@ def test_run_ingestion_traces_extraction_failure_summary(tmp_path, monkeypatch):
     }
 
 
+def test_run_ingestion_writes_old_to_new_id_map(tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    extracted = tmp_path / ".imperial_rag" / "extracted"
+    extracted.mkdir(parents=True)
+    (extracted / "chunks.jsonl").write_text(
+        json.dumps(
+            {
+                "page_content": "old",
+                "metadata": {"file_id": "file1", "chunk_id": "old-chunk", "citation_id": "old-citation"},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _install_fake_dependencies(monkeypatch)
+
+    run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
+
+    id_map_path = extracted / "old-to-new-id-map.json"
+    id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
+    assert id_map["schema_version"] == "old-to-new-id-map-v1"
+    assert id_map["rows"][0]["old_chunk_id"] == "old-chunk"
+    assert id_map["rows"][0]["old_citation_id"] == "old-citation"
+    assert id_map["rows"][0]["new_chunk_id"] == "file1:body:0"
+    assert id_map["rows"][0]["status"] == "mapped"
+
+
+def test_run_ingestion_can_write_shadow_artifacts_without_mutating_canonical_root(tmp_path, monkeypatch):
+    canonical = tmp_path / ".imperial_rag" / "extracted"
+    canonical.mkdir(parents=True)
+    (canonical / "chunks.jsonl").write_text(
+        json.dumps({"page_content": "canonical", "metadata": {"file_id": "file1", "chunk_id": "old"}}) + "\n",
+        encoding="utf-8",
+    )
+    shadow = tmp_path / ".imperial_rag" / "extracted-shadow-v2"
+    _install_fake_dependencies(monkeypatch)
+
+    settings = FakeSettings(
+        tmp_path,
+        extraction_root_override=shadow,
+        baseline_extraction_root=canonical,
+    )
+    run_ingestion(settings=settings, enable_ocr=False, index_vectors=False)
+
+    assert "canonical" in (canonical / "chunks.jsonl").read_text(encoding="utf-8")
+    assert (shadow / "chunks.jsonl").exists()
+    assert (shadow / "old-to-new-id-map.json").exists()
+
+
 def _capture_pipeline_spans(monkeypatch, pipeline_module):
     records = []
 
@@ -389,15 +445,15 @@ def _install_fake_dependencies(
     retrieval = ModuleType("imperial_rag.retrieval")
 
     class RetrievalSettings:
-        def __init__(self, chunk_size: int = 400, chunk_overlap: int = 50) -> None:
+        def __init__(self, chunk_size: int = 650, chunk_overlap: int = 80) -> None:
             self.chunk_size = chunk_size
             self.chunk_overlap = chunk_overlap
 
         @classmethod
         def from_env(cls):
             return cls(
-                chunk_size=_safe_env_int("IMPERIAL_RAG_CHUNK_SIZE", 400),
-                chunk_overlap=_safe_env_int("IMPERIAL_RAG_CHUNK_OVERLAP", 50),
+                chunk_size=_safe_env_int("IMPERIAL_RAG_CHUNK_SIZE", 650),
+                chunk_overlap=_safe_env_int("IMPERIAL_RAG_CHUNK_OVERLAP", 80),
             )
 
     retrieval.RetrievalSettings = RetrievalSettings

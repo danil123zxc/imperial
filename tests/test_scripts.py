@@ -43,6 +43,12 @@ def test_event_log_setup_script_imports_and_defines_main():
     assert hasattr(module, "setup_event_log_streams")
 
 
+def test_ingestion_promotion_script_imports_and_defines_main():
+    module = _load_script("scripts/check_ingestion_promotion.py", "check_ingestion_promotion_script")
+
+    assert hasattr(module, "main")
+
+
 def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/ingest.py").read_text(encoding="utf-8")
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")
@@ -56,6 +62,15 @@ def test_entrypoint_scripts_configure_observability():
     assert "configure_observability" in Path("scripts/run_phoenix_eval.py").read_text(encoding="utf-8")
     assert "configure_observability" in Path("scripts/run_ragas_eval.py").read_text(encoding="utf-8")
     assert "configure_observability" in Path("scripts/run_all_evals.py").read_text(encoding="utf-8")
+
+
+def test_ingest_script_exposes_shadow_index_suffix_and_artifact_root_flags():
+    source = Path("scripts/ingest.py").read_text(encoding="utf-8")
+
+    assert "--index-suffix" in source
+    assert "--artifact-root" in source
+    assert "--baseline-artifact-root" in source
+    assert "_settings_with_shadow_targets" in source
 
 
 def test_event_log_setup_creates_templates_policies_and_streams():

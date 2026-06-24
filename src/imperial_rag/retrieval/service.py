@@ -23,8 +23,8 @@ from imperial_rag.observability.phoenix import (
 
 @dataclass(frozen=True)
 class RetrievalSettings:
-    chunk_size: int = 400
-    chunk_overlap: int = 50
+    chunk_size: int = 650
+    chunk_overlap: int = 80
     vector_fetch_k: int = 70
     vector_k: int = 70
     keyword_limit: int = 30

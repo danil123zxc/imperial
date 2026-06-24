@@ -148,8 +148,8 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
 
     settings = RetrievalSettings.from_env()
 
-    assert settings.chunk_size == 400
-    assert settings.chunk_overlap == 50
+    assert settings.chunk_size == 650
+    assert settings.chunk_overlap == 80
     assert settings.vector_fetch_k == 70
     assert settings.vector_k == 70
     assert settings.keyword_limit == 30
