@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,7 +46,7 @@ def test_calibration_summary_reports_accuracy_confusion_and_separation():
         {"id": "row-3", "human_label": "incorrect", "lane": "conflict_version_behavior"},
     ]
     metric_records = [
-        {"factual_correctness": 0.9, "explanation": "matches"},
+        {"factual_correctness(mode=f1)": 0.9, "explanation": "matches"},
         {"factual_correctness": 0.2, "explanation": "contradicts"},
         {"factual_correctness": 0.7, "explanation": "too lenient"},
     ]
@@ -109,13 +110,24 @@ def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_
     )
     captured: dict[str, object] = {}
 
-    def fake_evaluate_ragas_rows(rows, metric_names):
+    def fake_evaluate_ragas_rows(rows, metric_names, evaluator_llm=None):
         captured["rows"] = rows
         captured["metric_names"] = metric_names
+        captured["evaluator_llm"] = evaluator_llm
         return [{"factual_correctness": 0.95, "explanation": "grounded"}]
 
     monkeypatch.setattr(module, "evaluate_ragas_rows", fake_evaluate_ragas_rows)
-    monkeypatch.setattr(module, "resolved_judge_model", lambda: "qwen-test")
+    monkeypatch.setattr(
+        module,
+        "resolve_judge_settings",
+        lambda judge_model=None: SimpleNamespace(chat_model=judge_model or "qwen-test"),
+    )
+
+    def fake_build_evaluator_llm(settings):
+        captured["judge_settings"] = settings
+        return "pinned-judge-llm"
+
+    monkeypatch.setattr(module, "build_evaluator_llm", fake_build_evaluator_llm)
     monkeypatch.setattr(module, "utc_timestamp", lambda: "2026-06-25T00:00:00+00:00")
 
     exit_code = module.main(
@@ -128,11 +140,15 @@ def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_
             "0.8",
             "--score-cutoff",
             "0.5",
+            "--judge-model",
+            "qwen3.7-plus",
         ]
     )
 
     assert exit_code == 0
     assert captured["metric_names"] == ["factual_correctness"]
+    assert captured["judge_settings"].chat_model == "qwen3.7-plus"
+    assert captured["evaluator_llm"] == "pinned-judge-llm"
     assert captured["rows"] == [
         {
             "id": "judge-calibration-001",
@@ -146,7 +162,8 @@ def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_
     ]
     artifact = json.loads(output_path.read_text(encoding="utf-8"))
     assert artifact["summary"]["passed"] is True
-    assert artifact["summary"]["judge_model"] == "qwen-test"
+    assert artifact["summary"]["judge_model"] == "qwen3.7-plus"
+    assert artifact["summary"]["judge_config"]["judge_model"] == "qwen3.7-plus"
     assert artifact["rows"][0]["score"] == 0.95
 
 

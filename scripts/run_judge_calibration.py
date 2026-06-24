@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ SRC_DIR = SCRIPT_DIR.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from run_ragas_eval import _load_project_env, evaluate_ragas_rows, result_records  # noqa: E402
+from run_ragas_eval import _load_project_env, build_evaluator_llm, evaluate_ragas_rows, result_records  # noqa: E402
 
 
 DEFAULT_CALIBRATION_PATH = Path("evals/russian_judge_calibration.jsonl")
@@ -133,10 +134,14 @@ def summarize_calibration(
     }
 
 
-def resolved_judge_model() -> str:
+def resolve_judge_settings(judge_model: str | None = None) -> Any:
+    from dataclasses import replace
     from imperial_rag.providers import QwenProviderSettings
 
-    return QwenProviderSettings.from_env().chat_model
+    settings = QwenProviderSettings.from_env()
+    if judge_model:
+        return replace(settings, chat_model=judge_model)
+    return settings
 
 
 def utc_timestamp() -> str:
@@ -149,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--output-path", type=Path, required=True)
     parser.add_argument("--metric", default=DEFAULT_METRIC_NAME)
+    parser.add_argument("--judge-model", help="Qwen/DashScope chat model to use for the calibration judge.")
     parser.add_argument("--score-cutoff", type=float, default=0.5)
     parser.add_argument("--pass-threshold", type=float, default=0.85)
     parser.add_argument("--strict", action="store_true", help="Exit non-zero if accuracy is below the pass threshold.")
@@ -157,15 +163,24 @@ def main(argv: list[str] | None = None) -> int:
     _load_project_env(args.workspace_root)
     raw_rows = load_calibration_rows(args.calibration_path)
     prepared_rows = prepare_calibration_rows(raw_rows)
-    metric_records = result_records(evaluate_ragas_rows(prepared_rows, [args.metric]))
+    judge_settings = resolve_judge_settings(args.judge_model)
+    evaluator_llm = build_evaluator_llm(judge_settings)
+    metric_records = result_records(
+        evaluate_ragas_rows(prepared_rows, [args.metric], evaluator_llm=evaluator_llm)
+    )
     result = summarize_calibration(
         prepared_rows,
         metric_records,
         metric_name=args.metric,
         score_cutoff=args.score_cutoff,
         pass_threshold=args.pass_threshold,
-        judge_model=resolved_judge_model(),
-        judge_config={"metric": args.metric, "score_cutoff": args.score_cutoff, "pass_threshold": args.pass_threshold},
+        judge_model=judge_settings.chat_model,
+        judge_config={
+            "metric": args.metric,
+            "judge_model": judge_settings.chat_model,
+            "score_cutoff": args.score_cutoff,
+            "pass_threshold": args.pass_threshold,
+        },
         run_timestamp=utc_timestamp(),
     )
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,15 +196,23 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _metric_score(record: Mapping[str, Any], metric_name: str) -> float | None:
-    value = record.get(metric_name)
-    if value is None:
-        value = record.get("score")
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    values: list[Any] = []
+    if metric_name in record:
+        values.append(record[metric_name])
+    values.extend(value for key, value in record.items() if key.startswith(f"{metric_name}("))
+    if "score" in record:
+        values.append(record["score"])
+
+    for value in values:
+        if value is None:
+            continue
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(score):
+            return score
+    return None
 
 
 if __name__ == "__main__":

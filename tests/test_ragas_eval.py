@@ -632,10 +632,19 @@ def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
         captured["evaluate_kwargs"] = kwargs
         return {"scores": [{"context_recall": 1.0}]}
 
-    rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"], "reference": "ref"}]
+    rows = [
+        {
+            "id": "imperial-cite-001",
+            "lane": "indexed_answerability",
+            "user_input": "q",
+            "response": "a",
+            "retrieved_contexts": ["ctx"],
+            "reference": "ref",
+        }
+    ]
     result = module.evaluate_ragas_rows(rows, ["context_recall"], evaluate_fn=fake_evaluate)
 
-    assert result == {"scores": [{"context_recall": 1.0}]}
+    assert result == [{"id": "imperial-cite-001", "lane": "indexed_answerability", "context_recall": 1.0}]
     assert captured == {
         "metric_names": ["context_recall"],
         "metric_llm": "ragas-llm",
@@ -697,16 +706,18 @@ def test_build_evaluator_llm_uses_modern_ragas_dashscope_client(monkeypatch):
 
 def test_build_ragas_metrics_imports_installed_ragas_metrics():
     module = _load_ragas_runner()
+    module._install_ragas_langchain_community_compat()
 
     from openai import AsyncOpenAI
     from ragas.llms import llm_factory
+    from ragas.metrics.base import Metric
 
     client = AsyncOpenAI(api_key="test-key", base_url="https://dashscope.example/compatible-mode/v1")
     evaluator_llm = llm_factory("qwen-test", client=client, provider="openai")
     metrics = module.build_ragas_metrics(["context_recall", "factual_correctness"], evaluator_llm)
 
-    assert [type(metric).__name__ for metric in metrics] == ["ContextRecall", "FactualCorrectness"]
-    assert all(".collections." in type(metric).__module__ for metric in metrics)
+    assert [metric.name for metric in metrics] == ["context_recall", "factual_correctness"]
+    assert all(isinstance(metric, Metric) for metric in metrics)
 
 
 def test_import_answer_relevancy_metric_prefers_ragas_collections_api():

@@ -98,6 +98,7 @@ def evaluate_ragas_rows(
     rows: list[dict[str, Any]],
     metric_names: list[str],
     evaluate_fn: Callable[..., Any] | None = None,
+    evaluator_llm: Any | None = None,
 ) -> Any:
     validate_metric_requirements(metric_names, rows)
     sidecar_records: list[dict[str, Any]] | None = None
@@ -123,14 +124,15 @@ def evaluate_ragas_rows(
     if not reference_metric_names:
         return sidecar_records or []
 
-    evaluator_llm = build_evaluator_llm()
+    evaluator_llm = evaluator_llm or build_evaluator_llm()
     dataset = build_ragas_dataset(rows)
     metrics = build_ragas_metrics(reference_metric_names, evaluator_llm)
     resolved_evaluate = evaluate_fn or _import_ragas_evaluate()
     reference_result = resolved_evaluate(dataset=dataset, metrics=metrics)
+    reference_records = _merge_records_by_position(_row_metadata_records(rows), result_records(reference_result))
     if sidecar_records is not None:
-        return _merge_records_by_position(sidecar_records, result_records(reference_result))
-    return reference_result
+        return _merge_records_by_position(sidecar_records, reference_records)
+    return reference_records
 
 
 def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
@@ -146,15 +148,26 @@ def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any
 
     _install_ragas_langchain_community_compat()
     try:
-        from ragas.metrics.collections import ContextRecall, FactualCorrectness
+        from ragas.metrics._context_recall import LLMContextRecall
+        from ragas.metrics._factual_correctness import FactualCorrectness
+        from ragas.metrics.base import Metric
     except ImportError as exc:
-        raise SystemExit("Ragas collections metrics are not installed; run `uv sync --extra dev`.") from exc
+        raise SystemExit("Ragas reference metrics are not installed; run `uv sync --extra dev`.") from exc
 
     factories: dict[str, Callable[..., Any]] = {
-        "context_recall": ContextRecall,
+        # Ragas 0.4.3 exposes collections metrics too, but ragas.evaluate()
+        # still validates the legacy Metric hierarchy.
+        "context_recall": LLMContextRecall,
         "factual_correctness": FactualCorrectness,
     }
-    return [factories[name](llm=evaluator_llm) for name in metric_names]
+    metrics = [factories[name](llm=evaluator_llm) for name in metric_names]
+    invalid_metrics = [type(metric).__name__ for metric in metrics if not isinstance(metric, Metric)]
+    if invalid_metrics:
+        raise TypeError(
+            "Ragas reference metrics must be initialized ragas.metrics.base.Metric instances: "
+            + ", ".join(invalid_metrics)
+        )
+    return metrics
 
 
 def build_evaluator_llm(provider_settings: Any | None = None) -> Any:
@@ -280,6 +293,20 @@ def _merge_records_by_position(
         secondary = secondary_records[index] if index < len(secondary_records) else {}
         merged.append({**primary, **secondary})
     return merged
+
+
+def _row_metadata_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    metadata_keys = ("id", "suite", "lane", "tags", "expected_behavior")
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        record: dict[str, Any] = {}
+        for key in metadata_keys:
+            if key not in row:
+                continue
+            value = row[key]
+            record[key] = list(value) if key == "tags" and isinstance(value, list) else value
+        records.append(record)
+    return records
 
 
 def _build_settings(workspace_root: Path | None) -> Any:
