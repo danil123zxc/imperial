@@ -19,6 +19,7 @@ def test_calibration_rows_prepare_factual_correctness_inputs():
                 "candidate_answer": "Оформить документы.",
                 "human_label": "correct",
                 "expected_behavior": "cite_answer",
+                "lane": "indexed_answerability",
             }
         ]
     )
@@ -31,6 +32,7 @@ def test_calibration_rows_prepare_factual_correctness_inputs():
             "reference": "Нужно оформить документы.",
             "human_label": "correct",
             "expected_behavior": "cite_answer",
+            "lane": "indexed_answerability",
         }
     ]
 
@@ -40,7 +42,7 @@ def test_calibration_summary_reports_accuracy_confusion_and_separation():
     rows = [
         {"id": "row-1", "human_label": "correct"},
         {"id": "row-2", "human_label": "incorrect"},
-        {"id": "row-3", "human_label": "incorrect"},
+        {"id": "row-3", "human_label": "incorrect", "lane": "conflict_version_behavior"},
     ]
     metric_records = [
         {"factual_correctness": 0.9, "explanation": "matches"},
@@ -82,6 +84,7 @@ def test_calibration_summary_reports_accuracy_confusion_and_separation():
     assert result["summary"]["score_separation"] == pytest.approx(0.45)
     assert result["rows"][2]["predicted_label"] == "correct"
     assert result["rows"][2]["matches_human_label"] is False
+    assert result["rows"][2]["lane"] == "conflict_version_behavior"
 
 
 def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_path, monkeypatch):
@@ -100,6 +103,7 @@ def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_
                 "reference_answer": "Нужно оформить документы.",
                 "candidate_answer": "Оформить документы.",
                 "human_label": "correct",
+                "lane": "indexed_answerability",
             }
         ],
     )
@@ -137,6 +141,7 @@ def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_
             "reference": "Нужно оформить документы.",
             "human_label": "correct",
             "expected_behavior": "cite_answer",
+            "lane": "indexed_answerability",
         }
     ]
     artifact = json.loads(output_path.read_text(encoding="utf-8"))

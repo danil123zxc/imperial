@@ -176,6 +176,110 @@ def test_eval_contract_validator_reports_missing_gold_ids_and_unsupported_metric
     } in findings
 
 
+def test_eval_contract_validator_rejects_invalid_or_mismatched_lanes(tmp_path):
+    from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index, validate_eval_contract
+
+    chunks_path = tmp_path / "chunks.jsonl"
+    _write_jsonl(
+        chunks_path,
+        [
+            _chunk(
+                "file-a",
+                relative_path="documents/source.docx",
+                file_name="source.docx",
+                text="Регламент источника.",
+            )
+        ],
+    )
+    audit = audit_eval_rows(
+        [
+            {
+                "id": "imperial-cite-001",
+                "suite": "imperial_gold_core",
+                "tags": ["returns"],
+                "lane": "refusal_out_of_corpus_behavior",
+                "question": "Как оформить возврат?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["source"],
+                "reference_context_ids": ["file-a"],
+                "reference_answer": "Возврат оформляется по регламенту.",
+            },
+            {
+                "id": "imperial-cite-002",
+                "suite": "imperial_gold_core",
+                "tags": ["returns"],
+                "lane": "not_a_lane",
+                "question": "Как оформить возврат?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["source"],
+                "reference_context_ids": ["file-a"],
+                "reference_answer": "Возврат оформляется по регламенту.",
+            },
+        ],
+        corpus_index=load_corpus_index(chunks_path),
+        documents_root=tmp_path / "documents",
+    )
+
+    findings = validate_eval_contract(audit)
+
+    assert {
+        "severity": "error",
+        "row_id": "imperial-cite-001",
+        "code": "lane_expected_behavior_mismatch",
+        "message": "cite_answer rows must use indexed_answerability or known_missing_document_coverage lanes",
+    } in findings
+    assert {
+        "severity": "error",
+        "row_id": "imperial-cite-002",
+        "code": "invalid_lane",
+        "message": "Invalid eval lane 'not_a_lane'",
+    } in findings
+
+
+def test_row_level_quarantine_allows_known_bad_gold_contract(tmp_path):
+    from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index, validate_eval_contract
+
+    chunks_path = tmp_path / "chunks.jsonl"
+    _write_jsonl(
+        chunks_path,
+        [
+            _chunk(
+                "timesheets",
+                relative_path="11. РЕГЛАМЕНТЫ/ПРИКАЗ О табелях и мотивациях.pdf",
+                file_name="ПРИКАЗ О табелях и мотивациях.pdf",
+                text="Правила оформления табелей.",
+            )
+        ],
+    )
+    documents_root = tmp_path / "documents"
+    source_path = documents_root / "11. РЕГЛАМЕНТЫ" / "1. БЛАНКИ" / "Акт об отсутствии на рабочем месте.doc"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("source placeholder", encoding="utf-8")
+
+    audit = audit_eval_rows(
+        [
+            {
+                "id": "imperial-cite-003",
+                "suite": "imperial_gold_core",
+                "tags": ["hr", "absence", "gold_context"],
+                "lane": "indexed_answerability",
+                "question": "Что оформить при отсутствии сотрудника?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["Акт об отсутствии", "рабочем месте"],
+                "reference_context_ids": [],
+                "reference_answer": "При отсутствии сотрудника нужно оформить акт об отсутствии.",
+                "quarantine_reason": "source_document_exists_but_is_not_indexed",
+            }
+        ],
+        corpus_index=load_corpus_index(chunks_path),
+        documents_root=documents_root,
+    )
+
+    assert audit[0]["action"] == "quarantine"
+    assert audit[0]["quarantine_reason"] == "source_document_exists_but_is_not_indexed"
+    assert validate_eval_contract(audit) == []
+
+
 def test_audit_cli_writes_artifacts_and_findings(tmp_path):
     module = _load_audit_script()
     questions_path = tmp_path / "questions.jsonl"

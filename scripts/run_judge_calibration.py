@@ -43,16 +43,17 @@ def prepare_calibration_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str
         missing = [name for name, value in required.items() if not str(value or "").strip()]
         if missing:
             raise ValueError(f"{row_id}: missing required fields: {', '.join(missing)}")
-        prepared.append(
-            {
-                "id": row_id,
-                "user_input": str(row["question"]).strip(),
-                "response": str(row["candidate_answer"]).strip(),
-                "reference": str(row["reference_answer"]).strip(),
-                "human_label": human_label,
-                "expected_behavior": str(row.get("expected_behavior") or "").strip(),
-            }
-        )
+        prepared_row = {
+            "id": row_id,
+            "user_input": str(row["question"]).strip(),
+            "response": str(row["candidate_answer"]).strip(),
+            "reference": str(row["reference_answer"]).strip(),
+            "human_label": human_label,
+            "expected_behavior": str(row.get("expected_behavior") or "").strip(),
+        }
+        if row.get("lane"):
+            prepared_row["lane"] = str(row["lane"]).strip()
+        prepared.append(prepared_row)
     return prepared
 
 
@@ -93,6 +94,7 @@ def summarize_calibration(
         output_rows.append(
             {
                 "id": row.get("id"),
+                "lane": row.get("lane"),
                 "human_label": human_label,
                 "score": score,
                 "predicted_label": predicted_label,

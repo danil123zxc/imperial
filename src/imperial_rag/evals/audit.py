@@ -9,6 +9,12 @@ from typing import Any, Iterable, Mapping
 
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
 SUPPORTED_PHOENIX_METRICS = {"faithfulness", "answer_relevancy", "id_context_recall"}
+VALID_LANES = {
+    "indexed_answerability",
+    "conflict_version_behavior",
+    "refusal_out_of_corpus_behavior",
+    "known_missing_document_coverage",
+}
 LANES_BY_BEHAVIOR = {
     "cite_answer": "indexed_answerability",
     "surface_conflict": "conflict_version_behavior",
@@ -188,6 +194,45 @@ def validate_eval_contract(
 
         lane = row.get("lane")
         action = row.get("action")
+        if lane not in VALID_LANES:
+            findings.append(
+                {
+                    "severity": "error",
+                    "row_id": row_id,
+                    "code": "invalid_lane",
+                    "message": f"Invalid eval lane {lane!r}",
+                }
+            )
+        elif behavior == "cite_answer" and lane not in {"indexed_answerability", "known_missing_document_coverage"}:
+            findings.append(
+                {
+                    "severity": "error",
+                    "row_id": row_id,
+                    "code": "lane_expected_behavior_mismatch",
+                    "message": "cite_answer rows must use indexed_answerability or known_missing_document_coverage lanes",
+                }
+            )
+        elif behavior == "surface_conflict" and lane != "conflict_version_behavior":
+            findings.append(
+                {
+                    "severity": "error",
+                    "row_id": row_id,
+                    "code": "lane_expected_behavior_mismatch",
+                    "message": "surface_conflict rows must use conflict_version_behavior lane",
+                }
+            )
+        elif behavior == "refuse_if_not_found" and lane not in {
+            "refusal_out_of_corpus_behavior",
+            "known_missing_document_coverage",
+        }:
+            findings.append(
+                {
+                    "severity": "error",
+                    "row_id": row_id,
+                    "code": "lane_expected_behavior_mismatch",
+                    "message": "refuse_if_not_found rows must use refusal_out_of_corpus_behavior or known_missing_document_coverage lanes",
+                }
+            )
         if lane == "indexed_answerability" and action not in {"quarantine", "needs_ingestion"} and not resolved_ids:
             findings.append(
                 {
@@ -294,6 +339,7 @@ def _audit_row(
         hints_quality=hints_quality,
         source_path=source_path,
     )
+    row_quarantine_reason = str(row.get("quarantine_reason") or "").strip()
     action, quarantine_reason, backlog_category, notes = _row_action(
         lane=lane,
         current_ids=current_ids,
@@ -302,6 +348,7 @@ def _audit_row(
         source_path=source_path,
         answer_quality=answer_quality,
         hints_quality=hints_quality,
+        row_quarantine_reason=row_quarantine_reason,
     )
 
     return {
@@ -323,6 +370,9 @@ def _audit_row(
 
 
 def _lane_for(row: Mapping[str, Any]) -> str:
+    explicit_lane = str(row.get("lane") or "").strip()
+    if explicit_lane:
+        return explicit_lane
     behavior = row.get("expected_behavior")
     if behavior == "refuse_if_not_found":
         tags = {str(tag).casefold() for tag in row.get("tags") or []}
@@ -365,8 +415,12 @@ def _row_action(
     source_path: Path | None,
     answer_quality: str,
     hints_quality: str,
+    row_quarantine_reason: str = "",
 ) -> tuple[str, str, str, list[str]]:
     notes: list[str] = []
+    if row_quarantine_reason:
+        notes.append("row is quarantined by explicit dataset metadata")
+        return "quarantine", row_quarantine_reason, "row_contract", notes
     if lane == "refusal_out_of_corpus_behavior" and not current_ids:
         return "keep", "", "none", notes
 

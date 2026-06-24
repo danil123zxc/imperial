@@ -12,19 +12,41 @@ import pytest
 
 
 def test_eval_questions_are_russian_jsonl_with_expected_behavior():
+    from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index, validate_eval_contract
+
     lines = Path("evals/questions.jsonl").read_text(encoding="utf-8").splitlines()
     rows = [json.loads(line) for line in lines if line.strip()]
     ids = [row["id"] for row in rows]
     behavior_counts = Counter(row["expected_behavior"] for row in rows)
+    lane_counts = Counter(row["lane"] for row in rows)
 
     assert len(rows) >= 37
     assert len(ids) == len(set(ids))
     assert behavior_counts["surface_conflict"] >= 5
     assert behavior_counts["refuse_if_not_found"] >= 5
-    assert 10 <= sum(bool(row.get("reference_context_ids")) for row in rows) <= 15
+    assert lane_counts["indexed_answerability"] >= 26
+    assert lane_counts["conflict_version_behavior"] >= 5
+    assert lane_counts["refusal_out_of_corpus_behavior"] >= 5
+    assert sum(bool(row.get("reference_context_ids")) for row in rows) >= 31
+    audit_rows = audit_eval_rows(
+        rows,
+        corpus_index=load_corpus_index(Path(".imperial_rag/extracted/chunks.jsonl")),
+        documents_root=Path("documents"),
+    )
+    findings = validate_eval_contract(audit_rows)
+    assert [finding for finding in findings if finding["severity"] == "error"] == []
+    cite003 = next(row for row in rows if row["id"] == "imperial-cite-003")
+    assert cite003["reference_context_ids"] == []
+    assert cite003["quarantine_reason"] == "source_document_exists_but_is_not_indexed"
     for payload in rows:
         assert payload["id"].startswith("imperial-")
         assert payload["suite"]
+        assert payload["lane"] in {
+            "indexed_answerability",
+            "conflict_version_behavior",
+            "refusal_out_of_corpus_behavior",
+            "known_missing_document_coverage",
+        }
         assert isinstance(payload.get("tags", []), list)
         assert all(isinstance(tag, str) and tag for tag in payload.get("tags", []))
         assert payload["question"]
@@ -44,16 +66,30 @@ def test_russian_judge_calibration_fixture_has_locked_human_labels():
         if line.strip()
     ]
     labels = Counter(row["human_label"] for row in rows)
+    behavior_counts = Counter(row["expected_behavior"] for row in rows)
+    lane_counts = Counter(row["lane"] for row in rows)
     ids = [row["id"] for row in rows]
 
-    assert len(rows) == 20
-    assert labels == {"correct": 10, "incorrect": 10}
+    assert len(rows) >= 24
+    assert labels["correct"] >= 12
+    assert labels["incorrect"] >= 12
+    assert behavior_counts["cite_answer"] >= 10
+    assert behavior_counts["surface_conflict"] >= 4
+    assert behavior_counts["refuse_if_not_found"] >= 4
+    assert lane_counts["indexed_answerability"] >= 10
+    assert lane_counts["conflict_version_behavior"] >= 4
+    assert lane_counts["refusal_out_of_corpus_behavior"] >= 4
     assert len(ids) == len(set(ids))
     for row in rows:
         assert row["id"].startswith("judge-calibration-")
         assert row["suite"] == "russian_judge_calibration"
         assert row["locked"] is True
-        assert row["expected_behavior"] == "cite_answer"
+        assert row["expected_behavior"] in {"cite_answer", "surface_conflict", "refuse_if_not_found"}
+        assert row["lane"] in {
+            "indexed_answerability",
+            "conflict_version_behavior",
+            "refusal_out_of_corpus_behavior",
+        }
         assert row["question"]
         assert row["reference_answer"]
         assert row["candidate_answer"]
@@ -75,6 +111,7 @@ def test_load_questions_validates_required_metadata_and_uniqueness(tmp_path):
                         "tags": ["retrieval"],
                         "question": "Что делать с браком?",
                         "expected_behavior": "cite_answer",
+                        "lane": "indexed_answerability",
                         "expected_source_hints": ["брак"],
                         "reference_answer": "Нужно оформить возврат брака.",
                     },
@@ -87,6 +124,7 @@ def test_load_questions_validates_required_metadata_and_uniqueness(tmp_path):
                         "tags": "retrieval",
                         "question": "Какова столица Австралии?",
                         "expected_behavior": "unsupported",
+                        "lane": "not_a_lane",
                         "expected_source_hints": [],
                         "reference_answer": "Ответа нет в корпусе.",
                         "reference_context_ids": ["file-a", ""],
@@ -105,8 +143,54 @@ def test_load_questions_validates_required_metadata_and_uniqueness(tmp_path):
     message = str(exc_info.value)
     assert "duplicate id" in message
     assert "expected_behavior" in message
+    assert "lane" in message
     assert "tags must be a list" in message
     assert "reference_context_ids" in message
+
+
+def test_load_questions_validates_lane_expected_behavior_contract(tmp_path):
+    module = _load_eval_runner()
+    path = tmp_path / "questions.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "imperial-cite-001",
+                        "suite": "core",
+                        "tags": ["retrieval"],
+                        "question": "Что делать с браком?",
+                        "expected_behavior": "cite_answer",
+                        "expected_source_hints": ["брак"],
+                        "reference_answer": "Нужно оформить возврат брака.",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "id": "imperial-refuse-001",
+                        "suite": "core",
+                        "tags": ["out_of_corpus"],
+                        "question": "Какова столица Австралии?",
+                        "expected_behavior": "refuse_if_not_found",
+                        "lane": "indexed_answerability",
+                        "expected_source_hints": [],
+                        "reference_answer": "Ответа нет в корпусе.",
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        module.load_questions(path)
+
+    message = str(exc_info.value)
+    assert "missing lane" in message
+    assert "lane is not valid for expected_behavior" in message
 
 
 def test_eval_runner_deterministic_citation_behavior():
@@ -431,6 +515,7 @@ def test_phoenix_dataset_rows_have_stable_metadata_ids():
         "tags": ["returns"],
         "question": "Что делать с браком?",
         "expected_behavior": "cite_answer",
+        "lane": "indexed_answerability",
         "expected_source_hints": ["брак"],
         "reference_answer": "Ответ про брак.",
     }
@@ -446,12 +531,14 @@ def test_phoenix_dataset_rows_have_stable_metadata_ids():
     assert outputs == [
         {
             "expected_behavior": "cite_answer",
+            "lane": "indexed_answerability",
             "expected_source_hints": ["брак"],
             "reference_answer": "Ответ про брак.",
         }
     ]
     assert metadata[0]["row_index"] == 0
     assert metadata[0]["source"] == "evals/questions.jsonl"
+    assert metadata[0]["lane"] == "indexed_answerability"
 
 
 def test_phoenix_dataset_rows_preserve_reference_context_ids():
@@ -459,8 +546,10 @@ def test_phoenix_dataset_rows_preserve_reference_context_ids():
     example = {
         "question": "Что делать с браком?",
         "expected_behavior": "cite_answer",
+        "lane": "indexed_answerability",
         "expected_source_hints": ["брак"],
         "reference_context_ids": ["file-a", "file-b"],
+        "quarantine_reason": "source_document_exists_but_is_not_indexed",
     }
 
     _, outputs, metadata = module._to_phoenix_dataset_rows([example])
@@ -469,8 +558,10 @@ def test_phoenix_dataset_rows_preserve_reference_context_ids():
     assert outputs == [
         {
             "expected_behavior": "cite_answer",
+            "lane": "indexed_answerability",
             "expected_source_hints": ["брак"],
             "reference_context_ids": ["file-a", "file-b"],
+            "quarantine_reason": "source_document_exists_but_is_not_indexed",
         }
     ]
     assert metadata[0]["id"] == repeated_metadata[0]["id"]

@@ -15,6 +15,17 @@ DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
 DEFAULT_RETRIEVAL_METRIC_K = 5
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
+VALID_LANES = {
+    "indexed_answerability",
+    "conflict_version_behavior",
+    "refusal_out_of_corpus_behavior",
+    "known_missing_document_coverage",
+}
+LANES_BY_EXPECTED_BEHAVIOR = {
+    "cite_answer": {"indexed_answerability", "known_missing_document_coverage"},
+    "surface_conflict": {"conflict_version_behavior"},
+    "refuse_if_not_found": {"refusal_out_of_corpus_behavior", "known_missing_document_coverage"},
+}
 CITE_ANSWER_BEHAVIOR = "cite_answer"
 ANSWER_QUALITY_METRIC_KEYS = {
     "faithfulness": "ragas_faithfulness",
@@ -64,8 +75,16 @@ def _validate_question_row(
         errors.append(f"line {line_number}: missing suite")
     if not payload.get("question"):
         errors.append(f"line {line_number}: missing question")
-    if payload.get("expected_behavior") not in VALID_EXPECTED_BEHAVIORS:
+    expected_behavior = payload.get("expected_behavior")
+    if expected_behavior not in VALID_EXPECTED_BEHAVIORS:
         errors.append(f"line {line_number}: invalid expected_behavior")
+    lane = str(payload.get("lane") or "").strip()
+    if not lane:
+        errors.append(f"line {line_number}: missing lane")
+    elif lane not in VALID_LANES:
+        errors.append(f"line {line_number}: invalid lane")
+    elif expected_behavior in LANES_BY_EXPECTED_BEHAVIOR and lane not in LANES_BY_EXPECTED_BEHAVIOR[expected_behavior]:
+        errors.append(f"line {line_number}: lane is not valid for expected_behavior")
     if not str(payload.get("reference_answer") or "").strip():
         errors.append(f"line {line_number}: missing reference_answer")
 
@@ -512,12 +531,16 @@ def _to_phoenix_dataset_rows(
             "expected_behavior": example["expected_behavior"],
             "expected_source_hints": example.get("expected_source_hints", []),
         }
+        if example.get("lane"):
+            expected["lane"] = example["lane"]
         if example.get("reference_answer"):
             expected["reference_answer"] = example["reference_answer"]
         if "reference_context_ids" in example:
             expected["reference_context_ids"] = [
                 str(context_id).strip() for context_id in example.get("reference_context_ids") or []
             ]
+        if example.get("quarantine_reason"):
+            expected["quarantine_reason"] = str(example["quarantine_reason"]).strip()
         stable_payload = json.dumps(
             {"question": example["question"], "expected": expected},
             ensure_ascii=False,
@@ -531,6 +554,10 @@ def _to_phoenix_dataset_rows(
             metadata[-1]["suite"] = example["suite"]
         if "tags" in example:
             metadata[-1]["tags"] = list(example.get("tags") or [])
+        if example.get("lane"):
+            metadata[-1]["lane"] = str(example["lane"])
+        if example.get("quarantine_reason"):
+            metadata[-1]["quarantine_reason"] = str(example["quarantine_reason"]).strip()
     return inputs, outputs, metadata
 
 
