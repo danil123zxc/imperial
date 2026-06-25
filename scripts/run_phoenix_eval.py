@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Sequence, cast
+from typing import Any, Iterable, Sequence, cast
 
 import anyio
 
@@ -204,6 +204,91 @@ def source_hint_behavior(
     return {"key": "source_hint_behavior", "score": any(hint in haystack for hint in hints)}
 
 
+def citation_grounding_behavior(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    reference = reference_outputs or inputs
+    citations = _citation_values(outputs)
+    resolved_ids: list[str] = []
+    unresolved: list[str] = []
+    documents = list(outputs.get("documents") or outputs.get("evidence") or [])
+    for citation in citations:
+        document_ids = _document_ids_matching_citation(citation, documents)
+        if document_ids:
+            resolved_ids.extend(document_ids)
+        else:
+            unresolved.append(citation)
+
+    cited_ids = _unique_nonempty(resolved_ids)
+    reference_ids = _clean_context_ids(reference.get("reference_context_ids") or [])
+    gold_overlap = not reference_ids or bool(set(cited_ids) & set(reference_ids))
+    expected_behavior = reference.get("expected_behavior")
+    if not citations:
+        score: bool | None = False if expected_behavior in {"cite_answer", "surface_conflict"} else None
+    else:
+        score = not unresolved and gold_overlap
+    return {
+        "key": "citation_grounding_behavior",
+        "score": score,
+        "label": _bool_label(score),
+        "metadata": {
+            "citation_count": len(citations),
+            "resolved_citation_count": len(citations) - len(unresolved),
+            "unresolved_citations": unresolved,
+            "cited_context_ids": cited_ids,
+            "reference_context_ids": reference_ids,
+            "gold_overlap": gold_overlap,
+        },
+    }
+
+
+def conflict_behavior(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    reference = reference_outputs or inputs
+    if reference.get("expected_behavior") != "surface_conflict":
+        return {
+            "key": "conflict_behavior",
+            "score": None,
+            "label": "skipped",
+            "metadata": {"reason": "metric_not_applicable_for_behavior"},
+        }
+
+    answer = str(outputs.get("answer", ""))
+    grounding = citation_grounding_behavior(inputs, outputs, reference)
+    grounding_metadata = grounding.get("metadata", {})
+    reference_ids = _clean_context_ids(reference.get("reference_context_ids") or [])
+    cited_ids = _clean_context_ids(grounding_metadata.get("cited_context_ids") or [])
+    cited_reference_count = len(set(cited_ids) & set(reference_ids))
+    required_reference_count = min(2, len(reference_ids)) if reference_ids else 2
+    mentions_conflict = _mentions_conflict(answer)
+    decisive_claim = _has_decisive_version_claim(answer)
+    score = (
+        mentions_conflict
+        and not decisive_claim
+        and bool(grounding.get("score"))
+        and cited_reference_count >= required_reference_count
+    )
+    return {
+        "key": "conflict_behavior",
+        "score": bool(score),
+        "label": _bool_label(bool(score)),
+        "metadata": {
+            "mentions_conflict": mentions_conflict,
+            "decisive_version_claim": decisive_claim,
+            "cited_reference_context_count": cited_reference_count,
+            "required_reference_context_count": required_reference_count,
+            "cited_context_ids": cited_ids,
+            "reference_context_ids": reference_ids,
+            "citation_grounding_score": grounding.get("score"),
+        },
+    }
+
+
 def phoenix_citation_behavior(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
@@ -220,12 +305,36 @@ def phoenix_source_hint_behavior(
     return bool(source_hint_behavior(input or {}, output, expected)["score"])
 
 
+def phoenix_citation_grounding_behavior(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return citation_grounding_behavior(input or {}, output or {}, expected)
+
+
+def phoenix_conflict_behavior(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return conflict_behavior(input or {}, output or {}, expected)
+
+
 def phoenix_retrieval_relevance(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return retrieval_relevance_metrics(input or {}, output or {}, expected)
+
+
+def phoenix_id_retrieval_relevance(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return id_retrieval_metrics(input or {}, output or {}, expected)
 
 
 def phoenix_ragas_faithfulness(
@@ -328,15 +437,22 @@ def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -
         reference_outputs = {
             "expected_behavior": example["expected_behavior"],
             "expected_source_hints": example.get("expected_source_hints", []),
+            "reference_context_ids": example.get("reference_context_ids", []),
         }
         outputs = run_target(inputs, runtime=resolved_runtime)
         retrieval_metrics = retrieval_relevance_metrics(inputs, outputs, reference_outputs)
         retrieval_metadata = retrieval_metrics.get("metadata", {})
+        id_metrics = id_retrieval_metrics(inputs, outputs, reference_outputs)
+        id_metadata = id_metrics.get("metadata", {})
+        citation_grounding = citation_grounding_behavior(inputs, outputs, reference_outputs)
+        conflict = conflict_behavior(inputs, outputs, reference_outputs)
         rows.append(
             {
                 "question": example["question"],
                 "citation_behavior": citation_behavior(inputs, outputs, reference_outputs)["score"],
                 "source_hint_behavior": source_hint_behavior(inputs, outputs, reference_outputs)["score"],
+                "citation_grounding_behavior": citation_grounding["score"],
+                "conflict_behavior": conflict["score"],
                 f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
                     f"hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
                 ),
@@ -345,6 +461,21 @@ def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -
                 ),
                 f"retrieval_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
                     f"ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
+                    f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
+                    f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
+                    f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
+                    f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+                ),
+                f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
+                    f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
                 ),
             }
         )
@@ -583,7 +714,10 @@ def _phoenix_evaluators(metric_names: Sequence[str], *, async_mode: bool = False
     evaluators: dict[str, Any] = {
         "citation_behavior": phoenix_citation_behavior,
         "source_hint_behavior": phoenix_source_hint_behavior,
+        "citation_grounding_behavior": phoenix_citation_grounding_behavior,
+        "conflict_behavior": phoenix_conflict_behavior,
         "retrieval_relevance": phoenix_retrieval_relevance,
+        "id_retrieval_relevance": phoenix_id_retrieval_relevance,
     }
     if "faithfulness" in metric_names:
         evaluators["ragas_faithfulness"] = (
@@ -707,6 +841,59 @@ def retrieval_relevance_metrics(
     }
 
 
+def id_retrieval_metrics(
+    inputs: dict[str, Any],
+    outputs: dict[str, Any],
+    reference_outputs: dict[str, Any] | None = None,
+    *,
+    k: int = DEFAULT_RETRIEVAL_METRIC_K,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import retrieved_context_ids_from_output
+
+    reference_ids = _clean_context_ids((reference_outputs or inputs).get("reference_context_ids") or [])
+    if not reference_ids:
+        return {
+            "score": None,
+            "label": "skipped",
+            "explanation": "ID retrieval relevance requires reference_context_ids.",
+            "metadata": {
+                "k": k,
+                "reason": "missing_reference_context_ids",
+                "retrieved_context_ids": retrieved_context_ids_from_output(outputs),
+                "reference_context_ids": [],
+                "id_document_scores": [],
+            },
+        }
+
+    retrieved_ids = retrieved_context_ids_from_output(outputs)
+    reference_set = set(reference_ids)
+    ranked_ids = retrieved_ids[:k]
+    ranked_scores = [1.0 if context_id in reference_set else 0.0 for context_id in ranked_ids]
+    matched_ids = _unique_nonempty(context_id for context_id in ranked_ids if context_id in reference_set)
+    hit = bool(matched_ids)
+    precision = sum(ranked_scores) / k if k > 0 else 0.0
+    recall = len(matched_ids) / len(reference_set) if reference_set else 0.0
+    mrr = _mrr(ranked_scores)
+    ndcg = _ndcg_with_ideal(ranked_scores, relevant_count=len(reference_set), k=k)
+    return {
+        "score": recall,
+        "label": "hit" if hit else "miss",
+        "explanation": f"{len(matched_ids)} of {len(reference_set)} gold context IDs appeared in the top {k}.",
+        "metadata": {
+            "k": k,
+            f"id_hit_at_{k}": hit,
+            f"id_precision_at_{k}": precision,
+            f"id_recall_at_{k}": recall,
+            f"id_mrr_at_{k}": mrr,
+            f"id_ndcg_at_{k}": ndcg,
+            "id_document_scores": ranked_scores,
+            "retrieved_context_ids": retrieved_ids,
+            "reference_context_ids": reference_ids,
+            "matched_context_ids": matched_ids,
+        },
+    }
+
+
 def log_phoenix_eval_annotations(
     client: Any,
     *,
@@ -782,11 +969,17 @@ def build_eval_artifact_row(
     }
     citation_verdict = citation_behavior(inputs, dict(output), reference_outputs)["score"]
     source_hint_verdict = source_hint_behavior(inputs, dict(output), reference_outputs)["score"]
+    citation_grounding = citation_grounding_behavior(inputs, dict(output), reference_outputs)
+    conflict_verdict = conflict_behavior(inputs, dict(output), reference_outputs)
     retrieval_metrics = retrieval_relevance_metrics(inputs, dict(output), reference_outputs)
     retrieval_metadata = retrieval_metrics.get("metadata", {})
+    id_metrics = id_retrieval_metrics(inputs, dict(output), reference_outputs)
+    id_metadata = id_metrics.get("metadata", {})
     deterministic = {
         "citation_behavior": citation_verdict,
         "source_hint_behavior": source_hint_verdict,
+        "citation_grounding_behavior": citation_grounding.get("score"),
+        "conflict_behavior": conflict_verdict.get("score"),
         f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
             f"hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
         ),
@@ -796,6 +989,13 @@ def build_eval_artifact_row(
         f"retrieval_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
             f"ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
         ),
+        f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
+        f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
+            f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
+        ),
+        f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
+        f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
+        f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
     }
     resolved_ragas_results = ragas_results or {}
     ragas_scores = {name: result.get("score") for name, result in resolved_ragas_results.items()}
@@ -834,8 +1034,14 @@ def classify_eval_failure(
         return "bad_conflict_handling"
     if expected_behavior == "cite_answer" and deterministic.get("citation_behavior") is not True:
         return "missing_citation"
+    if expected_behavior == "surface_conflict" and deterministic.get("conflict_behavior") is False:
+        return "bad_conflict_handling"
+    if deterministic.get(f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}") is False:
+        return "retrieval_miss"
     if deterministic.get(f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}") is False:
         return "retrieval_miss"
+    if deterministic.get("citation_grounding_behavior") is False:
+        return "ungrounded_citation"
     if deterministic.get("source_hint_behavior") is False:
         return "noisy_retrieval"
     if _below_threshold(ragas_scores.get("faithfulness")):
@@ -969,6 +1175,107 @@ def _document_relevance_score(document: Any, hints: list[str]) -> float:
     return 1.0 if any(hint in normalized for hint in hints) else 0.0
 
 
+def _clean_context_ids(values: Any) -> list[str]:
+    if values is None:
+        raw_values: list[Any] = []
+    elif isinstance(values, str) or not isinstance(values, Sequence):
+        raw_values = [values]
+    else:
+        raw_values = list(values)
+    return _unique_nonempty(str(value).strip() for value in raw_values)
+
+
+def _unique_nonempty(values: Iterable[Any]) -> list[str]:
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if text and text not in seen:
+            seen.add(text)
+            resolved.append(text)
+    return resolved
+
+
+def _citation_values(outputs: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("citations", "sources"):
+        raw = outputs.get(key) or []
+        if isinstance(raw, str):
+            values.append(raw)
+        else:
+            values.extend(str(value) for value in raw)
+    return _unique_nonempty(values)
+
+
+def _document_ids_matching_citation(citation: str, documents: Sequence[Any]) -> list[str]:
+    normalized_citation = citation.casefold()
+    matched_ids: list[str] = []
+    for document in documents:
+        payload = dict(document) if isinstance(document, Mapping) else _document_payload(document)
+        metadata = payload.get("metadata", {}) or {}
+        identity_values = _document_identity_values(payload, metadata if isinstance(metadata, Mapping) else {})
+        if any(_identity_matches_citation(value, normalized_citation) for value in identity_values):
+            file_id = str((metadata if isinstance(metadata, Mapping) else {}).get("file_id") or "").strip()
+            if file_id:
+                matched_ids.append(file_id)
+    return _unique_nonempty(matched_ids)
+
+
+def _document_identity_values(payload: Mapping[str, Any], metadata: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for field in (
+        "file_id",
+        "chunk_id",
+        "citation_id",
+        "document_id",
+        "source_id",
+        "source",
+        "relative_path",
+        "file_name",
+        "file_path",
+        "parent_folder",
+        "section_heading",
+    ):
+        value = str(metadata.get(field) or "").strip()
+        if value:
+            values.append(value)
+    source = str(payload.get("source") or payload.get("citation") or "").strip()
+    if source:
+        values.append(source)
+    return _unique_nonempty(values)
+
+
+def _identity_matches_citation(identity_value: str, normalized_citation: str) -> bool:
+    normalized_identity = identity_value.casefold().strip()
+    if len(normalized_identity) < 3 or len(normalized_citation.strip()) < 3:
+        return False
+    return normalized_identity in normalized_citation or normalized_citation in normalized_identity
+
+
+def _bool_label(score: bool | None) -> str:
+    if score is None:
+        return "skipped"
+    return "pass" if score else "fail"
+
+
+def _has_decisive_version_claim(answer: str) -> bool:
+    normalized = answer.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "действует новая",
+            "действует стар",
+            "действует только",
+            "актуальна новая",
+            "актуален новый",
+            "единственная версия",
+            "new version applies",
+            "old version applies",
+            "only valid version",
+        )
+    )
+
+
 def _ndcg(scores: list[float]) -> float:
     if not scores:
         return 0.0
@@ -977,6 +1284,25 @@ def _ndcg(scores: list[float]) -> float:
     if ideal_dcg == 0:
         return 0.0
     return _dcg(scores) / ideal_dcg
+
+
+def _ndcg_with_ideal(scores: list[float], *, relevant_count: int, k: int) -> float:
+    if k <= 0:
+        return 0.0
+    actual_scores = [*scores[:k], *([0.0] * max(0, k - len(scores)))]
+    ideal_scores = [1.0] * min(relevant_count, k)
+    ideal_scores.extend([0.0] * max(0, k - len(ideal_scores)))
+    ideal_dcg = _dcg(ideal_scores)
+    if ideal_dcg == 0:
+        return 0.0
+    return _dcg(actual_scores) / ideal_dcg
+
+
+def _mrr(scores: list[float]) -> float:
+    for index, score in enumerate(scores, start=1):
+        if score > 0:
+            return 1.0 / index
+    return 0.0
 
 
 def _dcg(scores: list[float]) -> float:
@@ -995,10 +1321,18 @@ def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _retrieval_span_metric_names(metadata: Mapping[str, Any]) -> list[str]:
+    metric_prefixes = (
+        "precision_at_",
+        "ndcg_at_",
+        "id_precision_at_",
+        "id_recall_at_",
+        "id_mrr_at_",
+        "id_ndcg_at_",
+    )
     return [
         key
         for key in metadata
-        if (key.startswith("precision_at_") or key.startswith("ndcg_at_")) and metadata.get(key) is not None
+        if any(key.startswith(prefix) for prefix in metric_prefixes) and metadata.get(key) is not None
     ]
 
 

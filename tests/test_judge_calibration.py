@@ -63,7 +63,7 @@ def test_calibration_summary_reports_accuracy_confusion_and_separation():
         run_timestamp="2026-06-25T00:00:00+00:00",
     )
 
-    assert result["summary"] | {"score_separation": 0.45} == {
+    assert result["summary"] | {"score_separation": 0.45, "cohen_kappa": 0.4} == {
         "metric": "factual_correctness",
         "judge_model": "qwen-test",
         "judge_config": {"metric": "factual_correctness"},
@@ -72,6 +72,12 @@ def test_calibration_summary_reports_accuracy_confusion_and_separation():
         "score_cutoff": 0.5,
         "pass_threshold": 0.8,
         "accuracy": 2 / 3,
+        "true_positive_rate": 1.0,
+        "true_negative_rate": 0.5,
+        "false_positive_rate": 0.5,
+        "false_negative_rate": 0.0,
+        "balanced_accuracy": 0.75,
+        "cohen_kappa": 0.4,
         "passed": False,
         "confusion_matrix": {
             "true_correct_pred_correct": 1,
@@ -84,6 +90,7 @@ def test_calibration_summary_reports_accuracy_confusion_and_separation():
         "score_separation": 0.45,
     }
     assert result["summary"]["score_separation"] == pytest.approx(0.45)
+    assert result["summary"]["cohen_kappa"] == pytest.approx(0.4)
     assert result["rows"][2]["predicted_label"] == "correct"
     assert result["rows"][2]["matches_human_label"] is False
     assert result["rows"][2]["lane"] == "conflict_version_behavior"

@@ -389,6 +389,110 @@ def test_retrieval_relevance_metrics_use_source_hints_and_rank_order():
     assert metrics["metadata"]["ndcg_at_2"] == pytest.approx(0.6309297536)
 
 
+def test_id_retrieval_metrics_use_gold_context_ids_and_rank_order():
+    module = _load_eval_runner()
+
+    metrics = module.id_retrieval_metrics(
+        {"question": "Как оформить возврат брака?"},
+        {
+            "documents": [
+                {"page_content": "Нерелевантный текст.", "metadata": {"file_id": "wrong-file"}},
+                {"page_content": "Возврат брака.", "metadata": {"file_id": "file-a"}},
+                {"page_content": "Другой источник.", "metadata": {"file_id": "file-b"}},
+            ]
+        },
+        {"reference_context_ids": ["file-a", "file-c"]},
+        k=3,
+    )
+
+    assert metrics["score"] == 0.5
+    assert metrics["label"] == "hit"
+    assert metrics["metadata"]["id_document_scores"] == [0.0, 1.0, 0.0]
+    assert metrics["metadata"]["id_hit_at_3"] is True
+    assert metrics["metadata"]["id_precision_at_3"] == pytest.approx(1 / 3)
+    assert metrics["metadata"]["id_recall_at_3"] == 0.5
+    assert metrics["metadata"]["id_mrr_at_3"] == 0.5
+    assert metrics["metadata"]["id_ndcg_at_3"] == pytest.approx(0.3868528072)
+    assert metrics["metadata"]["retrieved_context_ids"] == ["wrong-file", "file-a", "file-b"]
+    assert metrics["metadata"]["reference_context_ids"] == ["file-a", "file-c"]
+
+
+def test_id_retrieval_metrics_skip_without_gold_context_ids():
+    module = _load_eval_runner()
+
+    metrics = module.id_retrieval_metrics(
+        {"question": "Как оформить возврат брака?"},
+        {"documents": [{"metadata": {"file_id": "file-a"}}]},
+        {"expected_behavior": "cite_answer"},
+    )
+
+    assert metrics["score"] is None
+    assert metrics["label"] == "skipped"
+    assert metrics["metadata"]["reason"] == "missing_reference_context_ids"
+
+
+def test_citation_grounding_requires_citations_to_resolve_to_retrieved_evidence():
+    module = _load_eval_runner()
+
+    result = module.citation_grounding_behavior(
+        {"question": "Как оформить возврат брака?"},
+        {
+            "answer": "Возврат описан в источниках.",
+            "citations": ["documents/reglament-a.docx", "documents/missing.docx"],
+            "documents": [
+                {
+                    "page_content": "Возврат брака.",
+                    "metadata": {
+                        "file_id": "file-a",
+                        "relative_path": "documents/reglament-a.docx",
+                    },
+                }
+            ],
+        },
+        {"expected_behavior": "cite_answer", "reference_context_ids": ["file-a"]},
+    )
+
+    assert result["score"] is False
+    assert result["metadata"]["resolved_citation_count"] == 1
+    assert result["metadata"]["citation_count"] == 2
+    assert result["metadata"]["cited_context_ids"] == ["file-a"]
+    assert result["metadata"]["gold_overlap"] is True
+    assert result["metadata"]["unresolved_citations"] == ["documents/missing.docx"]
+
+
+def test_conflict_behavior_requires_conflict_language_and_both_gold_sides_cited():
+    module = _load_eval_runner()
+
+    passing = module.conflict_behavior(
+        {"question": "Какая версия регламента действует?"},
+        {
+            "answer": "Документы противоречат друг другу, поэтому нужно показать обе версии.",
+            "citations": ["documents/v1.docx", "documents/v2.docx"],
+            "documents": [
+                {"metadata": {"file_id": "file-a", "relative_path": "documents/v1.docx"}},
+                {"metadata": {"file_id": "file-b", "relative_path": "documents/v2.docx"}},
+            ],
+        },
+        {"expected_behavior": "surface_conflict", "reference_context_ids": ["file-a", "file-b"]},
+    )
+    failing = module.conflict_behavior(
+        {"question": "Какая версия регламента действует?"},
+        {
+            "answer": "Действует новая версия.",
+            "citations": ["documents/v1.docx"],
+            "documents": [{"metadata": {"file_id": "file-a", "relative_path": "documents/v1.docx"}}],
+        },
+        {"expected_behavior": "surface_conflict", "reference_context_ids": ["file-a", "file-b"]},
+    )
+
+    assert passing["score"] is True
+    assert passing["metadata"]["mentions_conflict"] is True
+    assert passing["metadata"]["cited_reference_context_count"] == 2
+    assert failing["score"] is False
+    assert failing["metadata"]["mentions_conflict"] is False
+    assert failing["metadata"]["cited_reference_context_count"] == 1
+
+
 def test_run_local_eval_includes_retrieval_quality_metrics():
     module = _load_eval_runner()
 
@@ -396,9 +500,14 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
         def query(self, question: str) -> dict[str, object]:
             return {
                 "answer": f"Ответ на {question}",
-                "citations": ["[/docs/reglament.docx#chunk] body"],
+                "citations": ["documents/reglament.docx"],
                 "sources": ["[/docs/reglament.docx#chunk] documents/reglament.docx"],
-                "evidence": [{"page_content": "Регламент описывает возврат брака.", "metadata": {}}],
+                "evidence": [
+                    {
+                        "page_content": "Регламент описывает возврат брака.",
+                        "metadata": {"file_id": "file-a", "relative_path": "documents/reglament.docx"},
+                    }
+                ],
             }
 
     rows = module.run_local_eval(
@@ -407,6 +516,7 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
                 "question": "Как оформить возврат брака?",
                 "expected_behavior": "cite_answer",
                 "expected_source_hints": ["возврат брака"],
+                "reference_context_ids": ["file-a"],
             }
         ],
         runtime=FakeRuntime(),
@@ -417,9 +527,16 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
             "question": "Как оформить возврат брака?",
             "citation_behavior": True,
             "source_hint_behavior": True,
+            "citation_grounding_behavior": True,
+            "conflict_behavior": None,
             "retrieval_hit_at_5": True,
             "retrieval_precision_at_5": 0.2,
             "retrieval_ndcg_at_5": 1.0,
+            "id_hit_at_5": True,
+            "id_precision_at_5": 0.2,
+            "id_recall_at_5": 1.0,
+            "id_mrr_at_5": 1.0,
+            "id_ndcg_at_5": 1.0,
         }
     ]
 
@@ -468,9 +585,16 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "deterministic": {
             "citation_behavior": False,
             "source_hint_behavior": True,
+            "citation_grounding_behavior": False,
+            "conflict_behavior": None,
             "retrieval_hit_at_5": True,
             "retrieval_precision_at_5": 0.2,
             "retrieval_ndcg_at_5": 1.0,
+            "id_hit_at_5": True,
+            "id_precision_at_5": 0.2,
+            "id_recall_at_5": 1.0,
+            "id_mrr_at_5": 1.0,
+            "id_ndcg_at_5": 1.0,
         },
         "ragas_scores": {"faithfulness": 0.9, "id_context_recall": 1.0},
         "ragas_explanations": {"faithfulness": "grounded", "id_context_recall": None},
@@ -495,6 +619,16 @@ def test_eval_failure_class_prioritizes_behavior_failures():
     assert module.classify_eval_failure(
         expected_behavior="cite_answer",
         deterministic={"citation_behavior": True, "retrieval_hit_at_5": False},
+        ragas_scores={},
+    ) == "retrieval_miss"
+    assert module.classify_eval_failure(
+        expected_behavior="cite_answer",
+        deterministic={"citation_behavior": True, "citation_grounding_behavior": False, "retrieval_hit_at_5": True},
+        ragas_scores={},
+    ) == "ungrounded_citation"
+    assert module.classify_eval_failure(
+        expected_behavior="cite_answer",
+        deterministic={"citation_behavior": True, "id_hit_at_5": False, "retrieval_hit_at_5": True},
         ragas_scores={},
     ) == "retrieval_miss"
 
@@ -649,14 +783,20 @@ def test_phoenix_evaluators_use_stable_mapping_names():
     assert list(evaluators) == [
         "citation_behavior",
         "source_hint_behavior",
+        "citation_grounding_behavior",
+        "conflict_behavior",
         "retrieval_relevance",
+        "id_retrieval_relevance",
         "ragas_faithfulness",
         "ragas_answer_relevancy",
         "ragas_id_context_recall",
     ]
     assert evaluators["citation_behavior"] is module.phoenix_citation_behavior
     assert evaluators["source_hint_behavior"] is module.phoenix_source_hint_behavior
+    assert evaluators["citation_grounding_behavior"] is module.phoenix_citation_grounding_behavior
+    assert evaluators["conflict_behavior"] is module.phoenix_conflict_behavior
     assert evaluators["retrieval_relevance"] is module.phoenix_retrieval_relevance
+    assert evaluators["id_retrieval_relevance"] is module.phoenix_id_retrieval_relevance
     assert evaluators["ragas_faithfulness"] is module.phoenix_ragas_faithfulness_async
     assert evaluators["ragas_answer_relevancy"] is module.phoenix_ragas_answer_relevancy_async
     assert evaluators["ragas_id_context_recall"] is module.phoenix_id_context_recall_async
@@ -723,7 +863,10 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
     assert experiment_args["evaluators"] == {
         "citation_behavior": module.phoenix_citation_behavior,
         "source_hint_behavior": module.phoenix_source_hint_behavior,
+        "citation_grounding_behavior": module.phoenix_citation_grounding_behavior,
+        "conflict_behavior": module.phoenix_conflict_behavior,
         "retrieval_relevance": module.phoenix_retrieval_relevance,
+        "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
         "ragas_faithfulness": module.phoenix_ragas_faithfulness_async,
         "ragas_answer_relevancy": module.phoenix_ragas_answer_relevancy_async,
     }
@@ -779,7 +922,10 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
     assert captured["experiment"]["evaluators"] == {
         "citation_behavior": module.phoenix_citation_behavior,
         "source_hint_behavior": module.phoenix_source_hint_behavior,
+        "citation_grounding_behavior": module.phoenix_citation_grounding_behavior,
+        "conflict_behavior": module.phoenix_conflict_behavior,
         "retrieval_relevance": module.phoenix_retrieval_relevance,
+        "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
         "ragas_id_context_recall": module.phoenix_id_context_recall_async,
     }
 
@@ -903,7 +1049,10 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
     assert captured["experiment"]["evaluators"] == {
         "citation_behavior": module.phoenix_citation_behavior,
         "source_hint_behavior": module.phoenix_source_hint_behavior,
+        "citation_grounding_behavior": module.phoenix_citation_grounding_behavior,
+        "conflict_behavior": module.phoenix_conflict_behavior,
         "retrieval_relevance": module.phoenix_retrieval_relevance,
+        "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
     }
 
 

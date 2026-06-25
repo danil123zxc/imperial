@@ -107,6 +107,28 @@ def summarize_calibration(
     row_count = len(rows)
     matched_count = sum(1 for row in output_rows if row["matches_human_label"])
     accuracy = matched_count / row_count if row_count else 0.0
+    true_positive_rate = _safe_divide(
+        confusion["true_correct_pred_correct"],
+        confusion["true_correct_pred_correct"] + confusion["true_correct_pred_incorrect"],
+    )
+    true_negative_rate = _safe_divide(
+        confusion["true_incorrect_pred_incorrect"],
+        confusion["true_incorrect_pred_correct"] + confusion["true_incorrect_pred_incorrect"],
+    )
+    false_positive_rate = _safe_divide(
+        confusion["true_incorrect_pred_correct"],
+        confusion["true_incorrect_pred_correct"] + confusion["true_incorrect_pred_incorrect"],
+    )
+    false_negative_rate = _safe_divide(
+        confusion["true_correct_pred_incorrect"],
+        confusion["true_correct_pred_correct"] + confusion["true_correct_pred_incorrect"],
+    )
+    balanced_accuracy = (
+        (true_positive_rate + true_negative_rate) / 2
+        if true_positive_rate is not None and true_negative_rate is not None
+        else None
+    )
+    cohen_kappa = _cohen_kappa(confusion, row_count=row_count, accuracy=accuracy)
     mean_correct_score = mean(correct_scores) if correct_scores else None
     mean_incorrect_score = mean(incorrect_scores) if incorrect_scores else None
     score_separation = (
@@ -124,6 +146,12 @@ def summarize_calibration(
             "score_cutoff": score_cutoff,
             "pass_threshold": pass_threshold,
             "accuracy": accuracy,
+            "true_positive_rate": true_positive_rate,
+            "true_negative_rate": true_negative_rate,
+            "false_positive_rate": false_positive_rate,
+            "false_negative_rate": false_negative_rate,
+            "balanced_accuracy": balanced_accuracy,
+            "cohen_kappa": cohen_kappa,
             "passed": accuracy >= pass_threshold,
             "confusion_matrix": confusion,
             "mean_correct_score": mean_correct_score,
@@ -213,6 +241,28 @@ def _metric_score(record: Mapping[str, Any], metric_name: str) -> float | None:
         if math.isfinite(score):
             return score
     return None
+
+
+def _safe_divide(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _cohen_kappa(confusion: Mapping[str, int], *, row_count: int, accuracy: float) -> float | None:
+    if row_count == 0:
+        return None
+    true_correct = confusion["true_correct_pred_correct"] + confusion["true_correct_pred_incorrect"]
+    true_incorrect = confusion["true_incorrect_pred_correct"] + confusion["true_incorrect_pred_incorrect"]
+    predicted_correct = confusion["true_correct_pred_correct"] + confusion["true_incorrect_pred_correct"]
+    predicted_incorrect = confusion["true_correct_pred_incorrect"] + confusion["true_incorrect_pred_incorrect"]
+    expected_agreement = (
+        (true_correct / row_count) * (predicted_correct / row_count)
+        + (true_incorrect / row_count) * (predicted_incorrect / row_count)
+    )
+    if expected_agreement == 1:
+        return 1.0
+    return (accuracy - expected_agreement) / (1 - expected_agreement)
 
 
 if __name__ == "__main__":
