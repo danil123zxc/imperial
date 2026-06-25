@@ -122,6 +122,10 @@ class Settings:
         return self.processed_root / "auth.sqlite3"
 
     @property
+    def chat_history_db_path(self) -> Path:
+        return self.processed_root / "chat_history.sqlite3"
+
+    @property
     def extraction_root(self) -> Path:
         if self.extraction_root_override is not None:
             return self.extraction_root_override

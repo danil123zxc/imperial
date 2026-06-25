@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 import json
 import mimetypes
 import os
@@ -14,6 +14,8 @@ import uuid
 APP_TITLE = "Imperial RAG"
 PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
 AUTH_SESSION_EMAIL_KEY = "auth_user_email"
+CHAT_HISTORY_USER_KEY = "chat_history_user_email"
+ACTIVE_CONVERSATION_ID_KEY = "active_conversation_id"
 FILE_PREVIEW_CHAR_LIMIT = 12_000
 FILE_DOWNLOAD_BYTE_LIMIT = 50 * 1024 * 1024
 _RUNTIME_CACHE_WRAPPER: Any | None = None
@@ -225,12 +227,18 @@ def main() -> None:
     if current_user is None:
         _render_auth_gate(st, auth_store)
         return
+    chat_store = _prepare_chat_history_store(settings)
+    _sync_chat_history_state(st, chat_store, current_user.email)
 
     with st.sidebar:
+        _render_chat_history_sidebar(st, chat_store, current_user.email)
         st.caption(f"Signed in as {current_user.email}")
         if st.button("Log out", key="auth-logout", icon=":material/logout:"):
             st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
+            st.session_state.pop(CHAT_HISTORY_USER_KEY, None)
+            st.session_state.pop(ACTIVE_CONVERSATION_ID_KEY, None)
             st.session_state.pop("messages", None)
+            st.session_state.pop("phoenix_trace_session_id", None)
             _rerun(st)
             return
         if current_user.is_admin:
@@ -238,10 +246,8 @@ def main() -> None:
         st.header("Ingestion status")
         st.text(load_status_summary(settings))
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "phoenix_trace_session_id" not in st.session_state:
-        st.session_state.phoenix_trace_session_id = str(uuid.uuid4())
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("phoenix_trace_session_id", str(uuid.uuid4()))
 
     for message_index, message in enumerate(st.session_state.messages):
         _render_chat_message(st, message, message_index, settings)
@@ -250,7 +256,10 @@ def main() -> None:
     if not question:
         return
 
-    st.session_state.messages.append({"role": "user", "content": question})
+    conversation = _ensure_active_conversation(st, chat_store, current_user.email, question)
+    user_message = {"role": "user", "content": question}
+    st.session_state.messages.append(user_message)
+    chat_store.add_message(current_user.email, conversation.id, "user", question)
     with st.chat_message("user"):
         st.write(question)
 
@@ -295,19 +304,15 @@ def main() -> None:
         user_hash=user_hash,
         **_query_log_fields(result),
     )
-    answer = str(result.get("answer", ""))
-    sources = result.get("sources") or result.get("citations") or []
-    evidence = result.get("evidence") or result.get("retrieved_documents") or []
-    assistant_message = {
-        "role": "assistant",
-        "content": answer,
-        "sources": sources,
-        "error": result.get("error"),
-        "citations_valid": result.get("citations_valid"),
-        "invalid_citations": result.get("invalid_citations") or [],
-        "retrieved_files": build_retrieved_file_groups(evidence, settings),
-    }
+    assistant_message = _build_assistant_message(result, settings)
     st.session_state.messages.append(assistant_message)
+    chat_store.add_message(
+        current_user.email,
+        conversation.id,
+        "assistant",
+        assistant_message["content"],
+        payload=_chat_message_payload(assistant_message),
+    )
     _render_chat_message(st, assistant_message, len(st.session_state.messages) - 1, settings)
 
 
@@ -326,6 +331,119 @@ def _prepare_auth_store(settings: Any) -> Any:
     if admin_email and admin_password:
         store.bootstrap_admin(admin_email, admin_password)
     return store
+
+
+def _prepare_chat_history_store(settings: Any) -> Any:
+    from imperial_rag.app.chat_history import ChatHistoryStore
+
+    chat_history_db_path = getattr(settings, "chat_history_db_path", None)
+    if chat_history_db_path is None:
+        processed_root = getattr(settings, "processed_root", Path.cwd() / ".imperial_rag")
+        chat_history_db_path = Path(processed_root) / "chat_history.sqlite3"
+    store = ChatHistoryStore(Path(chat_history_db_path))
+    store.initialize()
+    return store
+
+
+def _sync_chat_history_state(st: Any, chat_store: Any, user_email: str) -> None:
+    from imperial_rag.app.chat_history import normalize_user_email
+
+    normalized_email = normalize_user_email(user_email)
+    previous_email = st.session_state.get(CHAT_HISTORY_USER_KEY)
+    if previous_email != normalized_email:
+        st.session_state[CHAT_HISTORY_USER_KEY] = normalized_email
+        conversations = chat_store.list_conversations(normalized_email)
+        if conversations:
+            _load_conversation_state(st, chat_store, normalized_email, conversations[0].id)
+        else:
+            _start_new_chat_state(st, normalized_email)
+        return
+
+    active_conversation_id = st.session_state.get(ACTIVE_CONVERSATION_ID_KEY)
+    if active_conversation_id:
+        conversation = chat_store.get_conversation(normalized_email, str(active_conversation_id))
+        if conversation is None:
+            _start_new_chat_state(st, normalized_email)
+            return
+        st.session_state.messages = [
+            message.to_chat_message() for message in chat_store.list_messages(normalized_email, conversation.id)
+        ]
+        st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id or str(uuid.uuid4())
+        return
+
+    st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("phoenix_trace_session_id", str(uuid.uuid4()))
+
+
+def _render_chat_history_sidebar(st: Any, chat_store: Any, user_email: str) -> None:
+    st.header("Chats")
+    if st.button("New chat", key="chat-history-new", icon=":material/add:", width="stretch"):
+        _start_new_chat_state(st, user_email)
+        _rerun(st)
+        return
+
+    for conversation in chat_store.list_conversations(user_email):
+        selected = conversation.id == st.session_state.get(ACTIVE_CONVERSATION_ID_KEY)
+        if st.button(
+            _conversation_button_label(conversation),
+            key=f"chat-history-select-{conversation.id}",
+            icon=":material/chat:",
+            width="stretch",
+            type="primary" if selected else "secondary",
+        ):
+            _load_conversation_state(st, chat_store, user_email, conversation.id)
+            _rerun(st)
+            return
+
+
+def _start_new_chat_state(st: Any, user_email: str) -> None:
+    from imperial_rag.app.chat_history import normalize_user_email
+
+    st.session_state[CHAT_HISTORY_USER_KEY] = normalize_user_email(user_email)
+    st.session_state[ACTIVE_CONVERSATION_ID_KEY] = None
+    st.session_state.messages = []
+    st.session_state.phoenix_trace_session_id = str(uuid.uuid4())
+
+
+def _load_conversation_state(st: Any, chat_store: Any, user_email: str, conversation_id: str) -> None:
+    conversation = chat_store.get_conversation(user_email, conversation_id)
+    if conversation is None:
+        _start_new_chat_state(st, user_email)
+        return
+    st.session_state[CHAT_HISTORY_USER_KEY] = conversation.user_email
+    st.session_state[ACTIVE_CONVERSATION_ID_KEY] = conversation.id
+    st.session_state.messages = [
+        message.to_chat_message() for message in chat_store.list_messages(conversation.user_email, conversation.id)
+    ]
+    st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id or str(uuid.uuid4())
+
+
+def _ensure_active_conversation(st: Any, chat_store: Any, user_email: str, first_question: str) -> Any:
+    active_conversation_id = st.session_state.get(ACTIVE_CONVERSATION_ID_KEY)
+    if active_conversation_id:
+        conversation = chat_store.get_conversation(user_email, str(active_conversation_id))
+        if conversation is not None:
+            return conversation
+
+    phoenix_session_id = st.session_state.get("phoenix_trace_session_id") or str(uuid.uuid4())
+    conversation = chat_store.create_conversation(
+        user_email,
+        title=_chat_title_from_question(first_question),
+        phoenix_session_id=phoenix_session_id,
+    )
+    st.session_state[ACTIVE_CONVERSATION_ID_KEY] = conversation.id
+    st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id
+    return conversation
+
+
+def _conversation_button_label(conversation: Any) -> str:
+    title = " ".join(str(getattr(conversation, "title", "") or "New chat").split())
+    return title[:60] or "New chat"
+
+
+def _chat_title_from_question(question: str) -> str:
+    title = " ".join(str(question or "").split())
+    return title[:80] or "New chat"
 
 
 def _current_authenticated_user(st: Any, auth_store: Any) -> Any | None:
@@ -431,6 +549,59 @@ def _coerce_result(result: Any) -> dict[str, Any]:
         "sources": getattr(result, "sources", getattr(result, "citations", [])),
         "evidence": getattr(result, "evidence", getattr(result, "retrieved_documents", [])),
     }
+
+
+def _build_assistant_message(result: dict[str, Any], settings: Any) -> dict[str, Any]:
+    answer = str(result.get("answer", ""))
+    sources = result.get("sources") or result.get("citations") or []
+    evidence = result.get("evidence") or result.get("retrieved_documents") or []
+    return {
+        "role": "assistant",
+        "content": answer,
+        "sources": _json_safe(sources),
+        "error": _json_safe(result.get("error")),
+        "citations_valid": result.get("citations_valid"),
+        "invalid_citations": _json_safe(result.get("invalid_citations") or []),
+        "retrieved_files": build_retrieved_file_groups(evidence, settings),
+        "retrieved_documents": _retrieved_documents_payload(evidence),
+        "retrieval": _json_safe(result.get("retrieval") or {}),
+    }
+
+
+def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:
+    return {key: _json_safe(value) for key, value in message.items() if key not in {"role", "content"}}
+
+
+def _retrieved_documents_payload(evidence: list[Any]) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    for document in evidence or []:
+        if isinstance(document, dict):
+            page_content = document.get("page_content", document.get("content", ""))
+            metadata = document.get("metadata") or {}
+        else:
+            page_content = getattr(document, "page_content", "")
+            metadata = getattr(document, "metadata", {}) or {}
+        documents.append(
+            {
+                "page_content": str(page_content or ""),
+                "metadata": _json_safe(dict(metadata) if isinstance(metadata, dict) else metadata),
+            }
+        )
+    return documents
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_safe(asdict(value))
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return str(value)
 
 
 def _query_log_fields(result: Any) -> dict[str, Any]:
@@ -682,7 +853,7 @@ def _safe_artifact_id(file_id: str) -> bool:
 
 
 def _stored_group_key(group: Any, index: int, documents_root: Path) -> str:
-    download_path = getattr(group, "download_path", None)
+    download_path = _group_value(group, "download_path")
     if download_path is not None:
         try:
             resolved = Path(download_path).expanduser().resolve(strict=False)
@@ -690,7 +861,7 @@ def _stored_group_key(group: Any, index: int, documents_root: Path) -> str:
         except (OSError, ValueError):
             pass
 
-    file_key = str(getattr(group, "file_key", "") or "")
+    file_key = str(_group_value(group, "file_key", "") or "")
     if file_key.startswith("relative_path:"):
         return f"relative_path:{_normalize_relative_path(file_key.removeprefix('relative_path:'))}"
     if file_key.startswith("file_path:"):
@@ -698,37 +869,43 @@ def _stored_group_key(group: Any, index: int, documents_root: Path) -> str:
     if file_key:
         return file_key
 
-    file_name = getattr(group, "file_name", None)
+    file_name = _group_value(group, "file_name")
     if file_name:
         return f"file_name:{file_name}"
     return f"unknown:{index}"
 
 
 def _coerce_retrieved_file_group(group: Any, file_key: str, settings: Any) -> RetrievedFileGroup:
-    file_name = str(getattr(group, "file_name", "") or "retrieved-source")
-    download_path = getattr(group, "download_path", None)
+    file_name = str(_group_value(group, "file_name", "") or "retrieved-source")
+    download_path = _group_value(group, "download_path")
     if download_path is not None:
         download_path = Path(download_path)
-    preview_text = str(getattr(group, "preview_text", "") or "")
+    preview_text = str(_group_value(group, "preview_text", "") or "")
     if not preview_text:
         preview_text = _stored_group_preview_text(group, settings)
     return RetrievedFileGroup(
         file_key=file_key,
         file_name=file_name,
-        display_path=str(getattr(group, "display_path", "") or file_name),
+        display_path=str(_group_value(group, "display_path", "") or file_name),
         download_path=download_path,
-        download_name=str(getattr(group, "download_name", "") or file_name),
-        download_mime=str(getattr(group, "download_mime", "") or _download_mime(file_name)),
+        download_name=str(_group_value(group, "download_name", "") or file_name),
+        download_mime=str(_group_value(group, "download_mime", "") or _download_mime(file_name)),
         preview_text=preview_text,
-        can_download=bool(getattr(group, "can_download", False)) and download_path is not None,
+        can_download=bool(_group_value(group, "can_download", False)) and download_path is not None,
     )
 
 
 def _stored_group_preview_text(group: Any, settings: Any) -> str:
-    file_key = str(getattr(group, "file_key", "") or "")
+    file_key = str(_group_value(group, "file_key", "") or "")
     if file_key.startswith("file_id:"):
         return _file_preview_text_by_id(file_key.removeprefix("file_id:"), settings)
     return PREVIEW_UNAVAILABLE_TEXT
+
+
+def _group_value(group: Any, key: str, default: Any = None) -> Any:
+    if isinstance(group, dict):
+        return group.get(key, default)
+    return getattr(group, key, default)
 
 
 def _merge_file_groups(existing: RetrievedFileGroup, duplicate: RetrievedFileGroup) -> RetrievedFileGroup:
