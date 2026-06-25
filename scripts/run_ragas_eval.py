@@ -22,7 +22,7 @@ SRC_DIR = SCRIPT_DIR.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from run_phoenix_eval import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, run_target
+from run_phoenix_eval import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, positive_int, run_target
 from imperial_rag.ragas_eval import (
     DEFAULT_RAGAS_CONCURRENCY,
     DEFAULT_RAGAS_METRICS,
@@ -44,6 +44,7 @@ DEFAULT_METRICS = DEFAULT_RAGAS_METRICS
 DEFAULT_CONCURRENCY = DEFAULT_RAGAS_CONCURRENCY
 REFERENCE_REQUIRED_METRICS = REFERENCE_REQUIRED_RAGAS_METRICS
 SUPPORTED_METRICS = SUPPORTED_RAGAS_METRICS
+SIDECAR_METRIC_ORDER = ("faithfulness", "answer_relevancy", "id_context_recall")
 
 
 class PreparedRagasRows:
@@ -130,27 +131,26 @@ async def evaluate_ragas_rows_async(
     concurrency: int = DEFAULT_CONCURRENCY,
     batch_size: int | None = None,
 ) -> Any:
+    concurrency = positive_int(concurrency)
     validate_metric_requirements(metric_names, rows)
     sidecar_records: list[dict[str, Any]] | None = None
     reference_metric_names = [
-        name for name in metric_names if name not in {"faithfulness", "answer_relevancy", "id_context_recall"}
+        name for name in metric_names if name not in SIDECAR_METRIC_ORDER
     ]
-    if "faithfulness" in metric_names:
-        sidecar_records = await evaluate_faithfulness_rows_async(rows, concurrency=concurrency)
-    if "answer_relevancy" in metric_names:
-        answer_relevancy_records = await evaluate_answer_relevancy_rows_async(rows, concurrency=concurrency)
-        sidecar_records = (
-            _merge_records_by_position(sidecar_records, answer_relevancy_records)
-            if sidecar_records is not None
-            else answer_relevancy_records
+    sidecar_metric_names = [name for name in SIDECAR_METRIC_ORDER if name in metric_names]
+    if sidecar_metric_names:
+        sidecar_results = await _evaluate_sidecar_metrics_concurrently(
+            rows,
+            sidecar_metric_names,
+            concurrency=concurrency,
         )
-    if "id_context_recall" in metric_names:
-        id_context_recall_records = await evaluate_id_context_recall_rows_async(rows, concurrency=concurrency)
-        sidecar_records = (
-            _merge_records_by_position(sidecar_records, id_context_recall_records)
-            if sidecar_records is not None
-            else id_context_recall_records
-        )
+        for metric_name in sidecar_metric_names:
+            metric_records = sidecar_results[metric_name]
+            sidecar_records = (
+                _merge_records_by_position(sidecar_records, metric_records)
+                if sidecar_records is not None
+                else metric_records
+            )
     if not reference_metric_names:
         return sidecar_records or []
 
@@ -161,11 +161,38 @@ async def evaluate_ragas_rows_async(
     evaluate_kwargs: dict[str, Any] = {"dataset": dataset, "metrics": metrics}
     if batch_size is not None:
         evaluate_kwargs["batch_size"] = batch_size
-    reference_result = await _resolve_awaitable(resolved_evaluate(**evaluate_kwargs))
+    # TODO: migrate this reference-metric path to Ragas @experiment once the repo
+    # has an equivalent async adapter.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*aevaluate.*deprecated.*",
+            category=DeprecationWarning,
+        )
+        reference_result = await _resolve_awaitable(resolved_evaluate(**evaluate_kwargs))
     reference_records = _merge_records_by_position(_row_metadata_records(rows), result_records(reference_result))
     if sidecar_records is not None:
         return _merge_records_by_position(sidecar_records, reference_records)
     return reference_records
+
+
+async def _evaluate_sidecar_metrics_concurrently(
+    rows: list[dict[str, Any]],
+    metric_names: list[str],
+    *,
+    concurrency: int,
+) -> dict[str, list[dict[str, Any]]]:
+    async def evaluate(metric_name: str) -> list[dict[str, Any]]:
+        if metric_name == "faithfulness":
+            return await evaluate_faithfulness_rows_async(rows, concurrency=concurrency)
+        if metric_name == "answer_relevancy":
+            return await evaluate_answer_relevancy_rows_async(rows, concurrency=concurrency)
+        if metric_name == "id_context_recall":
+            return await evaluate_id_context_recall_rows_async(rows, concurrency=concurrency)
+        raise AssertionError(f"Unsupported sidecar metric: {metric_name}")
+
+    results = await asyncio.gather(*(evaluate(metric_name) for metric_name in metric_names))
+    return dict(zip(metric_names, results, strict=True))
 
 
 def build_ragas_dataset(rows: list[dict[str, Any]]) -> Any:
@@ -247,9 +274,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output-path", type=Path)
     parser.add_argument(
         "--concurrency",
-        type=int,
+        type=positive_int,
         default=DEFAULT_CONCURRENCY,
-        help="Maximum concurrent Ragas sidecar metric rows.",
+        help="Maximum concurrent rows per selected Ragas sidecar metric.",
     )
     parser.add_argument(
         "--batch-size",

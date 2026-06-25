@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from threading import Lock
 from typing import Any, Protocol
 import uuid
 
@@ -56,12 +57,16 @@ class _UnavailableVectorSearch:
 class _DeferredProviderChatModel:
     def __init__(self) -> None:
         self._model: Any | None = None
+        self._lock = Lock()
 
     def invoke(self, input: Any, *args: Any, **kwargs: Any) -> Any:
         model = self._model
         if model is None:
-            model = create_chat_model()
-            self._model = model
+            with self._lock:
+                model = self._model
+                if model is None:
+                    model = create_chat_model()
+                    self._model = model
         return model.invoke(input, *args, **kwargs)
 
 
@@ -156,22 +161,28 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
     resolved_settings = settings or Settings()
     dependencies_cache: QueryDependencies | None = None
     retrieval_service_cache: RetrievalService | None = None
+    dependencies_lock = Lock()
+    retrieval_service_lock = Lock()
 
     def dependencies() -> QueryDependencies:
         nonlocal dependencies_cache
         if dependencies_cache is None:
-            dependencies_cache = build_query_dependencies(resolved_settings)
+            with dependencies_lock:
+                if dependencies_cache is None:
+                    dependencies_cache = build_query_dependencies(resolved_settings)
         return dependencies_cache
 
     def retrieval_service() -> RetrievalService:
         nonlocal retrieval_service_cache
         if retrieval_service_cache is None:
-            deps = dependencies()
-            retrieval_service_cache = RetrievalService(
-                vector_search=deps.vector_search,
-                keyword_search=deps.keyword_search,
-                settings=RetrievalSettings.from_env(),
-            )
+            with retrieval_service_lock:
+                if retrieval_service_cache is None:
+                    deps = dependencies()
+                    retrieval_service_cache = RetrievalService(
+                        vector_search=deps.vector_search,
+                        keyword_search=deps.keyword_search,
+                        settings=RetrievalSettings.from_env(),
+                    )
         return retrieval_service_cache
 
     def retrieve(question: str):

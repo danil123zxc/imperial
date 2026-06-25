@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -476,6 +477,18 @@ def test_ragas_runner_sync_wrapper_rejects_running_loop():
     asyncio.run(runner())
 
 
+def test_ragas_eval_rejects_non_positive_cli_concurrency_before_running():
+    module = _load_ragas_runner()
+
+    module._load_project_env = lambda workspace_root: pytest.fail("loaded env after invalid concurrency")
+    module._build_settings = lambda workspace_root: pytest.fail("built settings after invalid concurrency")
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--concurrency", "0"])
+
+    assert exc_info.value.code == 2
+
+
 def test_async_faithfulness_row_awaits_scorer_inside_running_loop(monkeypatch):
     from imperial_rag import ragas_eval
 
@@ -678,6 +691,66 @@ def test_evaluate_ragas_rows_merges_id_context_recall_without_llm(monkeypatch):
     assert captured == {"rows": rows}
 
 
+def test_evaluate_ragas_rows_runs_sidecars_concurrently_and_merges_metric_order(monkeypatch):
+    module = _load_ragas_runner()
+    running = 0
+    max_running = 0
+    started: list[str] = []
+
+    def sidecar(name: str, metric_key: str, score: float):
+        async def evaluate(rows, *, concurrency):
+            nonlocal running, max_running
+            started.append(name)
+            running += 1
+            max_running = max(max_running, running)
+            await asyncio.sleep(0.02)
+            running -= 1
+            return [{"user_input": row["user_input"], metric_key: score} for row in rows]
+
+        return evaluate
+
+    monkeypatch.setattr(module, "evaluate_faithfulness_rows_async", sidecar("faithfulness", "faithfulness", 1.0))
+    monkeypatch.setattr(
+        module,
+        "evaluate_answer_relevancy_rows_async",
+        sidecar("answer_relevancy", "answer_relevancy", 0.8),
+    )
+    monkeypatch.setattr(
+        module,
+        "evaluate_id_context_recall_rows_async",
+        sidecar("id_context_recall", "id_context_recall", 0.5),
+    )
+
+    rows = [
+        {
+            "user_input": "q",
+            "response": "a",
+            "retrieved_contexts": ["ctx"],
+            "retrieved_context_ids": ["file-a"],
+            "reference_context_ids": ["file-a"],
+        }
+    ]
+
+    result = asyncio.run(
+        module.evaluate_ragas_rows_async(
+            rows,
+            ["faithfulness", "answer_relevancy", "id_context_recall"],
+            concurrency=2,
+        )
+    )
+
+    assert result == [
+        {
+            "user_input": "q",
+            "faithfulness": 1.0,
+            "answer_relevancy": 0.8,
+            "id_context_recall": 0.5,
+        }
+    ]
+    assert started == ["faithfulness", "answer_relevancy", "id_context_recall"]
+    assert max_running > 1
+
+
 def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
     module = _load_ragas_runner()
     captured: dict[str, Any] = {}
@@ -744,6 +817,26 @@ def test_evaluate_ragas_rows_uses_async_ragas_reference_path_by_default(monkeypa
             "batch_size": 3,
         }
     }
+
+
+def test_evaluate_ragas_rows_suppresses_ragas_aevaluate_deprecation_warning(monkeypatch):
+    module = _load_ragas_runner()
+
+    monkeypatch.setattr(module, "build_ragas_dataset", lambda rows: {"dataset": rows})
+    monkeypatch.setattr(module, "build_evaluator_llm", lambda: "ragas-llm")
+    monkeypatch.setattr(module, "build_ragas_metrics", lambda names, evaluator_llm: [f"metric:{name}" for name in names])
+
+    async def fake_aevaluate(**kwargs):
+        warnings.warn("ragas.aevaluate() is deprecated; use @experiment", DeprecationWarning, stacklevel=2)
+        return {"scores": [{"context_recall": 0.75}]}
+
+    rows = [{"id": "imperial-cite-001", "user_input": "q", "response": "a", "reference": "ref"}]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = module.evaluate_ragas_rows(rows, ["context_recall"], evaluate_fn=fake_aevaluate)
+
+    assert result == [{"id": "imperial-cite-001", "context_recall": 0.75}]
+    assert [warning for warning in caught if issubclass(warning.category, DeprecationWarning)] == []
 
 
 def test_build_ragas_dataset_uses_structured_evaluation_dataset(monkeypatch):
@@ -837,6 +930,19 @@ def test_result_records_support_scores_and_pandas_like_results():
             return FakeFrame()
 
     assert module.result_records(PandasResult()) == [{"faithfulness": 0.5}]
+
+
+def test_map_rows_bounded_asserts_all_result_slots_are_filled():
+    from imperial_rag import ragas_eval
+
+    async def evaluator(row):
+        return None
+
+    async def runner():
+        with pytest.raises(AssertionError, match="did not fill all result slots"):
+            await ragas_eval._map_rows_bounded([{"user_input": "q"}], evaluator, concurrency=1)
+
+    asyncio.run(runner())
 
 
 def _load_ragas_runner():

@@ -794,15 +794,25 @@ async def _map_rows_bounded(
     if not rows:
         return []
 
-    semaphore = asyncio.Semaphore(concurrency)
+    limiter = anyio.Semaphore(concurrency)
     results: list[dict[str, Any] | None] = [None] * len(rows)
 
     async def run_one(index: int, row: Mapping[str, Any]) -> None:
-        async with semaphore:
-            results[index] = await evaluator(row)
+        async with limiter:
+            result = await evaluator(row)
+            if result is not None:
+                results[index] = dict(result)
 
-    await asyncio.gather(*(run_one(index, row) for index, row in enumerate(rows)))
-    return [dict(result) for result in results if result is not None]
+    async with anyio.create_task_group() as task_group:
+        for index, row in enumerate(rows):
+            task_group.start_soon(run_one, index, row)
+
+    filled_results: list[dict[str, Any]] = []
+    for result in results:
+        if result is None:
+            raise AssertionError("Ragas row evaluator did not fill all result slots.")
+        filled_results.append(result)
+    return filled_results
 
 
 def _document_metadata(document: Any) -> Mapping[str, Any]:

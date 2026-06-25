@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+import time
 from typing import Any, cast
 
 from imperial_rag.config import Settings
 from imperial_rag.integrations.dashscope import QwenProviderSettings
-from imperial_rag.runtime import Runtime, build_query_dependencies, create_runtime
+from imperial_rag.runtime import Runtime, _DeferredProviderChatModel, build_query_dependencies, create_runtime
 
 
 def test_create_runtime_constructs_without_live_services(monkeypatch):
@@ -437,3 +439,84 @@ def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):
         {"messages": ["message"]},
         {"messages": ["again"]},
     ]
+
+
+def test_deferred_provider_chat_model_initializes_once_under_concurrency(monkeypatch):
+    calls = []
+
+    class FakeChatModel:
+        def invoke(self, input, *args, **kwargs):
+            return {"answer": input}
+
+    def fake_create_chat_model():
+        calls.append("factory")
+        time.sleep(0.02)
+        return FakeChatModel()
+
+    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", fake_create_chat_model)
+    model = _DeferredProviderChatModel()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(model.invoke, [f"message-{index}" for index in range(8)]))
+
+    assert results == [{"answer": f"message-{index}"} for index in range(8)]
+    assert calls == ["factory"]
+
+
+def test_create_runtime_lazy_caches_initialize_once_under_concurrent_retrieval(monkeypatch, tmp_path):
+    calls = {"dependencies": 0, "services": 0}
+    fake_vector_search = object()
+    fake_keyword_search = object()
+
+    class FakeRetrievalResult:
+        evidence = []
+        vector_docs = []
+        keyword_docs = []
+        diagnostics = {}
+
+    class FakeRetrievalSettings:
+        @classmethod
+        def from_env(cls):
+            return "retrieval-settings"
+
+    class FakeRetrievalService:
+        def __init__(self, vector_search, keyword_search, settings):
+            calls["services"] += 1
+            time.sleep(0.02)
+            self.vector_search = vector_search
+            self.keyword_search = keyword_search
+            self.settings = settings
+
+        def retrieve(self, question):
+            return FakeRetrievalResult()
+
+    class FakeWorkflow:
+        def __init__(self, retrieve, generate):
+            self.retrieve = retrieve
+            self.generate = generate
+
+    def fake_build_query_dependencies(settings):
+        calls["dependencies"] += 1
+        time.sleep(0.02)
+        return type(
+            "Deps",
+            (),
+            {
+                "vector_search": fake_vector_search,
+                "keyword_search": fake_keyword_search,
+                "chat_model": object(),
+            },
+        )()
+
+    monkeypatch.setattr("imperial_rag.runtime.RetrievalSettings", FakeRetrievalSettings)
+    monkeypatch.setattr("imperial_rag.runtime.RetrievalService", FakeRetrievalService)
+    monkeypatch.setattr("imperial_rag.runtime.build_query_dependencies", fake_build_query_dependencies)
+    monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
+
+    runtime = create_runtime(Settings(workspace_root=tmp_path))
+    retrieve = cast(Any, runtime.workflow).retrieve
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(retrieve, [f"question-{index}" for index in range(8)]))
+
+    assert calls == {"dependencies": 1, "services": 1}

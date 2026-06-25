@@ -46,6 +46,16 @@ _RAGAS_FAITHFULNESS_SCORER: Any | None = None
 _RAGAS_ANSWER_RELEVANCY_SCORER: Any | None = None
 
 
+def positive_int(raw_value: str | int) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -357,7 +367,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--concurrency",
-        type=int,
+        type=positive_int,
         default=DEFAULT_PHOENIX_CONCURRENCY,
         help="Maximum concurrent Phoenix experiment tasks.",
     )
@@ -446,6 +456,7 @@ async def run_phoenix_experiment_async(
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
 ) -> None:
+    concurrency = positive_int(concurrency)
     if ragas_metric_names is None:
         from imperial_rag.ragas_eval import DEFAULT_RAGAS_METRICS
 
@@ -562,20 +573,30 @@ def _validate_phoenix_ragas_metric_requirements(
     )
 
 
-def _phoenix_evaluators(metric_names: Sequence[str], *, async_mode: bool = False) -> list[Any]:
+def _phoenix_evaluators(metric_names: Sequence[str], *, async_mode: bool = False) -> dict[str, Any]:
     unsupported = sorted(set(metric_names) - {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported:
         raise SystemExit(
             "Phoenix Ragas evaluators currently support faithfulness, answer_relevancy, and id_context_recall. "
             "Run scripts/run_ragas_eval.py for reference-based Ragas metrics."
         )
-    evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_retrieval_relevance]
+    evaluators: dict[str, Any] = {
+        "citation_behavior": phoenix_citation_behavior,
+        "source_hint_behavior": phoenix_source_hint_behavior,
+        "retrieval_relevance": phoenix_retrieval_relevance,
+    }
     if "faithfulness" in metric_names:
-        evaluators.append(phoenix_ragas_faithfulness_async if async_mode else phoenix_ragas_faithfulness)
+        evaluators["ragas_faithfulness"] = (
+            phoenix_ragas_faithfulness_async if async_mode else phoenix_ragas_faithfulness
+        )
     if "answer_relevancy" in metric_names:
-        evaluators.append(phoenix_ragas_answer_relevancy_async if async_mode else phoenix_ragas_answer_relevancy)
+        evaluators["ragas_answer_relevancy"] = (
+            phoenix_ragas_answer_relevancy_async if async_mode else phoenix_ragas_answer_relevancy
+        )
     if "id_context_recall" in metric_names:
-        evaluators.append(phoenix_id_context_recall_async if async_mode else phoenix_id_context_recall)
+        evaluators["ragas_id_context_recall"] = (
+            phoenix_id_context_recall_async if async_mode else phoenix_id_context_recall
+        )
     return evaluators
 
 

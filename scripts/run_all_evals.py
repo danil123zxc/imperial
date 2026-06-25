@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--concurrency",
-        type=int,
+        type=phoenix_eval.positive_int,
         default=phoenix_eval.DEFAULT_PHOENIX_CONCURRENCY,
         help="Maximum concurrent Phoenix experiment tasks.",
     )

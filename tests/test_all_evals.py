@@ -98,6 +98,18 @@ def test_all_evals_forwards_id_context_recall_metric(monkeypatch):
     assert captured["concurrency"] == 5
 
 
+def test_all_evals_rejects_non_positive_concurrency_before_running():
+    module = _load_all_evals_runner()
+
+    module.phoenix_eval._load_project_env = lambda workspace_root: pytest.fail("loaded env after invalid concurrency")
+    module.phoenix_eval._build_settings = lambda workspace_root: pytest.fail("built settings after invalid concurrency")
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--concurrency", "0"])
+
+    assert exc_info.value.code == 2
+
+
 def test_all_evals_preflight_fails_with_phoenix_start_hint(monkeypatch):
     module = _load_all_evals_runner()
 

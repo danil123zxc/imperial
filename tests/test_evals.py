@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import argparse
 from collections import Counter
 import importlib.util
 import json
@@ -586,6 +588,80 @@ def test_parse_phoenix_ragas_metrics_supports_none_and_rejects_unknown():
         module.parse_phoenix_ragas_metrics("answer_correctness")
 
 
+def test_positive_int_rejects_non_positive_values():
+    module = _load_eval_runner()
+
+    assert module.positive_int("3") == 3
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        module.positive_int("0")
+    with pytest.raises(argparse.ArgumentTypeError):
+        module.positive_int("-1")
+
+
+def test_phoenix_eval_rejects_non_positive_cli_concurrency_before_running():
+    module = _load_eval_runner()
+
+    module._load_project_env = lambda workspace_root: pytest.fail("loaded env after invalid concurrency")
+    module._build_settings = lambda workspace_root: pytest.fail("built settings after invalid concurrency")
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--concurrency", "0"])
+
+    assert exc_info.value.code == 2
+
+
+def test_phoenix_experiment_rejects_non_positive_concurrency_before_client_import(monkeypatch):
+    module = _load_eval_runner()
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pytest.fail("Phoenix client imported before invalid concurrency was rejected")
+
+    fake_phoenix = _fake_module("phoenix")
+    fake_client_module = _fake_module("phoenix.client")
+    fake_client_module.AsyncClient = FakeClient
+    monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
+    monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
+
+    async def runner():
+        with pytest.raises(argparse.ArgumentTypeError):
+            await module.run_phoenix_experiment_async(
+                examples=[],
+                settings=SimpleNamespace(phoenix_client_endpoint="http://localhost:6006"),
+                dataset_name="dataset",
+                experiment_name="experiment",
+                ragas_metric_names=[],
+                concurrency=0,
+            )
+
+    asyncio.run(runner())
+
+
+def test_phoenix_evaluators_use_stable_mapping_names():
+    module = _load_eval_runner()
+
+    evaluators = module._phoenix_evaluators(
+        ["faithfulness", "answer_relevancy", "id_context_recall"],
+        async_mode=True,
+    )
+
+    assert list(evaluators) == [
+        "citation_behavior",
+        "source_hint_behavior",
+        "retrieval_relevance",
+        "ragas_faithfulness",
+        "ragas_answer_relevancy",
+        "ragas_id_context_recall",
+    ]
+    assert evaluators["citation_behavior"] is module.phoenix_citation_behavior
+    assert evaluators["source_hint_behavior"] is module.phoenix_source_hint_behavior
+    assert evaluators["retrieval_relevance"] is module.phoenix_retrieval_relevance
+    assert evaluators["ragas_faithfulness"] is module.phoenix_ragas_faithfulness_async
+    assert evaluators["ragas_answer_relevancy"] is module.phoenix_ragas_answer_relevancy_async
+    assert evaluators["ragas_id_context_recall"] is module.phoenix_id_context_recall_async
+
+
 def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch):
     module = _load_eval_runner()
     captured: dict[str, Any] = {}
@@ -644,13 +720,13 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
     experiment_args = captured["experiment"]
     assert experiment_args["dataset"] == {"dataset_id": "dataset-1"}
     assert callable(experiment_args["task"])
-    assert experiment_args["evaluators"] == [
-        module.phoenix_citation_behavior,
-        module.phoenix_source_hint_behavior,
-        module.phoenix_retrieval_relevance,
-        module.phoenix_ragas_faithfulness_async,
-        module.phoenix_ragas_answer_relevancy_async,
-    ]
+    assert experiment_args["evaluators"] == {
+        "citation_behavior": module.phoenix_citation_behavior,
+        "source_hint_behavior": module.phoenix_source_hint_behavior,
+        "retrieval_relevance": module.phoenix_retrieval_relevance,
+        "ragas_faithfulness": module.phoenix_ragas_faithfulness_async,
+        "ragas_answer_relevancy": module.phoenix_ragas_answer_relevancy_async,
+    }
     assert experiment_args["experiment_name"] == "imperial-rag-citation-grounding"
     assert experiment_args["concurrency"] == module.DEFAULT_PHOENIX_CONCURRENCY
 
@@ -700,12 +776,12 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
         ragas_metric_names=["id_context_recall"],
     )
 
-    assert captured["experiment"]["evaluators"] == [
-        module.phoenix_citation_behavior,
-        module.phoenix_source_hint_behavior,
-        module.phoenix_retrieval_relevance,
-        module.phoenix_id_context_recall_async,
-    ]
+    assert captured["experiment"]["evaluators"] == {
+        "citation_behavior": module.phoenix_citation_behavior,
+        "source_hint_behavior": module.phoenix_source_hint_behavior,
+        "retrieval_relevance": module.phoenix_retrieval_relevance,
+        "ragas_id_context_recall": module.phoenix_id_context_recall_async,
+    }
 
 
 def test_phoenix_annotation_hook_logs_span_and_document_metrics():
@@ -824,11 +900,11 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
         ragas_metric_names=[],
     )
 
-    assert captured["experiment"]["evaluators"] == [
-        module.phoenix_citation_behavior,
-        module.phoenix_source_hint_behavior,
-        module.phoenix_retrieval_relevance,
-    ]
+    assert captured["experiment"]["evaluators"] == {
+        "citation_behavior": module.phoenix_citation_behavior,
+        "source_hint_behavior": module.phoenix_source_hint_behavior,
+        "retrieval_relevance": module.phoenix_retrieval_relevance,
+    }
 
 
 def test_phoenix_experiment_rejects_reference_ragas_metrics_without_references():
