@@ -5,6 +5,7 @@ import textwrap
 import types
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Any
 
 from langchain_core.documents import Document
 
@@ -16,6 +17,10 @@ from imperial_rag.web_app import (
     build_status_summary,
     load_status_summary,
 )
+
+
+def _fake_module(name: str) -> Any:
+    return types.ModuleType(name)
 
 
 def test_status_summary_displays_manifest_counts():
@@ -399,7 +404,7 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
 
     calls = []
 
-    env_module = types.ModuleType("imperial_rag.env")
+    env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: calls.append("env")
 
     class FakeSettings:
@@ -407,14 +412,14 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
             calls.append("settings")
             self.auth_db_path = tmp_path / "auth.sqlite3"
 
-    config_module = types.ModuleType("imperial_rag.config")
+    config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: calls.append("tracing")
     tracing_module.phoenix_trace_context = _null_trace_context
 
-    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module = _fake_module("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: calls.append("observability")
 
     class SessionState(dict):
@@ -464,21 +469,21 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
 def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_path):
     from imperial_rag import web_app
 
-    env_module = types.ModuleType("imperial_rag.env")
+    env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
 
     class FakeSettings:
         def __init__(self):
             self.auth_db_path = tmp_path / "auth.sqlite3"
 
-    config_module = types.ModuleType("imperial_rag.config")
+    config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
-    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module = _fake_module("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
 
     class SessionState(dict):
@@ -543,21 +548,21 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
     store.bootstrap_admin("admin@example.com", "admin-password")
     store.register_user("user@example.com", "user-password", "Test User", "Needs access")
 
-    env_module = types.ModuleType("imperial_rag.env")
+    env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
 
     class FakeSettings:
         def __init__(self):
             self.auth_db_path = auth_db_path
 
-    config_module = types.ModuleType("imperial_rag.config")
+    config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
-    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module = _fake_module("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
 
     class SessionState(dict):
@@ -607,21 +612,21 @@ def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
 
     auth_db_path = tmp_path / "auth.sqlite3"
 
-    env_module = types.ModuleType("imperial_rag.env")
+    env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
 
     class FakeSettings:
         def __init__(self):
             self.auth_db_path = auth_db_path
 
-    config_module = types.ModuleType("imperial_rag.config")
+    config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
-    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module = _fake_module("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
 
     class SessionState(dict):
@@ -682,21 +687,21 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
     store.bootstrap_admin("admin@example.com", "admin-password")
     store.register_user("user@example.com", "user-password", "Test User", "Needs access")
 
-    env_module = types.ModuleType("imperial_rag.env")
+    env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
 
     class FakeSettings:
         def __init__(self):
             self.auth_db_path = auth_db_path
 
-    config_module = types.ModuleType("imperial_rag.config")
+    config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
-    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module = _fake_module("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
 
     class SessionState(dict):
@@ -753,17 +758,17 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
     store.register_user("user@example.com", "user-password", "User", "Testing")
     store.approve_user("admin@example.com", "user@example.com")
 
-    env_module = types.ModuleType("imperial_rag.env")
+    env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
 
     class FakeSettings:
         def __init__(self):
             self.auth_db_path = auth_db_path
 
-    config_module = types.ModuleType("imperial_rag.config")
+    config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.tracing")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     trace_contexts = []
 
@@ -775,7 +780,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
     tracing_module.phoenix_trace_context = trace_context
     tracing_module.trace_user_id_from_email = lambda email: "user_sha256:testhash"
 
-    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module = _fake_module("imperial_rag.observability")
     observability_module.configure_observability = lambda settings: None
     observability_module.log_event = lambda *args, **kwargs: calls.append(("event", args, kwargs))
     observability_module.log_failure = lambda *args, **kwargs: calls.append(("failure", args, kwargs))

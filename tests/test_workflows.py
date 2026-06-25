@@ -1,5 +1,6 @@
 import hashlib
 from contextlib import contextmanager
+from typing import Any, cast
 
 import pytest
 from langchain_core.documents import Document
@@ -103,7 +104,7 @@ def test_query_workflow_default_generation_uses_lcel_prompt_chain():
 
     workflow = build_query_workflow(
         retrieve=lambda question: docs,
-        chat_model=RunnableLambda(fake_model),
+        chat_model=cast(Any, RunnableLambda(fake_model)),
     )
 
     result = workflow.invoke({"question": "Как оформить возврат брака?"})

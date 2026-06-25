@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 from types import SimpleNamespace
 
 import pytest
@@ -108,7 +109,7 @@ def test_calibration_cli_uses_ragas_factual_correctness_and_writes_artifact(tmp_
             }
         ],
     )
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def fake_evaluate_ragas_rows(rows, metric_names, evaluator_llm=None):
         captured["rows"] = rows

@@ -19,14 +19,19 @@ MODEL_PROVIDER_ERROR_TEXT = "The model provider failed while answering. Check lo
 
 
 class SupportsInvoke(Protocol):
-    def invoke(self, messages: Any) -> Any:
+    def invoke(self, input: Any, *args: Any, **kwargs: Any) -> Any:
+        ...
+
+
+class SupportsRetrieverFactory(Protocol):
+    def as_retriever(self, **kwargs: Any) -> Any:
         ...
 
 
 @dataclass(frozen=True)
 class QueryDependencies:
-    vector_search: object
-    keyword_search: object
+    vector_search: Any
+    keyword_search: Any
     chat_model: SupportsInvoke
 
 
@@ -52,10 +57,12 @@ class _DeferredProviderChatModel:
     def __init__(self) -> None:
         self._model: Any | None = None
 
-    def invoke(self, messages):
-        if self._model is None:
-            self._model = create_chat_model()
-        return self._model.invoke(messages)
+    def invoke(self, input: Any, *args: Any, **kwargs: Any) -> Any:
+        model = self._model
+        if model is None:
+            model = create_chat_model()
+            self._model = model
+        return model.invoke(input, *args, **kwargs)
 
 
 class _ProviderMismatchVectorSearch:
@@ -101,7 +108,7 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
     )
 
 
-def _as_mmr_retriever(vector_store: object, settings: RetrievalSettings) -> object:
+def _as_mmr_retriever(vector_store: Any, settings: RetrievalSettings) -> Any:
     if not hasattr(vector_store, "as_retriever"):
         return vector_store
     return vector_store.as_retriever(
@@ -117,7 +124,7 @@ def _as_mmr_retriever(vector_store: object, settings: RetrievalSettings) -> obje
 @dataclass
 class Runtime:
     settings: Settings
-    workflow: object | None = None
+    workflow: SupportsInvoke | None = None
     dependencies: QueryDependencies | None = None
 
     def query(self, question: str) -> dict:
@@ -138,7 +145,7 @@ class Runtime:
             span.set_output(_query_trace_output(result))
             return result
 
-    def query_workflow(self):
+    def query_workflow(self) -> SupportsInvoke:
         if self.workflow is None:
             runtime = create_runtime(self.settings)
             self.workflow = runtime.query_workflow()

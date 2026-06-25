@@ -102,7 +102,10 @@ def _runtime_resource(settings: Any) -> Any:
     if _RUNTIME_CACHE_WRAPPER is None or _RUNTIME_CACHE_RESOURCE is not cache_resource:
         _RUNTIME_CACHE_WRAPPER = cache_resource(_create_cached_runtime)
         _RUNTIME_CACHE_RESOURCE = cache_resource
-    return _RUNTIME_CACHE_WRAPPER(_runtime_cache_key(settings), settings)
+    wrapper = _RUNTIME_CACHE_WRAPPER
+    if wrapper is None:
+        raise RuntimeError("Streamlit runtime cache wrapper was not initialized.")
+    return wrapper(_runtime_cache_key(settings), settings)
 
 
 def _create_cached_runtime(cache_key: tuple[Any, ...], _settings: Any) -> Any:

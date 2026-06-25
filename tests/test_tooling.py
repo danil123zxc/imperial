@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import stat
 import tomllib
+import json
 from pathlib import Path
 
 
@@ -31,3 +32,27 @@ def test_local_check_script_runs_offline_quality_gate() -> None:
     assert "uv run --extra dev mypy src/imperial_rag" in script
     assert "uv run --extra dev python -m pytest --cov=imperial_rag -q" in script
     assert "git diff --check" in script
+
+
+def test_pyright_contract_targets_repo_sources_without_broad_ignores() -> None:
+    config_path = ROOT / "pyrightconfig.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert config["include"] == ["src", "scripts", "tests"]
+    assert config["extraPaths"] == ["src"]
+    assert config["pythonVersion"] == "3.12"
+    assert config["pythonPlatform"] == "Darwin"
+    assert config["venvPath"] == "."
+    assert config["venv"] == ".venv"
+    assert "ignore" not in config
+
+
+def test_pyright_summary_script_is_non_blocking_tooling() -> None:
+    script_path = ROOT / "scripts" / "summarize_pyright.py"
+    script = script_path.read_text(encoding="utf-8")
+    check_script = (ROOT / "scripts" / "check.sh").read_text(encoding="utf-8")
+
+    assert script_path.exists()
+    assert "generalDiagnostics" in script
+    assert "summary" in script
+    assert "summarize_pyright.py" not in check_script

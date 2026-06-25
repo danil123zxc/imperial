@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from contextlib import contextmanager
+from typing import Any, cast
 
 from imperial_rag.config import Settings
+from imperial_rag.integrations.dashscope import QwenProviderSettings
 from imperial_rag.runtime import Runtime, build_query_dependencies, create_runtime
 
 
@@ -9,8 +11,8 @@ def test_create_runtime_constructs_without_live_services(monkeypatch):
     created = {}
 
     class FakeWorkflow:
-        def invoke(self, state):
-            created["state"] = state
+        def invoke(self, input: Any, *args: Any, **kwargs: Any) -> dict[str, str]:
+            created["state"] = input
             return {"answer": "ok"}
 
     monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow())
@@ -35,7 +37,7 @@ def test_runtime_query_wraps_workflow_in_chain_span(monkeypatch):
         yield FakeTraceSpan()
 
     class FakeWorkflow:
-        def invoke(self, state):
+        def invoke(self, input: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
             return {
                 "answer": "Оформить акт. [S1]",
                 "citations_valid": True,
@@ -113,9 +115,9 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
             self.retrieve = retrieve
             self.generate = generate
 
-        def invoke(self, state):
-            docs = self.retrieve(state["question"])["retrieved_documents"]
-            return self.generate(state["question"], docs)
+        def invoke(self, input: Any, *args: Any, **kwargs: Any) -> Any:
+            docs = self.retrieve(input["question"])["retrieved_documents"]
+            return self.generate(input["question"], docs)
 
     monkeypatch.setattr(
         "imperial_rag.runtime.build_query_dependencies",
@@ -150,8 +152,10 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
     )
     monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
 
-    runtime = create_runtime(Settings(workspace_root=tmp_path))
-    generate = runtime.workflow.generate
+    settings = Settings(workspace_root=tmp_path)
+    runtime = create_runtime(settings)
+    generate = cast(Any, runtime.workflow).generate
+    qwen_model_name = QwenProviderSettings.from_env().chat_model
     docs = []
 
     success = generate("Что делать?", docs)
@@ -162,7 +166,7 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
         "answer": "Ответ с цитатой. [S1]",
         "trace_attributes": {
             "llm.provider": "dashscope",
-            "llm.model_name": "qwen3.7-plus",
+            "llm.model_name": qwen_model_name,
             "llm.invocation_parameters": {"temperature": 0},
             "answer.model_status": "ok",
         },
@@ -176,7 +180,7 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
         },
         "trace_attributes": {
             "llm.provider": "dashscope",
-            "llm.model_name": "qwen3.7-plus",
+            "llm.model_name": qwen_model_name,
             "llm.invocation_parameters": {"temperature": 0},
             "answer.model_status": "error",
             "answer.model_error_type": "RuntimeError",

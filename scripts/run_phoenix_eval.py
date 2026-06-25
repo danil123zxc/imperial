@@ -7,9 +7,10 @@ import json
 import math
 import sys
 from collections.abc import Mapping
+from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Sequence, cast
 
 import anyio
 
@@ -139,7 +140,8 @@ def build_runtime(settings: Any | None = None) -> Any:
         Runtime = None
 
     if Runtime is not None:
-        return Runtime(settings=settings) if settings is not None else Runtime()
+        RuntimeClass = cast(Any, Runtime)
+        return RuntimeClass(settings=settings) if settings is not None else RuntimeClass()
 
     from imperial_rag.runtime import build_live_query_workflow
 
@@ -477,7 +479,7 @@ async def run_phoenix_experiment_async(
     runtime = build_runtime(settings=settings)
 
     async def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
-        return await anyio.to_thread.run_sync(lambda: run_target(inputs, runtime=runtime))
+        return await run_sync_in_worker_thread(lambda: run_target(inputs, runtime=runtime))
 
     experiment = await client.experiments.run_experiment(
         dataset=dataset,
@@ -547,7 +549,7 @@ def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:
 
 
 def _validate_phoenix_ragas_metric_requirements(
-    metric_names: list[str],
+    metric_names: Sequence[str],
     examples: list[dict[str, Any]],
 ) -> None:
     from imperial_rag.ragas_eval import validate_ragas_metric_requirements
@@ -560,7 +562,7 @@ def _validate_phoenix_ragas_metric_requirements(
     )
 
 
-def _phoenix_evaluators(metric_names: list[str], *, async_mode: bool = False) -> list[Any]:
+def _phoenix_evaluators(metric_names: Sequence[str], *, async_mode: bool = False) -> list[Any]:
     unsupported = sorted(set(metric_names) - {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported:
         raise SystemExit(
@@ -577,7 +579,7 @@ def _phoenix_evaluators(metric_names: list[str], *, async_mode: bool = False) ->
     return evaluators
 
 
-def _phoenix_experiment_description(metric_names: list[str]) -> str:
+def _phoenix_experiment_description(metric_names: Sequence[str]) -> str:
     if "faithfulness" in metric_names and "answer_relevancy" in metric_names and "id_context_recall" in metric_names:
         return (
             "Imperial RAG deterministic citation/refusal/source-hint checks plus Ragas Faithfulness, "

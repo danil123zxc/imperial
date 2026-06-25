@@ -1,3 +1,4 @@
+# ruff: noqa: F405
 from __future__ import annotations
 
 import sys
@@ -21,4 +22,25 @@ class _ObservabilityPackage(types.ModuleType):
 
 sys.modules[__name__].__class__ = _ObservabilityPackage
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "ALLOWED_EVENTS",
+    "APP_ALLOWED_FIELDS",
+    "BASE_ALLOWED_FIELDS",
+    "DEFAULT_EVENT_DATA_STREAM",
+    "DEFAULT_EVAL_DATA_STREAM",
+    "DEPENDENCY_ALLOWED_FIELDS",
+    "ElasticsearchEventSink",
+    "EventSchemaError",
+    "INGEST_ALLOWED_FIELDS",
+    "JsonEventFormatter",
+    "LEGACY_EVENT_MAP",
+    "LOGGER_NAME",
+    "PlainEventFormatter",
+    "QUERY_ALLOWED_FIELDS",
+    "TRUE_ENV_VALUES",
+    "build_event_document",
+    "configure_observability",
+    "log_event",
+    "log_failure",
+    "sanitize_log_fields",
+]

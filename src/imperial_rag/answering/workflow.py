@@ -181,10 +181,10 @@ def build_query_workflow(
     model = chat_model
 
     def normalize_query(state: QueryState) -> QueryState:
-        return {"normalized_query": state["question"].strip()}
+        return {"normalized_query": str(state.get("question", "")).strip()}
 
     def retrieve_node(state: QueryState) -> QueryState:
-        query = state["normalized_query"]
+        query = str(state.get("normalized_query") or state.get("question") or "")
         if retrieve is not None:
             retrieved = retrieve(query)
             evidence = _coerce_retrieved_documents(retrieved, query)
@@ -225,12 +225,13 @@ def build_query_workflow(
         }
 
     def call_model(state: QueryState) -> QueryState:
+        question = str(state.get("question", ""))
         evidence = state.get("evidence", [])
         citations = format_citations(evidence)
         sources = format_sources(evidence)
         with trace_answer_step(
             "answer.generate",
-            state["question"],
+            question,
             attributes=imperial_trace_attributes(
                 "answer",
                 "generate",
@@ -249,16 +250,16 @@ def build_query_workflow(
                 return update
             with trace_llm_step(
                 "answer.call_model",
-                state["question"],
+                question,
                 attributes=imperial_trace_attributes(
                     "answer",
                     "call_model",
                     {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
                 ),
             ) as model_span:
-                _set_model_prompt_trace_attributes(model_span, state["question"], evidence, citations)
+                _set_model_prompt_trace_attributes(model_span, question, evidence, citations)
                 if generate is not None:
-                    generated = generate(state["question"], evidence)
+                    generated = generate(question, evidence)
                     answer = _coerce_answer(generated)
                     model_error = _coerce_error(generated)
                     _set_model_generation_trace_attributes(model_span, generated)
@@ -266,7 +267,7 @@ def build_query_workflow(
                     resolved_model = model or _legacy_openai_chat_model()
                     _set_model_trace_attributes(model_span, resolved_model)
                     answer = build_strict_answer_chain(resolved_model).invoke(
-                        {"evidence_prompt": build_evidence_prompt(state["question"], evidence)}
+                        {"evidence_prompt": build_evidence_prompt(question, evidence)}
                     )
                     model_error = None
                     model_span.set_attribute("answer.model_status", "ok")
@@ -291,7 +292,7 @@ def build_query_workflow(
                 return update
             with trace_answer_step(
                 "answer.citation_check",
-                state["question"],
+                question,
                 attributes=imperial_trace_attributes(
                     "answer",
                     "citation_check",
@@ -376,7 +377,12 @@ def _set_model_trace_attributes(span: Any, model: Any) -> None:
         span.set_attribute("llm.model_name", str(model_name))
     provider = getattr(model, "lc_namespace", None)
     if callable(provider):
-        namespace = ".".join(str(part) for part in provider())
+        namespace_parts = provider()
+        namespace = (
+            ".".join(str(part) for part in namespace_parts)
+            if isinstance(namespace_parts, Sequence) and not isinstance(namespace_parts, (str, bytes))
+            else str(namespace_parts)
+        )
         if namespace:
             span.set_attribute("llm.provider", namespace)
 
@@ -445,4 +451,4 @@ def _set_answer_trace_output(
     )
 
 
-from imperial_rag.ingestion.workflow import IngestionState, build_ingestion_workflow
+from imperial_rag.ingestion.workflow import IngestionState, build_ingestion_workflow  # noqa: F401

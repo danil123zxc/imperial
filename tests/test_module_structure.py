@@ -25,7 +25,7 @@ def test_lifecycle_import_paths_are_available():
 
     assert APP_TITLE == "Imperial RAG"
     assert REFUSAL_TEXT
-    assert DEFAULT_RAGAS_METRICS
+    assert parse_ragas_metric_names("") == list(DEFAULT_RAGAS_METRICS)
     assert AuthenticationStatus.AUTHENTICATED.value == "authenticated"
     assert FileStatus.INDEXED.value == "indexed"
     assert AuthStore.__name__ == "AuthStore"

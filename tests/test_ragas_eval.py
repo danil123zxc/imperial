@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -46,7 +47,7 @@ def test_faithfulness_row_from_run_output_extracts_docs_and_skips_empty_cases():
 def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monkeypatch):
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
@@ -67,11 +68,11 @@ def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monke
     monkeypatch.setattr(ragas_eval, "_import_faithfulness_metric", lambda: FakeFaithfulness)
 
     scorer = ragas_eval.build_faithfulness_scorer(
-        SimpleNamespace(
+        cast(Any, SimpleNamespace(
             compat_base_url="https://dashscope.example/compatible-mode/v1",
             chat_model="qwen-test",
             require_api_key=lambda: "dashscope-key",
-        )
+        ))
     )
 
     assert isinstance(scorer, FakeFaithfulness)
@@ -87,7 +88,7 @@ def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monke
 def test_build_answer_relevancy_scorer_uses_qwen_llm_and_embeddings(monkeypatch):
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
@@ -114,12 +115,12 @@ def test_build_answer_relevancy_scorer_uses_qwen_llm_and_embeddings(monkeypatch)
     monkeypatch.setattr(ragas_eval, "_import_answer_relevancy_metric", lambda: FakeAnswerRelevancy)
 
     scorer = ragas_eval.build_answer_relevancy_scorer(
-        SimpleNamespace(
+        cast(Any, SimpleNamespace(
             compat_base_url="https://dashscope.example/compatible-mode/v1",
             chat_model="qwen-test",
             embedding_model="text-embedding-v4",
             require_api_key=lambda: "dashscope-key",
-        )
+        ))
     )
 
     assert isinstance(scorer, FakeAnswerRelevancy)
@@ -149,7 +150,7 @@ def test_import_faithfulness_metric_prefers_ragas_collections_api():
 def test_score_faithfulness_for_phoenix_returns_score_dictionary():
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeResult:
         value = 0.8
@@ -196,7 +197,7 @@ def test_score_faithfulness_for_phoenix_skips_empty_response_or_contexts():
 def test_score_answer_relevancy_for_phoenix_uses_question_and_response_without_contexts():
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeResult:
         value = 0.7
@@ -257,7 +258,7 @@ def test_retrieved_context_ids_from_output_extracts_unique_file_ids():
 def test_score_id_context_recall_row_uses_ragas_single_turn_sample():
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeScorer:
         def single_turn_ascore(self, sample):
@@ -313,7 +314,7 @@ def test_score_id_context_recall_row_skips_missing_ids():
 def test_single_turn_sample_from_row_populates_text_and_context_id_fields(monkeypatch):
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeSingleTurnSample:
         def __init__(self, **kwargs):
@@ -346,7 +347,7 @@ def test_single_turn_sample_from_row_populates_text_and_context_id_fields(monkey
 def test_evaluation_dataset_from_rows_uses_single_turn_samples(monkeypatch):
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeDataset:
         def __init__(self, *, samples):
@@ -621,7 +622,7 @@ def test_validate_metric_requirements_rejects_reference_metrics_without_referenc
 
 def test_evaluate_ragas_rows_delegates_default_faithfulness_to_shared_helper(monkeypatch):
     module = _load_ragas_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     async def fake_evaluate_faithfulness_rows_async(rows, *, concurrency):
         captured["rows"] = rows
@@ -639,7 +640,7 @@ def test_evaluate_ragas_rows_delegates_default_faithfulness_to_shared_helper(mon
 
 def test_evaluate_ragas_rows_merges_faithfulness_and_answer_relevancy(monkeypatch):
     module = _load_ragas_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     async def fake_evaluate_faithfulness_rows_async(rows, *, concurrency):
         captured["faithfulness_rows"] = rows
@@ -661,7 +662,7 @@ def test_evaluate_ragas_rows_merges_faithfulness_and_answer_relevancy(monkeypatc
 
 def test_evaluate_ragas_rows_merges_id_context_recall_without_llm(monkeypatch):
     module = _load_ragas_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     async def fake_evaluate_id_context_recall_rows_async(rows, *, concurrency):
         captured["rows"] = rows
@@ -679,7 +680,7 @@ def test_evaluate_ragas_rows_merges_id_context_recall_without_llm(monkeypatch):
 
 def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
     module = _load_ragas_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     monkeypatch.setattr(module, "build_ragas_dataset", lambda rows: {"dataset": rows})
     monkeypatch.setattr(module, "build_evaluator_llm", lambda: "ragas-llm")
@@ -720,7 +721,7 @@ def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
 
 def test_evaluate_ragas_rows_uses_async_ragas_reference_path_by_default(monkeypatch):
     module = _load_ragas_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     monkeypatch.setattr(module, "build_ragas_dataset", lambda rows: {"dataset": rows})
     monkeypatch.setattr(module, "build_evaluator_llm", lambda: "ragas-llm")
@@ -748,7 +749,7 @@ def test_evaluate_ragas_rows_uses_async_ragas_reference_path_by_default(monkeypa
 def test_build_ragas_dataset_uses_structured_evaluation_dataset(monkeypatch):
     module = _load_ragas_runner()
     rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"], "reference": "ref"}]
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def fake_evaluation_dataset_from_rows(received_rows):
         captured["rows"] = received_rows
@@ -762,7 +763,7 @@ def test_build_ragas_dataset_uses_structured_evaluation_dataset(monkeypatch):
 
 def test_build_evaluator_llm_uses_modern_ragas_dashscope_client(monkeypatch):
     module = _load_ragas_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeAsyncOpenAI:
         def __init__(self, **kwargs):
@@ -778,11 +779,11 @@ def test_build_evaluator_llm_uses_modern_ragas_dashscope_client(monkeypatch):
     monkeypatch.setattr(module, "_import_llm_factory", lambda: fake_llm_factory)
 
     evaluator_llm = module.build_evaluator_llm(
-        SimpleNamespace(
+        cast(Any, SimpleNamespace(
             compat_base_url="https://dashscope.example/compatible-mode/v1",
             chat_model="qwen-test",
             require_api_key=lambda: "dashscope-key",
-        )
+        ))
     )
 
     assert evaluator_llm == "modern-ragas-llm"

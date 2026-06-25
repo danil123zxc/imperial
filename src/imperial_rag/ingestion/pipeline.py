@@ -569,7 +569,7 @@ def _record_extension(record: Any) -> str:
     if extension:
         return extension
     path = getattr(record, "relative_path", None) or getattr(record, "absolute_path", None) or getattr(record, "filename", "")
-    return Path(path).suffix.casefold()
+    return Path(str(path)).suffix.casefold()
 
 
 def _embedding_dimensions_from_identifier(identifier: str | None) -> int | None:

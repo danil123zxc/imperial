@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 from imperial_rag.pipeline import run_ingestion
 
@@ -50,6 +51,10 @@ class FakeSettings:
         if self.extraction_root_override is not None:
             return self.extraction_root_override
         return self.workspace_root / ".imperial_rag" / "extracted"
+
+
+def _fake_module(name: str) -> Any:
+    return ModuleType(name)
 
 
 class FakeManifestStore:
@@ -168,6 +173,8 @@ def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path,
     docs = tmp_path / "documents"
     docs.mkdir()
     (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    monkeypatch.setenv("IMPERIAL_RAG_CHUNK_SIZE", "650")
+    monkeypatch.setenv("IMPERIAL_RAG_CHUNK_OVERLAP", "80")
     _install_fake_dependencies(monkeypatch)
     records = _capture_pipeline_spans(monkeypatch, pipeline_module)
 
@@ -439,10 +446,10 @@ def _install_fake_dependencies(
     include_no_text_record: bool = False,
     include_failed_record: bool = False,
 ) -> None:
-    config = ModuleType("imperial_rag.config")
+    config = _fake_module("imperial_rag.config")
     config.Settings = FakeSettings
 
-    retrieval = ModuleType("imperial_rag.retrieval")
+    retrieval = _fake_module("imperial_rag.retrieval")
 
     class RetrievalSettings:
         def __init__(self, chunk_size: int = 650, chunk_overlap: int = 80) -> None:
@@ -482,7 +489,7 @@ def _install_fake_dependencies(
         records.append(no_text_record)
     if include_failed_record:
         records.append(failed_record)
-    manifest = ModuleType("imperial_rag.manifest")
+    manifest = _fake_module("imperial_rag.manifest")
     manifest.FileStatus = FileStatus
     manifest.IndexStatus = IndexStatus
     manifest.ManifestStore = FakeManifestStore
@@ -493,7 +500,7 @@ def _install_fake_dependencies(
         page_content="Регламент возврата брака.",
         metadata={"file_id": "file1", "relative_path": "policy.txt", "source_type": "body"},
     )
-    extraction = ModuleType("imperial_rag.extraction")
+    extraction = _fake_module("imperial_rag.extraction")
 
     def extract_file(record, **kwargs):
         if record.file_id == "file3":
@@ -518,19 +525,23 @@ def _install_fake_dependencies(
         page_content=document.page_content,
         metadata={**document.metadata, "chunk_id": "file1:body:0"},
     )
-    chunking = ModuleType("imperial_rag.chunking")
+    chunking = _fake_module("imperial_rag.chunking")
 
-    def build_chunks(documents, chunk_size=None, chunk_overlap=None):
-        build_chunks.calls.append({"chunk_size": chunk_size, "chunk_overlap": chunk_overlap})
-        return [chunk]
+    class FakeBuildChunks:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
 
-    build_chunks.calls = []
+        def __call__(self, documents, chunk_size=None, chunk_overlap=None):
+            self.calls.append({"chunk_size": chunk_size, "chunk_overlap": chunk_overlap})
+            return [chunk]
+
+    build_chunks = FakeBuildChunks()
     chunking.build_chunks = build_chunks
 
-    elasticsearch_keyword = ModuleType("imperial_rag.elasticsearch_keyword")
+    elasticsearch_keyword = _fake_module("imperial_rag.elasticsearch_keyword")
     elasticsearch_keyword.ElasticsearchKeywordIndex = FakeKeywordSearchIndex
 
-    indexing = ModuleType("imperial_rag.indexing")
+    indexing = _fake_module("imperial_rag.indexing")
     indexing.create_qdrant_vector_store = lambda settings: SimpleNamespace(add_documents=lambda documents, ids: ids)
     indexing.index_vector_documents = lambda documents, settings=None, vector_store=None: [
         doc.metadata["chunk_id"] for doc in documents

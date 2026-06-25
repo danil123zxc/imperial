@@ -154,7 +154,9 @@ def test_standalone_image_uses_ocr_client_and_cache(tmp_path):
 def test_ocr_cache_context_manager_closes_connection(tmp_path):
     with OcrCache(tmp_path / "processed") as cache:
         cache.write("scan", OcrResult(text="OCR text", method="fake"))
-        assert cache.read("scan").text == "OCR text"
+        cached = cache.read("scan")
+        assert cached is not None
+        assert cached.text == "OCR text"
 
     with pytest.raises(sqlite3.ProgrammingError):
         cache.read("scan")
@@ -202,6 +204,7 @@ def test_xlsx_sheets_extract_rows_as_structured_text(tmp_path):
     path = tmp_path / "schedule.xlsx"
     workbook = Workbook()
     sheet = workbook.active
+    assert sheet is not None
     sheet.title = "График"
     sheet.append(["Сотрудник", "Смена"])
     sheet.append(["Иванов", "Утро"])

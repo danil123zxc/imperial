@@ -6,6 +6,7 @@ import hmac
 import sys
 import types
 from pathlib import Path
+from typing import Any, TypedDict
 
 import pytest
 
@@ -14,39 +15,51 @@ import imperial_rag.tracing as tracing_module
 from imperial_rag.tracing import _reset_phoenix_tracing_for_tests, configure_phoenix_tracing
 
 
-def make_fake_tracer(records: list[dict[str, object]]) -> object:
-    class FakeSpan:
-        def __init__(self) -> None:
-            self.attributes: dict[str, object] = {}
-            self.status = None
-            self.exceptions: list[object] = []
+class FakeSpan:
+    def __init__(self) -> None:
+        self.attributes: dict[str, object] = {}
+        self.status: Any = None
+        self.exceptions: list[object] = []
 
-        def set_attribute(self, key, value):
-            self.attributes[key] = value
+    def set_attribute(self, key: str, value: object) -> None:
+        self.attributes[key] = value
 
-        def set_status(self, status):
-            self.status = status
+    def set_status(self, status: object) -> None:
+        self.status = status
 
-        def record_exception(self, exc):
-            self.exceptions.append(exc)
+    def record_exception(self, exc: object) -> None:
+        self.exceptions.append(exc)
 
-    class FakeSpanContext:
-        def __init__(self, span: FakeSpan) -> None:
-            self.span = span
 
-        def __enter__(self):
-            return self.span
+class TraceRecord(TypedDict):
+    name: str
+    attributes: dict[str, object]
+    span: FakeSpan
 
-        def __exit__(self, exc_type, exc, traceback):
-            return False
 
-    class FakeTracer:
-        def start_as_current_span(self, name, attributes=None):
-            span = FakeSpan()
-            records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
-            return FakeSpanContext(span)
+class FakeSpanContext:
+    def __init__(self, span: FakeSpan) -> None:
+        self.span = span
 
-    return FakeTracer()
+    def __enter__(self) -> FakeSpan:
+        return self.span
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+        return False
+
+
+class FakeTracer:
+    def __init__(self, records: list[TraceRecord]) -> None:
+        self.records = records
+
+    def start_as_current_span(self, name: str, attributes: dict[str, object] | None = None) -> FakeSpanContext:
+        span = FakeSpan()
+        self.records.append({"name": name, "attributes": dict(attributes or {}), "span": span})
+        return FakeSpanContext(span)
+
+
+def make_fake_tracer(records: list[TraceRecord]) -> object:
+    return FakeTracer(records)
 
 
 def test_configure_phoenix_tracing_returns_none_when_disabled(monkeypatch, tmp_path: Path) -> None:
@@ -64,7 +77,7 @@ def test_configure_phoenix_tracing_registers_once(monkeypatch, tmp_path: Path) -
     calls: list[dict[str, object]] = []
     provider = object()
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
 
     def register(**kwargs):
         calls.append(kwargs)
@@ -97,7 +110,7 @@ def test_configure_phoenix_tracing_rejects_changed_key_after_configuration(monke
     calls: list[dict[str, object]] = []
     provider = object()
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
 
     def register(**kwargs):
         calls.append(kwargs)
@@ -136,7 +149,7 @@ def test_configure_phoenix_tracing_honors_trace_batch_env(monkeypatch, tmp_path:
     calls: list[dict[str, object]] = []
     provider = object()
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
     fake_otel.register = lambda **kwargs: calls.append(kwargs) or provider
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
@@ -152,7 +165,7 @@ def test_configure_phoenix_tracing_honors_auto_instrument_env(monkeypatch, tmp_p
     calls: list[dict[str, object]] = []
     provider = object()
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
     fake_otel.register = lambda **kwargs: calls.append(kwargs) or provider
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
@@ -167,7 +180,7 @@ def test_configure_phoenix_tracing_can_be_enabled_by_env(monkeypatch, tmp_path: 
     _reset_phoenix_tracing_for_tests()
     provider = object()
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
     fake_otel.register = lambda **kwargs: provider
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
@@ -180,7 +193,7 @@ def test_configure_phoenix_tracing_can_be_enabled_by_env(monkeypatch, tmp_path: 
 def test_env_enabled_phoenix_tracing_skips_when_collector_is_unreachable(monkeypatch, tmp_path: Path) -> None:
     _reset_phoenix_tracing_for_tests()
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
     fake_otel.register = lambda **kwargs: pytest.fail("Phoenix should not register when env-enabled endpoint is down")
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
@@ -204,7 +217,7 @@ def test_configure_phoenix_tracing_errors_clearly_when_dependency_missing(monkey
 
 
 def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -229,7 +242,7 @@ def test_trace_retrieval_step_sets_openinference_attributes_and_output(monkeypat
 
 
 def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -252,7 +265,7 @@ def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypa
     assert records[0]["attributes"]["input.value"] == "Что делать с браком?"
     assert records[0]["attributes"]["runtime.workspace_root"] == "/tmp/imperial"
     recorded_span = records[0]["span"]
-    assert json.loads(recorded_span.attributes["output.value"]) == {
+    assert json.loads(str(recorded_span.attributes["output.value"])) == {
         "answer": "Оформить акт. [S1]",
         "citations_valid": True,
         "evidence_count": 1,
@@ -262,7 +275,7 @@ def test_trace_agent_step_sets_parent_span_attributes_output_and_status(monkeypa
 
 
 def test_trace_agent_step_records_errors(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -278,7 +291,7 @@ def test_trace_agent_step_records_errors(monkeypatch) -> None:
 
 
 def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -294,7 +307,7 @@ def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) ->
     assert records[0]["attributes"]["input.value"] == "Что делать с браком?"
     assert records[0]["attributes"]["answer.evidence_count"] == 1
     recorded_span = records[0]["span"]
-    assert json.loads(recorded_span.attributes["output.value"]) == {
+    assert json.loads(str(recorded_span.attributes["output.value"])) == {
         "answer": "Оформить акт. [S1]",
         "citations_valid": True,
         "refused": False,
@@ -303,7 +316,7 @@ def test_trace_answer_step_sets_chain_span_attributes_and_output(monkeypatch) ->
 
 
 def test_trace_llm_step_sets_openinference_llm_attributes_and_messages(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -333,7 +346,7 @@ def test_trace_llm_step_sets_openinference_llm_attributes_and_messages(monkeypat
 
 
 def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -365,7 +378,7 @@ def test_trace_pipeline_and_embedding_steps_set_openinference_kinds(monkeypatch)
 
 
 def test_trace_lineage_attributes_are_applied_to_embedding_children(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
 
@@ -388,7 +401,7 @@ def test_trace_lineage_attributes_are_applied_to_embedding_children(monkeypatch)
 
 
 def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     document = type(
         "Document",
@@ -418,7 +431,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     recorded_span = records[0]["span"]
     assert recorded_span.attributes["retrieval.documents.0.document.content"] == "Порядок возврата брака"
     assert recorded_span.attributes["retrieval.documents.0.document.id"] == "chunk-0"
-    assert json.loads(recorded_span.attributes["retrieval.documents.0.document.metadata"]) == {
+    assert json.loads(str(recorded_span.attributes["retrieval.documents.0.document.metadata"])) == {
         "citation_id": "docs/return.docx#body:chunk-0",
         "chunk_id": "chunk-0",
         "file_name": "return.docx",
@@ -432,7 +445,7 @@ def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
 
 
 def test_trace_span_traces_all_native_retrieval_documents_by_default(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     documents = [
         type(
@@ -457,7 +470,7 @@ def test_trace_span_traces_all_native_retrieval_documents_by_default(monkeypatch
 
 
 def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     documents = [
         type(
@@ -483,7 +496,7 @@ def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> N
 
 
 def test_final_evidence_documents_can_store_full_content_when_enabled(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     content = "final evidence " + ("x" * 900)
     document = type("Document", (), {"page_content": content, "metadata": {"chunk_id": "final"}})()
@@ -526,7 +539,7 @@ def test_trace_document_metadata_can_include_full_metadata_when_enabled(monkeypa
 
 
 def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_text(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     document = type("Document", (), {"page_content": "private corpus text", "metadata": {"chunk_id": "chunk-1"}})()
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUTS", "true")
@@ -547,7 +560,7 @@ def test_openinference_redaction_env_hides_manual_inputs_outputs_and_document_te
 
 
 def test_openinference_redaction_env_hides_llm_messages(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUT_MESSAGES", "true")
     monkeypatch.setenv("OPENINFERENCE_HIDE_OUTPUT_MESSAGES", "true")
@@ -573,7 +586,7 @@ def test_openinference_redaction_env_hides_llm_messages(monkeypatch) -> None:
 
 
 def test_openinference_redaction_env_hides_llm_prompt_input_value(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setenv("OPENINFERENCE_HIDE_LLM_PROMPTS", "true")
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: make_fake_tracer(records))
@@ -590,7 +603,7 @@ def test_openinference_redaction_env_hides_llm_prompt_input_value(monkeypatch) -
 
 
 def test_openinference_redaction_env_hides_late_llm_prompt_input_value(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     monkeypatch.setenv("OPENINFERENCE_HIDE_INPUTS", "false")
     monkeypatch.setenv("OPENINFERENCE_HIDE_LLM_PROMPTS", "true")
@@ -606,7 +619,7 @@ def test_openinference_redaction_env_hides_late_llm_prompt_input_value(monkeypat
 
 
 def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     input_document = type("Document", (), {"page_content": "candidate", "metadata": {"chunk_id": "in"}})()
     output_document = type("Document", (), {"page_content": "reranked", "metadata": {"chunk_id": "out"}})()
@@ -624,7 +637,7 @@ def test_trace_span_sets_native_reranker_documents(monkeypatch) -> None:
 
 
 def test_trace_span_traces_all_native_reranker_documents_by_default(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     documents = [
         type(
@@ -711,7 +724,7 @@ def test_retrieval_documents_preview_omits_text_when_input_text_hidden(monkeypat
 def test_phoenix_trace_context_uses_session_user_metadata_and_tags(monkeypatch) -> None:
     calls = []
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
 
     class FakeContext:
         def __init__(self, name, payload):
@@ -764,7 +777,7 @@ def test_phoenix_trace_context_uses_session_user_metadata_and_tags(monkeypatch) 
 def test_phoenix_trace_context_ignores_empty_session_but_keeps_metadata(monkeypatch) -> None:
     calls = []
     fake_phoenix = types.ModuleType("phoenix")
-    fake_otel = types.ModuleType("phoenix.otel")
+    fake_otel: Any = types.ModuleType("phoenix.otel")
     fake_otel.using_session = lambda **kwargs: pytest.fail("empty session should not enter Phoenix context")
     fake_otel.using_user = lambda *args, **kwargs: pytest.fail("missing user should not enter Phoenix context")
     fake_otel.using_tags = lambda *args, **kwargs: pytest.fail("missing tags should not enter Phoenix context")
@@ -849,7 +862,7 @@ def test_trace_mode_defaults_to_compact_and_accepts_retrieval_debug(monkeypatch)
 
 
 def test_retrieval_debug_redaction_hides_candidate_document_content(monkeypatch) -> None:
-    records: list[dict[str, object]] = []
+    records: list[TraceRecord] = []
 
     document = type("Document", (), {"page_content": "private corpus text", "metadata": {"chunk_id": "chunk-1"}})()
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_MODE", "retrieval_debug")

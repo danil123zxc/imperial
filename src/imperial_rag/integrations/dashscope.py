@@ -7,7 +7,7 @@ import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.embeddings import Embeddings
 
@@ -186,7 +186,7 @@ def create_chat_model(settings: QwenProviderSettings | None = None) -> Any:
     resolved = settings or QwenProviderSettings.from_env()
     api_key = resolved.require_api_key()
     chat_cls = _import_chat_qwen()
-    return chat_cls(model=resolved.chat_model, temperature=0, api_key=api_key, base_url=resolved.compat_base_url)
+    return chat_cls(model=resolved.chat_model, temperature=0, api_key=cast(Any, api_key), base_url=resolved.compat_base_url)
 
 
 def create_reranker(top_n: int, settings: QwenProviderSettings | None = None) -> Any:

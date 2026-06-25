@@ -138,8 +138,11 @@ def _extract_pdf(
     documents: list[Document] = []
     target_dir = _artifact_dir(record, artifact_root)
     with fitz.open(record.absolute_path) as pdf:
-        for page_index, page in enumerate(pdf, start=1):
-            text = page.get_text("text").strip()
+        for zero_based_page_index in range(pdf.page_count):
+            page_index = zero_based_page_index + 1
+            page = pdf.load_page(zero_based_page_index)
+            raw_text = page.get_text("text")
+            text = raw_text.strip() if isinstance(raw_text, str) else str(raw_text).strip()
             if text:
                 metadata = _base_metadata(record, "pdf_page")
                 metadata["page_number"] = page_index

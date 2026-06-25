@@ -7,8 +7,13 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+
+
+def _fake_module(name: str) -> Any:
+    return types.ModuleType(name)
 
 
 def test_eval_questions_are_russian_jsonl_with_expected_behavior():
@@ -227,7 +232,7 @@ def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords(monkeypatch):
 
     from imperial_rag import ragas_eval
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def fake_score_faithfulness_for_phoenix(**kwargs):
         captured.update(kwargs)
@@ -583,7 +588,7 @@ def test_parse_phoenix_ragas_metrics_supports_none_and_rejects_unknown():
 
 def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch):
     module = _load_eval_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeDatasets:
         async def create_dataset(self, **kwargs):
@@ -605,8 +610,8 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         def query(self, question: str) -> dict[str, object]:
             return {"answer": f"Ответ на {question}", "citations": ["[/docs/a.docx#chunk] body"]}
 
-    fake_phoenix = types.ModuleType("phoenix")
-    fake_client_module = types.ModuleType("phoenix.client")
+    fake_phoenix = _fake_module("phoenix")
+    fake_client_module = _fake_module("phoenix.client")
     fake_client_module.AsyncClient = FakeClient
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
@@ -652,7 +657,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
 
 def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(monkeypatch):
     module = _load_eval_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeDatasets:
         async def create_dataset(self, **kwargs):
@@ -673,8 +678,8 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
         def query(self, question: str) -> dict[str, object]:
             return {"answer": f"Ответ на {question}", "evidence": [{"metadata": {"file_id": "file-a"}}]}
 
-    fake_phoenix = types.ModuleType("phoenix")
-    fake_client_module = types.ModuleType("phoenix.client")
+    fake_phoenix = _fake_module("phoenix")
+    fake_client_module = _fake_module("phoenix.client")
     fake_client_module.AsyncClient = FakeClient
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
@@ -705,7 +710,7 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
 
 def test_phoenix_annotation_hook_logs_span_and_document_metrics():
     module = _load_eval_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeSpans:
         def log_span_annotations(self, **kwargs):
@@ -775,7 +780,7 @@ def test_phoenix_annotation_hook_logs_span_and_document_metrics():
 
 def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
     module = _load_eval_runner()
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakeDatasets:
         async def create_dataset(self, **kwargs):
@@ -796,8 +801,8 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
         def query(self, question: str) -> dict[str, object]:
             return {"answer": f"Ответ на {question}", "citations": ["[/docs/a.docx#chunk] body"]}
 
-    fake_phoenix = types.ModuleType("phoenix")
-    fake_client_module = types.ModuleType("phoenix.client")
+    fake_phoenix = _fake_module("phoenix")
+    fake_client_module = _fake_module("phoenix.client")
     fake_client_module.AsyncClient = FakeClient
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)

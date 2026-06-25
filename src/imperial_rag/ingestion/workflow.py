@@ -24,7 +24,7 @@ def build_ingestion_workflow(run_pipeline=None):
             from imperial_rag.ingestion.pipeline import ingest_corpus
 
             summary = ingest_corpus(
-                settings=state["settings"],
+                settings=state.get("settings"),
                 ocr_client=state.get("ocr_client"),
                 vector_store=state.get("vector_store"),
             )

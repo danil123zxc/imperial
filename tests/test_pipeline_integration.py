@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
+from typing import Any, cast
 
 from docx import Document as DocxDocument
+from langchain_core.documents import Document
 from openpyxl import Workbook
 from PIL import Image
 
@@ -27,13 +29,13 @@ class DeterministicOcrClient:
 
 
 class FakeKeywordSearchIndex:
-    last_settings = None
-    last_documents = None
+    last_settings: Settings | None = None
+    last_documents: list[Any] | None = None
 
-    def __init__(self, settings) -> None:
+    def __init__(self, settings: Settings) -> None:
         FakeKeywordSearchIndex.last_settings = settings
 
-    def replace_all(self, documents) -> None:
+    def replace_all(self, documents: list[Any]) -> None:
         FakeKeywordSearchIndex.last_documents = list(documents)
 
 
@@ -100,7 +102,9 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, 
             assert record.keyword_index_status == IndexStatus.SKIPPED
             assert record.vector_index_status == IndexStatus.SKIPPED
 
-    assert "archive files recorded but not extracted" in records["archive.rar"].error_message
+    archive_error = records["archive.rar"].error_message
+    assert archive_error is not None
+    assert "archive files recorded but not extracted" in archive_error
     corrupted_error = records["corrupted.docx"].error_message
     assert corrupted_error
     assert any(fragment in corrupted_error.casefold() for fragment in ("package", "zip"))
@@ -134,6 +138,7 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, 
     keyword_documents = FakeKeywordSearchIndex.last_documents
     assert FakeKeywordSearchIndex.last_settings is settings
     assert keyword_documents is not None
+    keyword_documents = cast(list[Document], keyword_documents)
     assert len(keyword_documents) == 5
     assert Counter(document.metadata["relative_path"] for document in keyword_documents) == {
         "policy.docx": 2,
@@ -155,16 +160,17 @@ def _write_docx(path: Path) -> None:
     table = docx.add_table(rows=1, cols=2)
     table.cell(0, 0).text = "DOCX_TABLE_SENTINEL"
     table.cell(0, 1).text = "warehouse approval"
-    docx.save(path)
+    docx.save(str(path))
 
 
 def _write_xlsx(path: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
+    assert sheet is not None
     sheet.title = "Schedule"
     sheet.append(["Employee", "Shift"])
     sheet.append(["XLSX_SENTINEL", "Morning"])
-    workbook.save(path)
+    workbook.save(str(path))
 
 
 def _read_chunk_rows(path: Path) -> list[dict]:

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from elasticsearch import Elasticsearch
@@ -65,11 +66,13 @@ class FakeClient(Elasticsearch):
     def options(self, **kwargs):
         return self
 
-    def search(self, index, body):
+    def search(self, *args: Any, **kwargs: Any) -> Any:
+        index = kwargs.get("index", args[0] if args else None)
+        body = kwargs.get("body", args[1] if len(args) > 1 else kwargs.get("body"))
         self.search_calls.append({"index": index, "body": body})
         return self.search_responses.pop(0)
 
-    def ping(self):
+    def ping(self, *args: Any, **kwargs: Any) -> bool:
         return self.ping_result
 
 
@@ -79,7 +82,7 @@ def fake_bulk(client, actions, refresh=False):
 
 
 def make_index(tmp_path: Path, client: FakeClient) -> ElasticsearchKeywordIndex:
-    return ElasticsearchKeywordIndex(FakeSettings(tmp_path), client=client, bulk=fake_bulk)
+    return ElasticsearchKeywordIndex(cast(Settings, FakeSettings(tmp_path)), client=client, bulk=fake_bulk)
 
 
 def test_index_mappings_use_russian_analyzer_for_searchable_text_fields() -> None:
@@ -249,7 +252,9 @@ def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:
     import time
 
     class SlowClient(FakeClient):
-        def search(self, index, body):
+        def search(self, *args: Any, **kwargs: Any) -> Any:
+            index = kwargs.get("index", args[0] if args else None)
+            body = kwargs.get("body", args[1] if len(args) > 1 else kwargs.get("body"))
             self.search_calls.append({"index": index, "body": body})
             time.sleep(0.2)
             return {
@@ -264,7 +269,7 @@ def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:
                 }
             }
 
-    async def run_two_calls() -> tuple[float, list[list[Document]]]:
+    async def run_two_calls() -> tuple[float, tuple[list[Document], list[Document]]]:
         retriever = ElasticsearchKeywordRetriever(client=SlowClient(), index_name="test_keyword_chunks")
         started = time.perf_counter()
         docs = await asyncio.gather(

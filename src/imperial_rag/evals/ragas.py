@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import anyio
+from anyio.to_thread import run_sync as run_sync_in_worker_thread
 
 from imperial_rag.integrations.dashscope import MissingDashScopeKeyError, QwenProviderSettings
 
@@ -51,12 +52,12 @@ def parse_ragas_metric_names(
         for name in raw_metrics.split(",")
         if name.strip()
     ]
-    names = [RAGAS_METRIC_ALIASES.get(name, name) for name in normalized_names]
+    names: list[str] = [RAGAS_METRIC_ALIASES.get(name, name) for name in normalized_names]
     if allow_none and any(name in NO_RAGAS_METRIC_ALIASES for name in names):
         return []
     unsupported = sorted(set(names) - set(SUPPORTED_RAGAS_METRICS))
     if unsupported:
-        supported_names = list(SUPPORTED_RAGAS_METRICS)
+        supported_names: list[str] = [*SUPPORTED_RAGAS_METRICS]
         if allow_none:
             supported_names.append("none")
         supported = ", ".join(supported_names)
@@ -498,7 +499,7 @@ async def _score_with_ragas_async(
         sample = _import_single_turn_sample()(**kwargs)
         return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
-        result = await anyio.to_thread.run_sync(lambda: scorer.score(**kwargs))
+        result = await run_sync_in_worker_thread(lambda: scorer.score(**kwargs))
         return await _resolve_awaitable_async(result)
     raise TypeError("Ragas Faithfulness scorer does not expose score/ascore methods.")
 
@@ -534,7 +535,7 @@ async def _score_answer_relevancy_with_ragas_async(
         sample = _import_single_turn_sample()(**kwargs)
         return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
-        result = await anyio.to_thread.run_sync(lambda: scorer.score(**kwargs))
+        result = await run_sync_in_worker_thread(lambda: scorer.score(**kwargs))
         return await _resolve_awaitable_async(result)
     raise TypeError("Ragas AnswerRelevancy scorer does not expose score/ascore methods.")
 
@@ -569,7 +570,7 @@ async def _score_id_context_recall_with_ragas_async(
     if hasattr(scorer, "single_turn_ascore"):
         return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
-        result = await anyio.to_thread.run_sync(lambda: scorer.score(sample))
+        result = await run_sync_in_worker_thread(lambda: scorer.score(sample))
         return await _resolve_awaitable_async(result)
     raise TypeError("Ragas IDBasedContextRecall scorer does not expose single_turn_ascore/score methods.")
 

@@ -425,7 +425,7 @@ def _install_ragas_langchain_community_compat() -> None:
     class ChatVertexAI:
         pass
 
-    module.ChatVertexAI = ChatVertexAI
+    setattr(module, "ChatVertexAI", ChatVertexAI)
     sys.modules[module_name] = module
 
 

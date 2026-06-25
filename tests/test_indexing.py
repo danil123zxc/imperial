@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -101,7 +102,7 @@ def test_create_qdrant_vector_store_uses_settings(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr("imperial_rag.indexing.QdrantVectorStore", FakeVectorStore)
 
     settings = Settings(workspace_root=tmp_path, qdrant_url="http://127.0.0.1:6333", qdrant_collection="test")
-    embeddings = object()
+    embeddings: Any = object()
 
     store = create_qdrant_vector_store(settings, embeddings=embeddings)
 

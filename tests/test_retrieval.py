@@ -704,6 +704,7 @@ def test_retrieval_service_traces_debug_merge_and_rrf_diagnostics(monkeypatch):
 
 def test_retrieval_service_suppresses_langchain_internal_spans_by_default(monkeypatch):
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     monkeypatch.delenv("IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS", raising=False)
     records = capture_retrieval_spans(monkeypatch)
 
@@ -828,6 +829,7 @@ def test_retrieval_service_traces_candidate_documents_in_retrieval_debug_mode(mo
 def test_retrieval_service_traces_search_fallbacks(monkeypatch):
     monkeypatch.delenv("COHERE_API_KEY", raising=False)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     records = capture_retrieval_spans(monkeypatch)
 
     class BrokenVector:
@@ -873,6 +875,7 @@ def test_retrieval_service_traces_search_fallbacks(monkeypatch):
 
 def test_retrieval_service_traces_reranker_provider_failure(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     records = capture_retrieval_spans(monkeypatch)
     docs = [
         Document(page_content="Порядок возврата брака", metadata={"citation_id": "k", "file_id": "f", "source_type": "body", "chunk_index": 0})
@@ -1045,6 +1048,7 @@ def test_rrf_candidate_fusion_places_unranked_documents_last():
 
 def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     records = capture_retrieval_spans(monkeypatch)
     vector_docs = [
         Document(page_content=f"vector {index}", metadata={"citation_id": f"v{index}"})
@@ -1093,6 +1097,7 @@ def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypat
 
 def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
     records = capture_retrieval_spans(monkeypatch)
     vector_docs = [
         Document(

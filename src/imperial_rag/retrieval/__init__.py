@@ -1,3 +1,4 @@
+# ruff: noqa: F405
 from __future__ import annotations
 
 import sys
@@ -20,4 +21,14 @@ class _RetrievalPackage(types.ModuleType):
 
 sys.modules[__name__].__class__ = _RetrievalPackage
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "CandidateMerger",
+    "FallbackRanker",
+    "HybridRetriever",
+    "RetrievalCandidateResult",
+    "RetrievalResult",
+    "RetrievalService",
+    "RetrievalSettings",
+    "Reranker",
+    "RrfCandidateFusion",
+]
