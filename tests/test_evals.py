@@ -547,6 +547,7 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "id": "imperial-cite-001",
         "suite": "core",
         "tags": ["returns"],
+        "lane": "indexed_answerability",
         "question": "Как оформить возврат брака?",
         "expected_behavior": "cite_answer",
         "expected_source_hints": ["возврат брака"],
@@ -558,7 +559,10 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "citations": [],
         "sources": [],
         "documents": [
-            {"page_content": "Возврат брака оформляется по регламенту.", "metadata": {"file_id": "file-a"}}
+            {
+                "page_content": "Возврат брака оформляется по регламенту.",
+                "metadata": {"file_id": "file-a", "relative_path": "11. РЕГЛАМЕНТЫ/returns.docx"},
+            }
         ],
     }
 
@@ -576,12 +580,14 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "id": "imperial-cite-001",
         "suite": "core",
         "tags": ["returns"],
+        "lane": "indexed_answerability",
         "question": "Как оформить возврат брака?",
         "expected_behavior": "cite_answer",
         "answer": "Возврат брака оформляется по регламенту.",
         "citations": [],
         "retrieved_context_ids": ["file-a"],
         "reference_context_ids": ["file-a"],
+        "source_families": ["11. РЕГЛАМЕНТЫ"],
         "deterministic": {
             "citation_behavior": False,
             "source_hint_behavior": True,
@@ -601,6 +607,55 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "phoenix_experiment": "experiment-1",
         "failure_class": "missing_citation",
     }
+
+
+def test_summarize_eval_artifact_rows_reports_pass_rates_by_lane_tag_and_source_family():
+    module = _load_eval_runner()
+
+    summary = module.summarize_eval_artifact_rows(
+        [
+            {
+                "id": "imperial-cite-001",
+                "lane": "indexed_answerability",
+                "tags": ["returns", "gold_context"],
+                "source_families": ["logistics"],
+                "failure_class": None,
+            },
+            {
+                "id": "imperial-cite-002",
+                "lane": "indexed_answerability",
+                "tags": ["returns"],
+                "source_families": ["logistics"],
+                "failure_class": "retrieval_miss",
+            },
+            {
+                "id": "imperial-refuse-001",
+                "lane": "refusal_out_of_corpus_behavior",
+                "tags": ["out_of_corpus"],
+                "source_families": [],
+                "failure_class": None,
+            },
+        ]
+    )
+
+    assert summary["overall"] == {
+        "total": 3,
+        "passed": 2,
+        "failed": 1,
+        "pass_rate": pytest.approx(2 / 3),
+        "failure_classes": {"retrieval_miss": 1},
+    }
+    assert summary["by_lane"]["indexed_answerability"] == {
+        "total": 2,
+        "passed": 1,
+        "failed": 1,
+        "pass_rate": 0.5,
+        "failure_classes": {"retrieval_miss": 1},
+    }
+    assert summary["by_tag"]["returns"]["pass_rate"] == 0.5
+    assert summary["by_tag"]["out_of_corpus"]["pass_rate"] == 1.0
+    assert summary["by_source_family"]["logistics"]["pass_rate"] == 0.5
+    assert summary["by_source_family"]["unknown"]["pass_rate"] == 1.0
 
 
 def test_eval_failure_class_prioritizes_behavior_failures():

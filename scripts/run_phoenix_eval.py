@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import sys
+from collections import Counter
 from collections.abc import Mapping
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from pathlib import Path
@@ -1004,12 +1005,14 @@ def build_eval_artifact_row(
         "id": example.get("id"),
         "suite": example.get("suite"),
         "tags": list(example.get("tags") or []),
+        "lane": example.get("lane"),
         "question": example["question"],
         "expected_behavior": example["expected_behavior"],
         "answer": str(output.get("answer") or ""),
         "citations": list(output.get("citations") or output.get("sources") or []),
         "retrieved_context_ids": retrieved_context_ids_from_output(dict(output)),
         "reference_context_ids": list(example.get("reference_context_ids") or []),
+        "source_families": source_families_from_output(dict(output)),
         "deterministic": deterministic,
         "ragas_scores": ragas_scores,
         "ragas_explanations": ragas_explanations,
@@ -1018,6 +1021,33 @@ def build_eval_artifact_row(
             expected_behavior=str(example.get("expected_behavior") or ""),
             deterministic=deterministic,
             ragas_scores=ragas_scores,
+        ),
+    }
+
+
+def source_families_from_output(output: Mapping[str, Any]) -> list[str]:
+    families: list[str] = []
+    documents = list(output.get("documents") or output.get("evidence") or [])
+    for document in documents:
+        payload = dict(document) if isinstance(document, Mapping) else _document_payload(document)
+        metadata = payload.get("metadata", {}) or {}
+        if not isinstance(metadata, Mapping):
+            continue
+        family = _source_family_from_metadata(metadata)
+        if family:
+            families.append(family)
+    return _unique_nonempty(families)
+
+
+def summarize_eval_artifact_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    row_list = [dict(row) for row in rows]
+    return {
+        "overall": _pass_rate_summary(row_list),
+        "by_lane": _grouped_pass_rate_summary(row_list, lambda row: [str(row.get("lane") or "unknown")]),
+        "by_tag": _grouped_pass_rate_summary(row_list, lambda row: _clean_group_values(row.get("tags") or [])),
+        "by_source_family": _grouped_pass_rate_summary(
+            row_list,
+            lambda row: _clean_group_values(row.get("source_families") or []) or ["unknown"],
         ),
     }
 
@@ -1164,6 +1194,55 @@ def _document_search_text(document: dict[str, Any]) -> str:
 
 def _reference_hints(reference: Mapping[str, Any]) -> list[str]:
     return [str(hint).casefold() for hint in reference.get("expected_source_hints", []) if str(hint).strip()]
+
+
+def _source_family_from_metadata(metadata: Mapping[str, Any]) -> str:
+    for field in ("relative_path", "file_path"):
+        value = str(metadata.get(field) or "").strip()
+        if not value:
+            continue
+        normalized = value.replace("\\", "/").strip("/")
+        if normalized:
+            return normalized.split("/", 1)[0]
+    parent_folder = str(metadata.get("parent_folder") or "").strip()
+    if parent_folder:
+        return parent_folder.replace("\\", "/").strip("/").split("/", 1)[0]
+    return ""
+
+
+def _clean_group_values(values: Any) -> list[str]:
+    if isinstance(values, str):
+        raw_values = [values]
+    else:
+        raw_values = list(values or [])
+    return _unique_nonempty(str(value).strip() for value in raw_values)
+
+
+def _pass_rate_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    total = len(rows)
+    failure_classes = Counter(
+        str(row.get("failure_class")).strip()
+        for row in rows
+        if str(row.get("failure_class") or "").strip()
+    )
+    failed = sum(failure_classes.values())
+    passed = total - failed
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "pass_rate": passed / total if total else None,
+        "failure_classes": dict(sorted(failure_classes.items())),
+    }
+
+
+def _grouped_pass_rate_summary(rows: Sequence[Mapping[str, Any]], key_fn: Any) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        keys = key_fn(row) or ["unknown"]
+        for key in keys:
+            groups.setdefault(str(key), []).append(row)
+    return {key: _pass_rate_summary(groups[key]) for key in sorted(groups)}
 
 
 def _document_relevance_score(document: Any, hints: list[str]) -> float:
