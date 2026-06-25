@@ -893,7 +893,7 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
             info=lambda *args, **kwargs: None,
             chat_input=lambda *args, **kwargs: None,
         )
-        namespace = runpy.run_path('src/imperial_rag/web_app.py', run_name='imperial_web_app_test')
+        namespace = runpy.run_path('src/imperial_rag/web_app/__main__.py', run_name='imperial_web_app_test')
         namespace['main']()
         """
     )

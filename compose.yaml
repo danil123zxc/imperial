@@ -40,7 +40,7 @@ services:
       - -m
       - streamlit
       - run
-      - src/imperial_rag/web_app.py
+      - src/imperial_rag/web_app/__main__.py
       - --server.address
       - 0.0.0.0
       - --server.port

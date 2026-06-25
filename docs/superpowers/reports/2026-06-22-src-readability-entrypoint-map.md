@@ -5,7 +5,7 @@ Scope: import and entrypoint audit for the lifecycle-oriented `src/imperial_rag`
 
 ## Entrypoints That Must Keep Working
 
-- Streamlit UI: `uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.0.0.1 --server.port 8501`
+- Streamlit UI: `uv run python -m streamlit run src/imperial_rag/web_app/__main__.py --server.address 127.0.0.1 --server.port 8501`
 - Query CLI: `uv run python scripts/query.py "question text"`
 - Ingest CLI: `uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial`
 - Phoenix eval CLI: `uv run python scripts/run_phoenix_eval.py`

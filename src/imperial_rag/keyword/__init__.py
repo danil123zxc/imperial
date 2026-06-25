@@ -3,11 +3,11 @@ from __future__ import annotations
 import sys as _sys
 
 _MODULE_NAME = __name__
-_PACKAGE = __package__
+_PARENT_PACKAGE = __name__.rsplit(".", 1)[0] if "." in __name__ else ""
 
 from imperial_rag.retrieval import lexical as _impl
 
 globals().update(_impl.__dict__)
 _sys.modules[_MODULE_NAME] = _impl
-if _PACKAGE:
-    setattr(_sys.modules[_PACKAGE], _MODULE_NAME.rsplit(".", 1)[-1], _impl)
+if _PARENT_PACKAGE:
+    setattr(_sys.modules[_PARENT_PACKAGE], _MODULE_NAME.rsplit(".", 1)[-1], _impl)

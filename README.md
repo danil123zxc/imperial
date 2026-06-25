@@ -31,13 +31,13 @@ documents/
 
 Core package code lives in `src/imperial_rag/`:
 
-- `pipeline.py`, `extraction.py`, `ocr.py`, and `chunking.py` handle ingestion and text preparation.
-- `manifest.py` tracks discovered files, extraction status, duplicate groups, and index status.
-- `elasticsearch_keyword.py` owns Elasticsearch keyword indexing, and `indexing.py` owns Qdrant vector indexing helpers plus stable chunk ids.
-- `retrieval.py`, `answering.py`, `workflows.py`, and `runtime.py` own query-time RAG behavior.
-- `providers.py` centralizes Qwen/DashScope chat, embedding, reranking, and OCR provider defaults.
-- `tracing.py` configures Phoenix tracing.
-- `web_app.py` provides the Streamlit UI.
+- `ingestion/` handles extraction, OCR, manifests, chunking, and corpus ingestion.
+- `indexing/` owns Qdrant vector indexing helpers plus stable chunk ids.
+- `retrieval/` owns Elasticsearch keyword retrieval and hybrid retrieval services.
+- `answering/` owns query-time RAG runtime, workflows, and strict answer formatting.
+- `integrations/` centralizes Qwen/DashScope chat, embedding, reranking, and OCR provider defaults.
+- `observability/` configures logs, event logs, and Phoenix tracing.
+- `app/` provides the Streamlit UI; `web_app/` keeps the UI import and launch path compatible.
 
 ## Current Local Snapshot
 
@@ -94,7 +94,7 @@ uv run python scripts/query.py "question text"
 Run the local UI:
 
 ```bash
-uv run python -m streamlit run src/imperial_rag/web_app.py --server.address 127.0.0.1 --server.port 8501
+uv run python -m streamlit run src/imperial_rag/web_app/__main__.py --server.address 127.0.0.1 --server.port 8501
 ```
 
 Then open `http://127.0.0.1:8501`. Sign in with the bootstrap admin account, then approve pending signup requests from the sidebar access panel. Auth state is stored locally in `.imperial_rag/auth.sqlite3`.

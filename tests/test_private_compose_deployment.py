@@ -58,7 +58,7 @@ def test_dockerfile_builds_uv_streamlit_runtime() -> None:
     assert "COPY src ./src" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
     assert "EXPOSE 8501" in dockerfile
-    assert '"streamlit", "run", "src/imperial_rag/web_app.py"' in dockerfile
+    assert '"streamlit", "run", "src/imperial_rag/web_app/__main__.py"' in dockerfile
     assert '"--server.address", "0.0.0.0"' in dockerfile
     assert '"--server.port", "8501"' in dockerfile
     assert '"--server.headless", "true"' in dockerfile

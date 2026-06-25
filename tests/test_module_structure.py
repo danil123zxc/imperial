@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+
+def test_imperial_rag_root_contains_only_directories():
+    package_root = Path("src/imperial_rag")
+
+    direct_files = sorted(path.name for path in package_root.iterdir() if path.is_file())
+
+    assert direct_files == []
+
 
 def test_lifecycle_import_paths_are_available():
     from imperial_rag.answering.runtime import Runtime, create_runtime

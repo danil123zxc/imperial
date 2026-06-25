@@ -63,22 +63,20 @@ def load_status_summary(settings: Any | None = None) -> str:
 
 
 def query_runtime(settings: Any, question: str) -> dict[str, Any]:
-    create_runtime_func: Any | None
     try:
-        from imperial_rag.answering.runtime import create_runtime as create_runtime_func
+        from imperial_rag.answering.runtime import create_runtime as maybe_create_runtime
     except (ImportError, AttributeError):
-        create_runtime_func = None
-    if create_runtime_func is not None:
+        maybe_create_runtime = None
+    if maybe_create_runtime is not None:
         return _coerce_result(_runtime_resource(settings).query(question))
 
-    RuntimeClass: Any | None
     try:
-        from imperial_rag.answering.runtime import Runtime as RuntimeClass
+        from imperial_rag.answering.runtime import Runtime as maybe_runtime_class
     except (ImportError, AttributeError):
-        RuntimeClass = None
+        maybe_runtime_class = None
 
-    if RuntimeClass is not None:
-        return _coerce_result(RuntimeClass(settings=settings).query(question))
+    if maybe_runtime_class is not None:
+        return _coerce_result(maybe_runtime_class(settings=settings).query(question))
 
     from imperial_rag.answering.runtime import build_live_query_workflow
 

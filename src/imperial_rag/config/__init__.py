@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-DEFAULT_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 
 
