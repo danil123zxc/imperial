@@ -204,10 +204,18 @@ def score_faithfulness_for_phoenix(
     output: Mapping[str, Any] | None = None,
     scorer: Any | None = None,
 ) -> dict[str, Any]:
+    return _run_coroutine(score_faithfulness_for_phoenix_async(input=input, output=output, scorer=scorer))
+
+
+async def score_faithfulness_for_phoenix_async(
+    input: Mapping[str, Any] | None = None,
+    output: Mapping[str, Any] | None = None,
+    scorer: Any | None = None,
+) -> dict[str, Any]:
     row = faithfulness_row_from_run_output(input, output)
     if row is None:
         return _skipped_result("missing_response_or_contexts")
-    return score_faithfulness_row(row, scorer=scorer)
+    return await score_faithfulness_row_async(row, scorer=scorer)
 
 
 def score_answer_relevancy_for_phoenix(
@@ -215,13 +223,32 @@ def score_answer_relevancy_for_phoenix(
     output: Mapping[str, Any] | None = None,
     scorer: Any | None = None,
 ) -> dict[str, Any]:
+    return _run_coroutine(score_answer_relevancy_for_phoenix_async(input=input, output=output, scorer=scorer))
+
+
+async def score_answer_relevancy_for_phoenix_async(
+    input: Mapping[str, Any] | None = None,
+    output: Mapping[str, Any] | None = None,
+    scorer: Any | None = None,
+) -> dict[str, Any]:
     row = answer_relevancy_row_from_run_output(input, output)
     if row is None:
         return _answer_relevancy_skipped_result("missing_user_input_or_response")
-    return score_answer_relevancy_row(row, scorer=scorer)
+    return await score_answer_relevancy_row_async(row, scorer=scorer)
 
 
 def score_id_context_recall_for_phoenix(
+    input: Mapping[str, Any] | None = None,
+    output: Mapping[str, Any] | None = None,
+    expected: Mapping[str, Any] | None = None,
+    scorer: Any | None = None,
+) -> dict[str, Any]:
+    return _run_coroutine(
+        score_id_context_recall_for_phoenix_async(input=input, output=output, expected=expected, scorer=scorer)
+    )
+
+
+async def score_id_context_recall_for_phoenix_async(
     input: Mapping[str, Any] | None = None,
     output: Mapping[str, Any] | None = None,
     expected: Mapping[str, Any] | None = None,
@@ -242,7 +269,7 @@ def score_id_context_recall_for_phoenix(
         "retrieved_context_ids": retrieved_context_ids_from_output(resolved_output),
         "reference_context_ids": reference_context_ids,
     }
-    return score_id_context_recall_row(row, scorer=scorer)
+    return await score_id_context_recall_row_async(row, scorer=scorer)
 
 
 def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:

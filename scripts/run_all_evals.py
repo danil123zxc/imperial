@@ -32,6 +32,12 @@ def main(argv: list[str] | None = None) -> None:
         default="faithfulness,answer_relevancy",
         help="Comma-separated Ragas metrics to attach, or 'none' for deterministic-only.",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=phoenix_eval.DEFAULT_PHOENIX_CONCURRENCY,
+        help="Maximum concurrent Phoenix experiment tasks.",
+    )
     args = parser.parse_args(argv)
 
     phoenix_eval._load_project_env(args.workspace_root)
@@ -50,6 +56,7 @@ def main(argv: list[str] | None = None) -> None:
             dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
             experiment_name=args.experiment_name,
             ragas_metric_names=metric_names,
+            concurrency=args.concurrency,
         )
         _log_completion(started_at, example_count=len(examples), ragas_metrics=",".join(metric_names))
     except (Exception, SystemExit) as exc:

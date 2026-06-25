@@ -498,12 +498,12 @@ def test_eval_runner_uses_phoenix_dataset_and_experiment_api_shape():
     legacy_runner = Path("scripts") / f"run_{legacy_name}_eval.py"
 
     assert not legacy_runner.exists()
-    assert "from phoenix.client import Client" in source
-    assert "client.datasets.create_dataset" in source
+    assert "from phoenix.client import AsyncClient" in source
+    assert "await client.datasets.create_dataset" in source
     assert "inputs=inputs" in source
     assert "outputs=outputs" in source
     assert "metadata=metadata" in source
-    assert "client.experiments.run_experiment" in source
+    assert "await client.experiments.run_experiment" in source
     assert legacy_name not in source.casefold()
 
 
@@ -586,12 +586,12 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
     captured: dict[str, object] = {}
 
     class FakeDatasets:
-        def create_dataset(self, **kwargs):
+        async def create_dataset(self, **kwargs):
             captured["dataset"] = kwargs
             return {"dataset_id": "dataset-1"}
 
     class FakeExperiments:
-        def run_experiment(self, **kwargs):
+        async def run_experiment(self, **kwargs):
             captured["experiment"] = kwargs
             return SimpleNamespace(id="experiment-1")
 
@@ -607,7 +607,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
 
     fake_phoenix = types.ModuleType("phoenix")
     fake_client_module = types.ModuleType("phoenix.client")
-    fake_client_module.Client = FakeClient
+    fake_client_module.AsyncClient = FakeClient
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
     monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
@@ -643,10 +643,11 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         module.phoenix_citation_behavior,
         module.phoenix_source_hint_behavior,
         module.phoenix_retrieval_relevance,
-        module.phoenix_ragas_faithfulness,
-        module.phoenix_ragas_answer_relevancy,
+        module.phoenix_ragas_faithfulness_async,
+        module.phoenix_ragas_answer_relevancy_async,
     ]
     assert experiment_args["experiment_name"] == "imperial-rag-citation-grounding"
+    assert experiment_args["concurrency"] == module.DEFAULT_PHOENIX_CONCURRENCY
 
 
 def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(monkeypatch):
@@ -654,12 +655,12 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
     captured: dict[str, object] = {}
 
     class FakeDatasets:
-        def create_dataset(self, **kwargs):
+        async def create_dataset(self, **kwargs):
             captured["dataset"] = kwargs
             return {"dataset_id": "dataset-1"}
 
     class FakeExperiments:
-        def run_experiment(self, **kwargs):
+        async def run_experiment(self, **kwargs):
             captured["experiment"] = kwargs
             return SimpleNamespace(id="experiment-1")
 
@@ -674,7 +675,7 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
 
     fake_phoenix = types.ModuleType("phoenix")
     fake_client_module = types.ModuleType("phoenix.client")
-    fake_client_module.Client = FakeClient
+    fake_client_module.AsyncClient = FakeClient
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
     monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())
@@ -698,7 +699,7 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
         module.phoenix_citation_behavior,
         module.phoenix_source_hint_behavior,
         module.phoenix_retrieval_relevance,
-        module.phoenix_id_context_recall,
+        module.phoenix_id_context_recall_async,
     ]
 
 
@@ -777,12 +778,12 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
     captured: dict[str, object] = {}
 
     class FakeDatasets:
-        def create_dataset(self, **kwargs):
+        async def create_dataset(self, **kwargs):
             captured["dataset"] = kwargs
             return {"dataset_id": "dataset-1"}
 
     class FakeExperiments:
-        def run_experiment(self, **kwargs):
+        async def run_experiment(self, **kwargs):
             captured["experiment"] = kwargs
             return SimpleNamespace(id="experiment-1")
 
@@ -797,7 +798,7 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
 
     fake_phoenix = types.ModuleType("phoenix")
     fake_client_module = types.ModuleType("phoenix.client")
-    fake_client_module.Client = FakeClient
+    fake_client_module.AsyncClient = FakeClient
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.client", fake_client_module)
     monkeypatch.setattr(module, "build_runtime", lambda settings=None: FakeRuntime())

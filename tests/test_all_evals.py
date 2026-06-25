@@ -44,6 +44,7 @@ def test_all_evals_default_creates_phoenix_experiment_with_faithfulness(monkeypa
         "dataset_name": "imperial-rag-gold-questions",
         "experiment_name": "imperial-rag-all-evals",
         "ragas_metric_names": ["faithfulness", "answer_relevancy"],
+        "concurrency": module.phoenix_eval.DEFAULT_PHOENIX_CONCURRENCY,
     }
 
 
@@ -65,6 +66,7 @@ def test_all_evals_can_create_deterministic_only_phoenix_experiment(monkeypatch)
     module.main(["--ragas-metrics", "none"])
 
     assert captured["ragas_metric_names"] == []
+    assert captured["concurrency"] == module.phoenix_eval.DEFAULT_PHOENIX_CONCURRENCY
 
 
 def test_all_evals_forwards_id_context_recall_metric(monkeypatch):
@@ -89,10 +91,11 @@ def test_all_evals_forwards_id_context_recall_metric(monkeypatch):
     monkeypatch.setattr(module, "_assert_phoenix_reachable", lambda endpoint: None)
     monkeypatch.setattr(module.phoenix_eval, "run_phoenix_experiment", lambda **kwargs: captured.update(kwargs))
 
-    module.main(["--ragas-metrics", "id_context_recall"])
+    module.main(["--ragas-metrics", "id_context_recall", "--concurrency", "5"])
 
     assert captured["examples"] == examples
     assert captured["ragas_metric_names"] == ["id_context_recall"]
+    assert captured["concurrency"] == 5
 
 
 def test_all_evals_preflight_fails_with_phoenix_start_hint(monkeypatch):

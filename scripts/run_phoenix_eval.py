@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import math
@@ -10,9 +11,12 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+import anyio
+
 
 DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
+DEFAULT_PHOENIX_CONCURRENCY = 3
 DEFAULT_RETRIEVAL_METRIC_K = 5
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
 VALID_LANES = {
@@ -228,6 +232,22 @@ def phoenix_ragas_faithfulness(
     )
 
 
+async def phoenix_ragas_faithfulness_async(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import score_faithfulness_for_phoenix_async
+
+    if not _answer_quality_metric_applies(expected or input or {}):
+        return _metric_not_applicable_result("faithfulness", expected or input or {})
+    return await score_faithfulness_for_phoenix_async(
+        input=input or {},
+        output=output or {},
+        scorer=_get_ragas_faithfulness_scorer(),
+    )
+
+
 def phoenix_ragas_answer_relevancy(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
@@ -244,6 +264,22 @@ def phoenix_ragas_answer_relevancy(
     )
 
 
+async def phoenix_ragas_answer_relevancy_async(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import score_answer_relevancy_for_phoenix_async
+
+    if not _answer_quality_metric_applies(expected or input or {}):
+        return _metric_not_applicable_result("answer_relevancy", expected or input or {})
+    return await score_answer_relevancy_for_phoenix_async(
+        input=input or {},
+        output=output or {},
+        scorer=_get_ragas_answer_relevancy_scorer(),
+    )
+
+
 def phoenix_id_context_recall(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
@@ -252,6 +288,20 @@ def phoenix_id_context_recall(
     from imperial_rag.ragas_eval import score_id_context_recall_for_phoenix
 
     return score_id_context_recall_for_phoenix(
+        input=input or {},
+        output=output or {},
+        expected=expected or {},
+    )
+
+
+async def phoenix_id_context_recall_async(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from imperial_rag.ragas_eval import score_id_context_recall_for_phoenix_async
+
+    return await score_id_context_recall_for_phoenix_async(
         input=input or {},
         output=output or {},
         expected=expected or {},
@@ -303,6 +353,12 @@ def main(argv: list[str] | None = None) -> None:
         default="faithfulness,answer_relevancy",
         help="Comma-separated Ragas metrics to attach in Phoenix mode, or 'none'.",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_PHOENIX_CONCURRENCY,
+        help="Maximum concurrent Phoenix experiment tasks.",
+    )
     args = parser.parse_args(argv)
 
     _load_project_env(args.workspace_root)
@@ -322,6 +378,7 @@ def main(argv: list[str] | None = None) -> None:
                 dataset_name=args.dataset_name or f"{settings.phoenix_project_name}-gold-questions",
                 experiment_name=args.experiment_name,
                 ragas_metric_names=metric_names,
+                concurrency=args.concurrency,
             )
             _log_eval_completion(
                 started_at,
@@ -363,6 +420,29 @@ def run_phoenix_experiment(
     dataset_name: str,
     experiment_name: str,
     ragas_metric_names: list[str] | None = None,
+    *,
+    concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
+) -> None:
+    return _run_async(
+        run_phoenix_experiment_async(
+            examples=examples,
+            settings=settings,
+            dataset_name=dataset_name,
+            experiment_name=experiment_name,
+            ragas_metric_names=ragas_metric_names,
+            concurrency=concurrency,
+        )
+    )
+
+
+async def run_phoenix_experiment_async(
+    examples: list[dict[str, Any]],
+    settings: Any,
+    dataset_name: str,
+    experiment_name: str,
+    ragas_metric_names: list[str] | None = None,
+    *,
+    concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
 ) -> None:
     if ragas_metric_names is None:
         from imperial_rag.ragas_eval import DEFAULT_RAGAS_METRICS
@@ -371,10 +451,10 @@ def run_phoenix_experiment(
     else:
         resolved_ragas_metric_names = list(ragas_metric_names)
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
-    evaluators = _phoenix_evaluators(resolved_ragas_metric_names)
+    evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True)
 
     try:
-        from phoenix.client import Client
+        from phoenix.client import AsyncClient
     except ImportError as exc:
         raise SystemExit("Phoenix client is not installed; install arize-phoenix-client.") from exc
 
@@ -385,9 +465,9 @@ def run_phoenix_experiment(
         _get_ragas_faithfulness_scorer()
     if "answer_relevancy" in resolved_ragas_metric_names and has_answer_quality_rows:
         _get_ragas_answer_relevancy_scorer()
-    client = Client(base_url=settings.phoenix_client_endpoint)
+    client = AsyncClient(base_url=settings.phoenix_client_endpoint)
     inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
-    dataset = client.datasets.create_dataset(
+    dataset = await client.datasets.create_dataset(
         name=dataset_name,
         dataset_description="Imperial RAG gold questions loaded from evals/questions.jsonl.",
         inputs=inputs,
@@ -396,15 +476,16 @@ def run_phoenix_experiment(
     )
     runtime = build_runtime(settings=settings)
 
-    def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
-        return run_target(inputs, runtime=runtime)
+    async def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
+        return await anyio.to_thread.run_sync(lambda: run_target(inputs, runtime=runtime))
 
-    experiment = client.experiments.run_experiment(
+    experiment = await client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
         evaluators=evaluators,
         experiment_name=experiment_name,
         experiment_description=_phoenix_experiment_description(resolved_ragas_metric_names),
+        concurrency=concurrency,
     )
     print(f"phoenix_dataset={dataset_name}")
     print(f"phoenix_examples={len(examples)}")
@@ -417,6 +498,8 @@ def _run_phoenix_experiment(
     dataset_name: str,
     experiment_name: str,
     ragas_metric_names: list[str] | None = None,
+    *,
+    concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
 ) -> None:
     return run_phoenix_experiment(
         examples=examples,
@@ -424,6 +507,7 @@ def _run_phoenix_experiment(
         dataset_name=dataset_name,
         experiment_name=experiment_name,
         ragas_metric_names=ragas_metric_names,
+        concurrency=concurrency,
     )
 
 
@@ -476,7 +560,7 @@ def _validate_phoenix_ragas_metric_requirements(
     )
 
 
-def _phoenix_evaluators(metric_names: list[str]) -> list[Any]:
+def _phoenix_evaluators(metric_names: list[str], *, async_mode: bool = False) -> list[Any]:
     unsupported = sorted(set(metric_names) - {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported:
         raise SystemExit(
@@ -485,11 +569,11 @@ def _phoenix_evaluators(metric_names: list[str]) -> list[Any]:
         )
     evaluators: list[Any] = [phoenix_citation_behavior, phoenix_source_hint_behavior, phoenix_retrieval_relevance]
     if "faithfulness" in metric_names:
-        evaluators.append(phoenix_ragas_faithfulness)
+        evaluators.append(phoenix_ragas_faithfulness_async if async_mode else phoenix_ragas_faithfulness)
     if "answer_relevancy" in metric_names:
-        evaluators.append(phoenix_ragas_answer_relevancy)
+        evaluators.append(phoenix_ragas_answer_relevancy_async if async_mode else phoenix_ragas_answer_relevancy)
     if "id_context_recall" in metric_names:
-        evaluators.append(phoenix_id_context_recall)
+        evaluators.append(phoenix_id_context_recall_async if async_mode else phoenix_id_context_recall)
     return evaluators
 
 
@@ -914,6 +998,20 @@ def _ensure_src_on_path() -> None:
     src = root / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
+
+
+def _run_async(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return anyio.run(_await_result, awaitable)
+    if hasattr(awaitable, "close"):
+        awaitable.close()
+    raise RuntimeError("Cannot synchronously run async Phoenix evaluation inside a running event loop.")
+
+
+async def _await_result(awaitable: Any) -> Any:
+    return await awaitable
 
 
 if __name__ == "__main__":
