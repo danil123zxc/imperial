@@ -22,6 +22,7 @@ ANSWER_RELEVANCY_METADATA_KEY = "ragas_answer_relevancy"
 ID_CONTEXT_RECALL_LABEL = "id_context_recall"
 ID_CONTEXT_RECALL_METADATA_KEY = "ragas_id_context_recall"
 DEFAULT_RAGAS_METRICS = (FAITHFULNESS_LABEL, ANSWER_RELEVANCY_LABEL)
+DEFAULT_RAGAS_CONCURRENCY = 4
 REFERENCE_REQUIRED_RAGAS_METRICS = {"context_recall", "factual_correctness"}
 SUPPORTED_RAGAS_METRICS = DEFAULT_RAGAS_METRICS + (
     "context_recall",
@@ -245,6 +246,10 @@ def score_id_context_recall_for_phoenix(
 
 
 def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
+    return _run_coroutine(score_faithfulness_row_async(row, scorer=scorer))
+
+
+async def score_faithfulness_row_async(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
     retrieved_contexts = _clean_texts(row.get("retrieved_contexts") or [])
     user_input = str(row.get("user_input") or "").strip()
     response = str(row.get("response") or "").strip()
@@ -252,7 +257,7 @@ def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) ->
         return _skipped_result("missing_response_or_contexts")
 
     resolved_scorer = scorer or build_faithfulness_scorer()
-    raw_result = _score_with_ragas(
+    raw_result = await _score_with_ragas_async(
         resolved_scorer,
         user_input=user_input,
         response=response,
@@ -271,13 +276,17 @@ def score_faithfulness_row(row: Mapping[str, Any], scorer: Any | None = None) ->
 
 
 def score_answer_relevancy_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
+    return _run_coroutine(score_answer_relevancy_row_async(row, scorer=scorer))
+
+
+async def score_answer_relevancy_row_async(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
     user_input = str(row.get("user_input") or "").strip()
     response = str(row.get("response") or "").strip()
     if not user_input or not response:
         return _answer_relevancy_skipped_result("missing_user_input_or_response")
 
     resolved_scorer = scorer or build_answer_relevancy_scorer()
-    raw_result = _score_answer_relevancy_with_ragas(
+    raw_result = await _score_answer_relevancy_with_ragas_async(
         resolved_scorer,
         user_input=user_input,
         response=response,
@@ -292,6 +301,10 @@ def score_answer_relevancy_row(row: Mapping[str, Any], scorer: Any | None = None
 
 
 def score_id_context_recall_row(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
+    return _run_coroutine(score_id_context_recall_row_async(row, scorer=scorer))
+
+
+async def score_id_context_recall_row_async(row: Mapping[str, Any], scorer: Any | None = None) -> dict[str, Any]:
     retrieved_context_ids = _clean_context_ids(row.get("retrieved_context_ids") or [])
     reference_context_ids = _clean_context_ids(row.get("reference_context_ids") or [])
     if not reference_context_ids:
@@ -308,7 +321,7 @@ def score_id_context_recall_row(row: Mapping[str, Any], scorer: Any | None = Non
         )
 
     resolved_scorer = scorer or build_id_context_recall_scorer()
-    raw_result = _score_id_context_recall_with_ragas(
+    raw_result = await _score_id_context_recall_with_ragas_async(
         resolved_scorer,
         retrieved_context_ids=retrieved_context_ids,
         reference_context_ids=reference_context_ids,
@@ -326,65 +339,121 @@ def score_id_context_recall_row(row: Mapping[str, Any], scorer: Any | None = Non
     }
 
 
-def evaluate_faithfulness_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+def evaluate_faithfulness_rows(
+    rows: Sequence[Mapping[str, Any]],
+    scorer: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_RAGAS_CONCURRENCY,
+) -> list[dict[str, Any]]:
+    return _run_coroutine(evaluate_faithfulness_rows_async(rows, scorer=scorer, concurrency=concurrency))
+
+
+async def evaluate_faithfulness_rows_async(
+    rows: Sequence[Mapping[str, Any]],
+    scorer: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_RAGAS_CONCURRENCY,
+) -> list[dict[str, Any]]:
     resolved_scorer = scorer
-    for row in rows:
-        if _has_scoreable_fields(row) and resolved_scorer is None:
-            resolved_scorer = build_faithfulness_scorer()
-        result = score_faithfulness_row(row, scorer=resolved_scorer)
-        records.append(
-            {
-                "user_input": str(row.get("user_input") or ""),
-                "faithfulness": result["score"],
-                "label": result["label"],
-                "explanation": result.get("explanation"),
-                "retrieved_context_count": result["metadata"].get("retrieved_context_count", 0),
-            }
-        )
-    return records
+    if resolved_scorer is None and any(_has_scoreable_fields(row) for row in rows):
+        resolved_scorer = build_faithfulness_scorer()
+
+    async def evaluate(row: Mapping[str, Any]) -> dict[str, Any]:
+        result = await score_faithfulness_row_async(row, scorer=resolved_scorer)
+        return {
+            "user_input": str(row.get("user_input") or ""),
+            "faithfulness": result["score"],
+            "label": result["label"],
+            "explanation": result.get("explanation"),
+            "retrieved_context_count": result["metadata"].get("retrieved_context_count", 0),
+        }
+
+    return await _map_rows_bounded(rows, evaluate, concurrency=concurrency)
 
 
-def evaluate_answer_relevancy_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+def evaluate_answer_relevancy_rows(
+    rows: Sequence[Mapping[str, Any]],
+    scorer: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_RAGAS_CONCURRENCY,
+) -> list[dict[str, Any]]:
+    return _run_coroutine(evaluate_answer_relevancy_rows_async(rows, scorer=scorer, concurrency=concurrency))
+
+
+async def evaluate_answer_relevancy_rows_async(
+    rows: Sequence[Mapping[str, Any]],
+    scorer: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_RAGAS_CONCURRENCY,
+) -> list[dict[str, Any]]:
     resolved_scorer = scorer
-    for row in rows:
-        if _has_scoreable_answer_relevancy_fields(row) and resolved_scorer is None:
-            resolved_scorer = build_answer_relevancy_scorer()
-        result = score_answer_relevancy_row(row, scorer=resolved_scorer)
-        records.append(
-            {
-                "user_input": str(row.get("user_input") or ""),
-                ANSWER_RELEVANCY_LABEL: result["score"],
-                "label": result["label"],
-                "explanation": result.get("explanation"),
-            }
-        )
-    return records
+    if resolved_scorer is None and any(_has_scoreable_answer_relevancy_fields(row) for row in rows):
+        resolved_scorer = build_answer_relevancy_scorer()
+
+    async def evaluate(row: Mapping[str, Any]) -> dict[str, Any]:
+        result = await score_answer_relevancy_row_async(row, scorer=resolved_scorer)
+        return {
+            "user_input": str(row.get("user_input") or ""),
+            ANSWER_RELEVANCY_LABEL: result["score"],
+            "label": result["label"],
+            "explanation": result.get("explanation"),
+        }
+
+    return await _map_rows_bounded(rows, evaluate, concurrency=concurrency)
 
 
-def evaluate_id_context_recall_rows(rows: Sequence[Mapping[str, Any]], scorer: Any | None = None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+def evaluate_id_context_recall_rows(
+    rows: Sequence[Mapping[str, Any]],
+    scorer: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_RAGAS_CONCURRENCY,
+) -> list[dict[str, Any]]:
+    return _run_coroutine(evaluate_id_context_recall_rows_async(rows, scorer=scorer, concurrency=concurrency))
+
+
+async def evaluate_id_context_recall_rows_async(
+    rows: Sequence[Mapping[str, Any]],
+    scorer: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_RAGAS_CONCURRENCY,
+) -> list[dict[str, Any]]:
     resolved_scorer = scorer
-    for row in rows:
-        if _has_scoreable_id_context_fields(row) and resolved_scorer is None:
-            resolved_scorer = build_id_context_recall_scorer()
-        result = score_id_context_recall_row(row, scorer=resolved_scorer)
+    if resolved_scorer is None and any(_has_scoreable_id_context_fields(row) for row in rows):
+        resolved_scorer = build_id_context_recall_scorer()
+
+    async def evaluate(row: Mapping[str, Any]) -> dict[str, Any]:
+        result = await score_id_context_recall_row_async(row, scorer=resolved_scorer)
         metadata = result["metadata"]
-        records.append(
-            {
-                "user_input": str(row.get("user_input") or ""),
-                ID_CONTEXT_RECALL_LABEL: result["score"],
-                "label": result["label"],
-                "explanation": result.get("explanation"),
-                "retrieved_context_id_count": metadata.get("retrieved_context_id_count", 0),
-                "reference_context_id_count": metadata.get("reference_context_id_count", 0),
-            }
-        )
-    return records
+        return {
+            "user_input": str(row.get("user_input") or ""),
+            ID_CONTEXT_RECALL_LABEL: result["score"],
+            "label": result["label"],
+            "explanation": result.get("explanation"),
+            "retrieved_context_id_count": metadata.get("retrieved_context_id_count", 0),
+            "reference_context_id_count": metadata.get("reference_context_id_count", 0),
+        }
+
+    return await _map_rows_bounded(rows, evaluate, concurrency=concurrency)
 
 
 def _score_with_ragas(
+    scorer: Any,
+    *,
+    user_input: str,
+    response: str,
+    retrieved_contexts: list[str],
+) -> Any:
+    return _run_coroutine(
+        _score_with_ragas_async(
+            scorer,
+            user_input=user_input,
+            response=response,
+            retrieved_contexts=retrieved_contexts,
+        )
+    )
+
+
+async def _score_with_ragas_async(
     scorer: Any,
     *,
     user_input: str,
@@ -396,14 +465,14 @@ def _score_with_ragas(
         "response": response,
         "retrieved_contexts": retrieved_contexts,
     }
-    if hasattr(scorer, "score"):
-        result = scorer.score(**kwargs)
-        return _resolve_awaitable(result)
     if hasattr(scorer, "ascore"):
-        return _run_coroutine(scorer.ascore(**kwargs))
+        return await _resolve_awaitable_async(scorer.ascore(**kwargs))
     if hasattr(scorer, "single_turn_ascore"):
         sample = _import_single_turn_sample()(**kwargs)
-        return _run_coroutine(scorer.single_turn_ascore(sample))
+        return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
+    if hasattr(scorer, "score"):
+        result = await anyio.to_thread.run_sync(lambda: scorer.score(**kwargs))
+        return await _resolve_awaitable_async(result)
     raise TypeError("Ragas Faithfulness scorer does not expose score/ascore methods.")
 
 
@@ -413,22 +482,52 @@ def _score_answer_relevancy_with_ragas(
     user_input: str,
     response: str,
 ) -> Any:
+    return _run_coroutine(
+        _score_answer_relevancy_with_ragas_async(
+            scorer,
+            user_input=user_input,
+            response=response,
+        )
+    )
+
+
+async def _score_answer_relevancy_with_ragas_async(
+    scorer: Any,
+    *,
+    user_input: str,
+    response: str,
+) -> Any:
     kwargs = {
         "user_input": user_input,
         "response": response,
     }
-    if hasattr(scorer, "score"):
-        result = scorer.score(**kwargs)
-        return _resolve_awaitable(result)
     if hasattr(scorer, "ascore"):
-        return _run_coroutine(scorer.ascore(**kwargs))
+        return await _resolve_awaitable_async(scorer.ascore(**kwargs))
     if hasattr(scorer, "single_turn_ascore"):
         sample = _import_single_turn_sample()(**kwargs)
-        return _run_coroutine(scorer.single_turn_ascore(sample))
+        return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
+    if hasattr(scorer, "score"):
+        result = await anyio.to_thread.run_sync(lambda: scorer.score(**kwargs))
+        return await _resolve_awaitable_async(result)
     raise TypeError("Ragas AnswerRelevancy scorer does not expose score/ascore methods.")
 
 
 def _score_id_context_recall_with_ragas(
+    scorer: Any,
+    *,
+    retrieved_context_ids: list[str],
+    reference_context_ids: list[str],
+) -> Any:
+    return _run_coroutine(
+        _score_id_context_recall_with_ragas_async(
+            scorer,
+            retrieved_context_ids=retrieved_context_ids,
+            reference_context_ids=reference_context_ids,
+        )
+    )
+
+
+async def _score_id_context_recall_with_ragas_async(
     scorer: Any,
     *,
     retrieved_context_ids: list[str],
@@ -441,9 +540,10 @@ def _score_id_context_recall_with_ragas(
         }
     )
     if hasattr(scorer, "single_turn_ascore"):
-        return _resolve_awaitable(scorer.single_turn_ascore(sample))
+        return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
-        return _resolve_awaitable(scorer.score(sample))
+        result = await anyio.to_thread.run_sync(lambda: scorer.score(sample))
+        return await _resolve_awaitable_async(result)
     raise TypeError("Ragas IDBasedContextRecall scorer does not expose single_turn_ascore/score methods.")
 
 
@@ -549,10 +649,10 @@ def _import_id_based_context_recall_metric() -> Any:
     _install_ragas_langchain_community_compat()
     try:
         return getattr(importlib.import_module("ragas.metrics.collections"), "IDBasedContextRecall")
-    except ImportError as collections_exc:
+    except (AttributeError, ImportError) as collections_exc:
         try:
             return getattr(importlib.import_module("ragas.metrics._context_recall"), "IDBasedContextRecall")
-        except ImportError:
+        except (AttributeError, ImportError):
             try:
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
@@ -561,7 +661,7 @@ def _import_id_based_context_recall_metric() -> Any:
                         category=DeprecationWarning,
                     )
                     return getattr(importlib.import_module("ragas.metrics"), "IDBasedContextRecall")
-            except ImportError:
+            except (AttributeError, ImportError):
                 raise SystemExit(
                     "Ragas IDBasedContextRecall metric is not installed; run `uv sync --extra dev`."
                 ) from collections_exc
@@ -653,6 +753,28 @@ def _has_scoreable_id_context_fields(row: Mapping[str, Any]) -> bool:
     return bool(_clean_context_ids(row.get("retrieved_context_ids") or [])) and bool(
         _clean_context_ids(row.get("reference_context_ids") or [])
     )
+
+
+async def _map_rows_bounded(
+    rows: Sequence[Mapping[str, Any]],
+    evaluator: Any,
+    *,
+    concurrency: int,
+) -> list[dict[str, Any]]:
+    if concurrency < 1:
+        raise ValueError("Ragas concurrency must be at least 1.")
+    if not rows:
+        return []
+
+    semaphore = asyncio.Semaphore(concurrency)
+    results: list[dict[str, Any] | None] = [None] * len(rows)
+
+    async def run_one(index: int, row: Mapping[str, Any]) -> None:
+        async with semaphore:
+            results[index] = await evaluator(row)
+
+    await asyncio.gather(*(run_one(index, row) for index, row in enumerate(rows)))
+    return [dict(result) for result in results if result is not None]
 
 
 def _document_metadata(document: Any) -> Mapping[str, Any]:
@@ -749,6 +871,12 @@ def _resolve_awaitable(result: Any) -> Any:
     return result
 
 
+async def _resolve_awaitable_async(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 def _run_coroutine(awaitable: Any) -> Any:
     try:
         loop = asyncio.get_running_loop()
@@ -758,7 +886,7 @@ def _run_coroutine(awaitable: Any) -> Any:
         return loop.run_until_complete(awaitable)
     if hasattr(awaitable, "close"):
         awaitable.close()
-    raise RuntimeError("Cannot synchronously resolve a Ragas awaitable inside a running event loop.")
+    raise RuntimeError("Cannot synchronously resolve a Ragas awaitable inside a running event loop; use the async variant.")
 
 
 async def _await_result(awaitable: Any) -> Any:

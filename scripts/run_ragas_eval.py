@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib
+import inspect
 import json
 import sys
 import types
@@ -9,6 +11,8 @@ import warnings
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
+
+import anyio
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -20,14 +24,15 @@ if str(SRC_DIR) not in sys.path:
 
 from run_phoenix_eval import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, run_target
 from imperial_rag.ragas_eval import (
+    DEFAULT_RAGAS_CONCURRENCY,
     DEFAULT_RAGAS_METRICS,
     REFERENCE_REQUIRED_RAGAS_METRICS,
     SUPPORTED_RAGAS_METRICS,
     answer_relevancy_row_from_run_output,
     evaluation_dataset_from_rows,
-    evaluate_answer_relevancy_rows,
-    evaluate_id_context_recall_rows,
-    evaluate_faithfulness_rows,
+    evaluate_answer_relevancy_rows_async,
+    evaluate_id_context_recall_rows_async,
+    evaluate_faithfulness_rows_async,
     parse_ragas_metric_names,
     retrieved_context_ids_from_output,
     retrieved_contexts_from_output,
@@ -36,6 +41,7 @@ from imperial_rag.ragas_eval import (
 
 
 DEFAULT_METRICS = DEFAULT_RAGAS_METRICS
+DEFAULT_CONCURRENCY = DEFAULT_RAGAS_CONCURRENCY
 REFERENCE_REQUIRED_METRICS = REFERENCE_REQUIRED_RAGAS_METRICS
 SUPPORTED_METRICS = SUPPORTED_RAGAS_METRICS
 
@@ -99,6 +105,30 @@ def evaluate_ragas_rows(
     metric_names: list[str],
     evaluate_fn: Callable[..., Any] | None = None,
     evaluator_llm: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    batch_size: int | None = None,
+) -> Any:
+    return _run_async(
+        evaluate_ragas_rows_async(
+            rows,
+            metric_names,
+            evaluate_fn=evaluate_fn,
+            evaluator_llm=evaluator_llm,
+            concurrency=concurrency,
+            batch_size=batch_size,
+        )
+    )
+
+
+async def evaluate_ragas_rows_async(
+    rows: list[dict[str, Any]],
+    metric_names: list[str],
+    evaluate_fn: Callable[..., Any] | None = None,
+    evaluator_llm: Any | None = None,
+    *,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    batch_size: int | None = None,
 ) -> Any:
     validate_metric_requirements(metric_names, rows)
     sidecar_records: list[dict[str, Any]] | None = None
@@ -106,16 +136,16 @@ def evaluate_ragas_rows(
         name for name in metric_names if name not in {"faithfulness", "answer_relevancy", "id_context_recall"}
     ]
     if "faithfulness" in metric_names:
-        sidecar_records = evaluate_faithfulness_rows(rows)
+        sidecar_records = await evaluate_faithfulness_rows_async(rows, concurrency=concurrency)
     if "answer_relevancy" in metric_names:
-        answer_relevancy_records = evaluate_answer_relevancy_rows(rows)
+        answer_relevancy_records = await evaluate_answer_relevancy_rows_async(rows, concurrency=concurrency)
         sidecar_records = (
             _merge_records_by_position(sidecar_records, answer_relevancy_records)
             if sidecar_records is not None
             else answer_relevancy_records
         )
     if "id_context_recall" in metric_names:
-        id_context_recall_records = evaluate_id_context_recall_rows(rows)
+        id_context_recall_records = await evaluate_id_context_recall_rows_async(rows, concurrency=concurrency)
         sidecar_records = (
             _merge_records_by_position(sidecar_records, id_context_recall_records)
             if sidecar_records is not None
@@ -127,8 +157,11 @@ def evaluate_ragas_rows(
     evaluator_llm = evaluator_llm or build_evaluator_llm()
     dataset = build_ragas_dataset(rows)
     metrics = build_ragas_metrics(reference_metric_names, evaluator_llm)
-    resolved_evaluate = evaluate_fn or _import_ragas_evaluate()
-    reference_result = resolved_evaluate(dataset=dataset, metrics=metrics)
+    resolved_evaluate = evaluate_fn or _import_ragas_aevaluate()
+    evaluate_kwargs: dict[str, Any] = {"dataset": dataset, "metrics": metrics}
+    if batch_size is not None:
+        evaluate_kwargs["batch_size"] = batch_size
+    reference_result = await _resolve_awaitable(resolved_evaluate(**evaluate_kwargs))
     reference_records = _merge_records_by_position(_row_metadata_records(rows), result_records(reference_result))
     if sidecar_records is not None:
         return _merge_records_by_position(sidecar_records, reference_records)
@@ -212,6 +245,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--metrics", default=",".join(DEFAULT_METRICS))
     parser.add_argument("--output-path", type=Path)
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help="Maximum concurrent Ragas sidecar metric rows.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Optional batch size passed to ragas.aevaluate for reference metrics.",
+    )
     args = parser.parse_args(argv)
 
     _load_project_env(args.workspace_root)
@@ -225,7 +269,12 @@ def main(argv: list[str] | None = None) -> None:
         if not prepared.rows:
             raise SystemExit("No supported Ragas rows were prepared from the eval examples.")
 
-        result = evaluate_ragas_rows(prepared.rows, metric_names)
+        result = evaluate_ragas_rows(
+            prepared.rows,
+            metric_names,
+            concurrency=args.concurrency,
+            batch_size=args.batch_size,
+        )
         records = result_records(result)
         if args.output_path:
             write_jsonl(args.output_path, records)
@@ -347,6 +396,15 @@ def _import_ragas_evaluate() -> Callable[..., Any]:
     return evaluate
 
 
+def _import_ragas_aevaluate() -> Callable[..., Any]:
+    _install_ragas_langchain_community_compat()
+    try:
+        from ragas import aevaluate
+    except ImportError as exc:
+        raise SystemExit("Ragas async evaluation is not installed; run `uv sync --extra dev`.") from exc
+    return aevaluate
+
+
 def _install_ragas_langchain_community_compat() -> None:
     module_name = "langchain_community.chat_models.vertexai"
     try:
@@ -376,6 +434,26 @@ def _ensure_src_on_path() -> None:
     src = root / "src"
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
+
+
+def _run_async(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return anyio.run(_await_result, awaitable)
+    if hasattr(awaitable, "close"):
+        awaitable.close()
+    raise RuntimeError("Cannot synchronously run async Ragas evaluation inside a running event loop.")
+
+
+async def _resolve_awaitable(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+async def _await_result(awaitable: Any) -> Any:
+    return await awaitable
 
 
 if __name__ == "__main__":

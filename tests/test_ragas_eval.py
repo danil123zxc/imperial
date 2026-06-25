@@ -465,6 +465,68 @@ def test_run_coroutine_rejects_sync_bridge_inside_running_loop():
     asyncio.run(runner())
 
 
+def test_ragas_runner_sync_wrapper_rejects_running_loop():
+    module = _load_ragas_runner()
+
+    async def runner():
+        with pytest.raises(RuntimeError, match="running event loop"):
+            module.evaluate_ragas_rows([], ["faithfulness"])
+
+    asyncio.run(runner())
+
+
+def test_async_faithfulness_row_awaits_scorer_inside_running_loop(monkeypatch):
+    from imperial_rag import ragas_eval
+
+    monkeypatch.setattr(ragas_eval, "_run_coroutine", lambda awaitable: pytest.fail("sync bridge used"))
+
+    class FakeResult:
+        value = 0.6
+        reason = "supported asynchronously"
+
+    class FakeScorer:
+        async def ascore(self, **kwargs):
+            return FakeResult()
+
+    async def runner():
+        return await ragas_eval.score_faithfulness_row_async(
+            {"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]},
+            scorer=FakeScorer(),
+        )
+
+    assert asyncio.run(runner()) == {
+        "score": 0.6,
+        "label": "faithfulness",
+        "explanation": "supported asynchronously",
+        "metadata": {"metric": "ragas_faithfulness", "retrieved_context_count": 1},
+    }
+
+
+def test_async_answer_relevancy_rows_preserve_order_under_concurrency():
+    from imperial_rag import ragas_eval
+
+    class FakeScorer:
+        async def ascore(self, **kwargs):
+            if kwargs["user_input"] == "slow":
+                await asyncio.sleep(0.01)
+            return SimpleNamespace(value=1.0 if kwargs["user_input"] == "slow" else 0.5)
+
+    async def runner():
+        return await ragas_eval.evaluate_answer_relevancy_rows_async(
+            [
+                {"user_input": "slow", "response": "a"},
+                {"user_input": "fast", "response": "b"},
+            ],
+            scorer=FakeScorer(),
+            concurrency=2,
+        )
+
+    records = asyncio.run(runner())
+
+    assert [record["user_input"] for record in records] == ["slow", "fast"]
+    assert [record["answer_relevancy"] for record in records] == [1.0, 0.5]
+
+
 def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
     module = _load_ragas_runner()
     examples = [
@@ -561,34 +623,35 @@ def test_evaluate_ragas_rows_delegates_default_faithfulness_to_shared_helper(mon
     module = _load_ragas_runner()
     captured: dict[str, object] = {}
 
-    def fake_evaluate_faithfulness_rows(rows):
+    async def fake_evaluate_faithfulness_rows_async(rows, *, concurrency):
         captured["rows"] = rows
+        captured["concurrency"] = concurrency
         return [{"faithfulness": 1.0}]
 
     rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]}]
-    monkeypatch.setattr(module, "evaluate_faithfulness_rows", fake_evaluate_faithfulness_rows)
+    monkeypatch.setattr(module, "evaluate_faithfulness_rows_async", fake_evaluate_faithfulness_rows_async)
 
-    result = module.evaluate_ragas_rows(rows, ["faithfulness"])
+    result = module.evaluate_ragas_rows(rows, ["faithfulness"], concurrency=2)
 
     assert result == [{"faithfulness": 1.0}]
-    assert captured == {"rows": rows}
+    assert captured == {"rows": rows, "concurrency": 2}
 
 
 def test_evaluate_ragas_rows_merges_faithfulness_and_answer_relevancy(monkeypatch):
     module = _load_ragas_runner()
     captured: dict[str, object] = {}
 
-    def fake_evaluate_faithfulness_rows(rows):
+    async def fake_evaluate_faithfulness_rows_async(rows, *, concurrency):
         captured["faithfulness_rows"] = rows
         return [{"user_input": "q", "faithfulness": 1.0}]
 
-    def fake_evaluate_answer_relevancy_rows(rows):
+    async def fake_evaluate_answer_relevancy_rows_async(rows, *, concurrency):
         captured["answer_rows"] = rows
         return [{"user_input": "q", "answer_relevancy": 0.8}]
 
     rows = [{"user_input": "q", "response": "a", "retrieved_contexts": ["ctx"]}]
-    monkeypatch.setattr(module, "evaluate_faithfulness_rows", fake_evaluate_faithfulness_rows)
-    monkeypatch.setattr(module, "evaluate_answer_relevancy_rows", fake_evaluate_answer_relevancy_rows)
+    monkeypatch.setattr(module, "evaluate_faithfulness_rows_async", fake_evaluate_faithfulness_rows_async)
+    monkeypatch.setattr(module, "evaluate_answer_relevancy_rows_async", fake_evaluate_answer_relevancy_rows_async)
 
     result = module.evaluate_ragas_rows(rows, ["faithfulness", "answer_relevancy"])
 
@@ -600,11 +663,11 @@ def test_evaluate_ragas_rows_merges_id_context_recall_without_llm(monkeypatch):
     module = _load_ragas_runner()
     captured: dict[str, object] = {}
 
-    def fake_evaluate_id_context_recall_rows(rows):
+    async def fake_evaluate_id_context_recall_rows_async(rows, *, concurrency):
         captured["rows"] = rows
         return [{"user_input": "q", "id_context_recall": 0.5}]
 
-    monkeypatch.setattr(module, "evaluate_id_context_recall_rows", fake_evaluate_id_context_recall_rows)
+    monkeypatch.setattr(module, "evaluate_id_context_recall_rows_async", fake_evaluate_id_context_recall_rows_async)
     monkeypatch.setattr(module, "build_evaluator_llm", lambda: pytest.fail("ID recall should not build an evaluator LLM"))
 
     rows = [{"user_input": "q", "retrieved_context_ids": ["file-a"], "reference_context_ids": ["file-b"]}]
@@ -652,6 +715,33 @@ def test_evaluate_ragas_rows_keeps_reference_metric_path(monkeypatch):
             "dataset": {"dataset": rows},
             "metrics": ["metric:context_recall"],
         },
+    }
+
+
+def test_evaluate_ragas_rows_uses_async_ragas_reference_path_by_default(monkeypatch):
+    module = _load_ragas_runner()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(module, "build_ragas_dataset", lambda rows: {"dataset": rows})
+    monkeypatch.setattr(module, "build_evaluator_llm", lambda: "ragas-llm")
+    monkeypatch.setattr(module, "build_ragas_metrics", lambda names, evaluator_llm: [f"metric:{name}" for name in names])
+
+    async def fake_aevaluate(**kwargs):
+        captured["aevaluate_kwargs"] = kwargs
+        return {"scores": [{"context_recall": 0.75}]}
+
+    monkeypatch.setattr(module, "_import_ragas_aevaluate", lambda: fake_aevaluate)
+
+    rows = [{"id": "imperial-cite-001", "user_input": "q", "response": "a", "reference": "ref"}]
+    result = module.evaluate_ragas_rows(rows, ["context_recall"], batch_size=3)
+
+    assert result == [{"id": "imperial-cite-001", "context_recall": 0.75}]
+    assert captured == {
+        "aevaluate_kwargs": {
+            "dataset": {"dataset": rows},
+            "metrics": ["metric:context_recall"],
+            "batch_size": 3,
+        }
     }
 
 
