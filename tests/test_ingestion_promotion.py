@@ -14,6 +14,29 @@ def _write_chunks(path: Path, rows: list[dict]) -> None:
     _write_jsonl(path, [{"page_content": row.get("page_content", "text"), "metadata": row["metadata"]} for row in rows])
 
 
+def _write_lineage(
+    path: Path,
+    *,
+    keyword_index: str = "keyword-shadow",
+    qdrant_collection: str = "qdrant-shadow",
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "ingest_run_id": "ingest-test",
+                "corpus_version": "corpus_sha256:test",
+                "index_version": "index_sha256:test",
+                "keyword_index": keyword_index,
+                "qdrant_collection": qdrant_collection,
+                "embedding_model": "text-embedding-v4:2048",
+                "keyword_indexed": True,
+                "vector_indexed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_check_promotion_gates_accepts_improved_shadow(tmp_path):
     baseline = tmp_path / "baseline"
     shadow = tmp_path / "shadow"
@@ -68,14 +91,80 @@ def test_check_promotion_gates_accepts_improved_shadow(tmp_path):
         ),
         encoding="utf-8",
     )
+    _write_lineage(shadow / "index-lineage.json")
     questions = tmp_path / "questions.jsonl"
     _write_jsonl(questions, [{"id": "q1", "reference_context_ids": ["file-a"]}])
 
-    result = check_promotion_gates(baseline, shadow, questions_path=questions)
+    result = check_promotion_gates(
+        baseline,
+        shadow,
+        questions_path=questions,
+        expected_keyword_index="keyword-shadow",
+        expected_qdrant_collection="qdrant-shadow",
+    )
 
     assert isinstance(result, PromotionGateResult)
     assert result.passed is True
     assert result.errors == []
+    assert result.summary["shadow_index_version"] == "index_sha256:test"
+
+
+def test_check_promotion_gates_rejects_missing_shadow_lineage(tmp_path):
+    baseline = tmp_path / "baseline"
+    shadow = tmp_path / "shadow"
+    baseline.mkdir()
+    shadow.mkdir()
+    _write_jsonl(baseline / "corpus-ledger.jsonl", [{"file_id": "file-a", "status": "indexed", "chunk_count": 1}])
+    _write_jsonl(
+        shadow / "corpus-ledger.jsonl",
+        [{"file_id": "file-a", "status": "indexed", "chunk_count": 1, "locator_coverage": 1.0}],
+    )
+    _write_chunks(baseline / "chunks.jsonl", [{"metadata": {"file_id": "file-a", "chunk_id": "old-1"}}])
+    _write_chunks(shadow / "chunks.jsonl", [{"metadata": {"file_id": "file-a", "chunk_id": "new-1"}}])
+    (shadow / "old-to-new-id-map.json").write_text(
+        json.dumps({"rows": [{"file_id": "file-a", "old_chunk_id": "old-1", "new_chunk_id": "new-1"}]}),
+        encoding="utf-8",
+    )
+    questions = tmp_path / "questions.jsonl"
+    _write_jsonl(questions, [])
+
+    result = check_promotion_gates(baseline, shadow, questions_path=questions)
+
+    assert result.passed is False
+    assert any("required artifact missing" in error and "index-lineage.json" in error for error in result.errors)
+
+
+def test_check_promotion_gates_rejects_unexpected_shadow_lineage_targets(tmp_path):
+    baseline = tmp_path / "baseline"
+    shadow = tmp_path / "shadow"
+    baseline.mkdir()
+    shadow.mkdir()
+    _write_jsonl(baseline / "corpus-ledger.jsonl", [{"file_id": "file-a", "status": "indexed", "chunk_count": 1}])
+    _write_jsonl(
+        shadow / "corpus-ledger.jsonl",
+        [{"file_id": "file-a", "status": "indexed", "chunk_count": 1, "locator_coverage": 1.0}],
+    )
+    _write_chunks(baseline / "chunks.jsonl", [{"metadata": {"file_id": "file-a", "chunk_id": "old-1"}}])
+    _write_chunks(shadow / "chunks.jsonl", [{"metadata": {"file_id": "file-a", "chunk_id": "new-1"}}])
+    (shadow / "old-to-new-id-map.json").write_text(
+        json.dumps({"rows": [{"file_id": "file-a", "old_chunk_id": "old-1", "new_chunk_id": "new-1"}]}),
+        encoding="utf-8",
+    )
+    _write_lineage(shadow / "index-lineage.json", keyword_index="wrong-keyword", qdrant_collection="wrong-qdrant")
+    questions = tmp_path / "questions.jsonl"
+    _write_jsonl(questions, [])
+
+    result = check_promotion_gates(
+        baseline,
+        shadow,
+        questions_path=questions,
+        expected_keyword_index="keyword-shadow",
+        expected_qdrant_collection="qdrant-shadow",
+    )
+
+    assert result.passed is False
+    assert "shadow lineage keyword index mismatch: wrong-keyword != keyword-shadow" in result.errors
+    assert "shadow lineage Qdrant collection mismatch: wrong-qdrant != qdrant-shadow" in result.errors
 
 
 def test_check_promotion_gates_rejects_missing_gold_reference_id(tmp_path):
@@ -182,6 +271,7 @@ def test_check_promotion_gates_accepts_reviewed_drop(tmp_path):
         ),
         encoding="utf-8",
     )
+    _write_lineage(shadow / "index-lineage.json")
     questions = tmp_path / "questions.jsonl"
     _write_jsonl(questions, [])
 

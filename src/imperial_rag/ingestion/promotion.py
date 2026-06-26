@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 @dataclass(frozen=True)
 class PromotionGateResult:
     passed: bool
     errors: list[str]
-    summary: dict[str, int | float]
+    summary: dict[str, Any]
 
 
 def check_promotion_gates(
@@ -19,6 +19,8 @@ def check_promotion_gates(
     *,
     questions_path: Path,
     min_locator_coverage: float = 0.95,
+    expected_keyword_index: str | None = None,
+    expected_qdrant_collection: str | None = None,
 ) -> PromotionGateResult:
     errors: list[str] = []
     if baseline_root.resolve() == shadow_root.resolve():
@@ -28,8 +30,15 @@ def check_promotion_gates(
     shadow_rows = _read_jsonl_required(shadow_root / "corpus-ledger.jsonl", errors)
     baseline_chunks = _read_jsonl_required(baseline_root / "chunks.jsonl", errors)
     id_map = _read_json_required(shadow_root / "old-to-new-id-map.json", errors)
+    shadow_lineage = _read_json_required(shadow_root / "index-lineage.json", errors)
     reviewed_drops = _read_optional_json(shadow_root / "reviewed-drops.json", default={"rows": []})
     questions = _read_jsonl_required(questions_path, errors)
+    _check_shadow_lineage(
+        shadow_lineage,
+        errors,
+        expected_keyword_index=expected_keyword_index,
+        expected_qdrant_collection=expected_qdrant_collection,
+    )
 
     baseline_ids = {str(row.get("file_id")) for row in baseline_rows if row.get("file_id") is not None}
     shadow_ids = {str(row.get("file_id")) for row in shadow_rows if row.get("file_id") is not None}
@@ -92,8 +101,39 @@ def check_promotion_gates(
         "mapped_old_chunk_ids": len(mapped_old_chunk_ids),
         "reviewed_drop_chunk_ids": len(reviewed_drop_chunk_ids),
         "unmapped_old_chunk_ids": len(unmapped_old_chunk_ids),
+        "shadow_index_version": shadow_lineage.get("index_version"),
+        "shadow_keyword_index": shadow_lineage.get("keyword_index"),
+        "shadow_qdrant_collection": shadow_lineage.get("qdrant_collection"),
     }
     return PromotionGateResult(passed=not errors, errors=errors, summary=summary)
+
+
+def _check_shadow_lineage(
+    lineage: dict,
+    errors: list[str],
+    *,
+    expected_keyword_index: str | None,
+    expected_qdrant_collection: str | None,
+) -> None:
+    if not lineage:
+        return
+    for field in ("ingest_run_id", "corpus_version", "index_version", "keyword_index"):
+        if not str(lineage.get(field) or "").strip():
+            errors.append(f"shadow lineage missing field: {field}")
+    if lineage.get("keyword_indexed") is not True:
+        errors.append("shadow lineage was not keyword indexed")
+    if expected_keyword_index is not None and str(lineage.get("keyword_index") or "") != expected_keyword_index:
+        errors.append(
+            f"shadow lineage keyword index mismatch: {lineage.get('keyword_index')} != {expected_keyword_index}"
+        )
+    if expected_qdrant_collection is not None:
+        if lineage.get("vector_indexed") is not True:
+            errors.append("shadow lineage was not vector indexed")
+        if str(lineage.get("qdrant_collection") or "") != expected_qdrant_collection:
+            errors.append(
+                "shadow lineage Qdrant collection mismatch: "
+                f"{lineage.get('qdrant_collection')} != {expected_qdrant_collection}"
+            )
 
 
 def _read_jsonl(path: Path) -> list[dict]:
