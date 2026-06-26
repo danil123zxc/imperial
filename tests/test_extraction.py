@@ -78,6 +78,46 @@ def test_docx_text_and_table_extract_to_langchain_documents_with_citation_metada
         assert document.metadata["inferred_category"] == record.inferred_category
 
 
+def test_docx_preserves_section_and_table_source_locators(tmp_path):
+    path = tmp_path / "structured-policy.docx"
+    docx = DocxDocument()
+    docx.add_heading("Возврат брака", level=1)
+    docx.add_paragraph("Акт оформляется до передачи на склад.")
+    table = docx.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Поле"
+    table.cell(0, 1).text = "Значение"
+    table.cell(1, 0).text = "Ответственный"
+    table.cell(1, 1).text = "Склад"
+    docx.add_heading("Отгрузка", level=1)
+    docx.add_paragraph("Водитель получает маршрутный лист.")
+    docx.save(path)
+    record = _record_for(path)
+
+    result = extract_file(record)
+
+    assert result.status == FileStatus.INDEXED
+    assert [document.metadata["source_type"] for document in result.documents] == ["body", "table", "body"]
+    first_body, table_doc, second_body = result.documents
+    assert first_body.metadata["section_heading"] == "Возврат брака"
+    assert first_body.metadata["source_locator"] == "section:1:возврат-брака"
+    assert first_body.metadata["source_doc_id"].startswith(f"{record.file_id}:body:section:1")
+    assert first_body.metadata["element_id"]
+    assert first_body.metadata["element_hash"]
+    assert "Возврат брака" in first_body.page_content
+    assert "Акт оформляется" in first_body.page_content
+
+    assert table_doc.metadata["section_heading"] == "Возврат брака"
+    assert table_doc.metadata["table_index"] == 1
+    assert table_doc.metadata["row_start"] == 1
+    assert table_doc.metadata["row_end"] == 2
+    assert table_doc.metadata["source_locator"] == "section:1:возврат-брака:table:1:rows:1-2"
+    assert "Ответственный | Склад" in table_doc.page_content
+
+    assert second_body.metadata["section_heading"] == "Отгрузка"
+    assert second_body.metadata["source_locator"] == "section:2:отгрузка"
+    assert "Водитель получает маршрутный лист." in second_body.page_content
+
+
 def test_docx_without_text_is_no_text(tmp_path):
     path = tmp_path / "empty.docx"
     DocxDocument().save(path)
@@ -172,6 +212,23 @@ def test_standalone_image_without_ocr_text_is_no_text(tmp_path):
     assert result.status == FileStatus.NO_TEXT
     assert result.documents == []
     assert result.extraction_method == "image_ocr"
+    assert "OCR returned empty text for image" in result.message
+
+
+def test_pdf_records_ocr_empty_pages_after_ocr_attempt(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    path = tmp_path / "blank-scan.pdf"
+    pdf = fitz.open()
+    pdf.new_page()
+    pdf.save(path)
+    record = _record_for(path)
+
+    result = extract_file(record, ocr_client=EmptyOcrClient(), artifact_root=tmp_path / "artifacts")
+
+    assert result.status == FileStatus.NO_TEXT
+    assert result.documents == []
+    assert result.extraction_method == "pymupdf"
+    assert "OCR returned empty text for page 1" in result.message
 
 
 def test_pdf_extracts_native_text_and_ocrs_image_only_pages(tmp_path):

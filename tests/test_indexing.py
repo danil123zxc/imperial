@@ -12,6 +12,7 @@ from imperial_rag.indexing import (
     create_qdrant_vector_store,
     index_documents,
     index_vector_documents,
+    reset_qdrant_collection,
     stable_chunk_id,
 )
 
@@ -175,3 +176,53 @@ def test_create_qdrant_vector_store_rejects_mismatched_vector_metadata(monkeypat
 
     with pytest.raises(VectorProviderMismatchError):
         create_qdrant_vector_store(settings)
+
+
+def test_reset_qdrant_collection_deletes_existing_collection(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, url):
+            calls.append(("init", url))
+
+        def collection_exists(self, collection_name):
+            calls.append(("exists", collection_name))
+            return True
+
+        def delete_collection(self, collection_name):
+            calls.append(("delete", collection_name))
+            return True
+
+    monkeypatch.setattr("imperial_rag.indexing.QdrantClient", FakeClient)
+    settings = Settings(workspace_root=tmp_path, qdrant_url="http://127.0.0.1:6333", qdrant_collection="shadow")
+
+    assert reset_qdrant_collection(settings) is True
+    assert calls == [
+        ("init", "http://127.0.0.1:6333"),
+        ("exists", "shadow"),
+        ("delete", "shadow"),
+    ]
+
+
+def test_reset_qdrant_collection_skips_missing_collection(monkeypatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, url):
+            calls.append(("init", url))
+
+        def collection_exists(self, collection_name):
+            calls.append(("exists", collection_name))
+            return False
+
+        def delete_collection(self, collection_name):
+            pytest.fail("delete_collection should not run for missing collections")
+
+    monkeypatch.setattr("imperial_rag.indexing.QdrantClient", FakeClient)
+    settings = Settings(workspace_root=tmp_path, qdrant_url="http://127.0.0.1:6333", qdrant_collection="shadow")
+
+    assert reset_qdrant_collection(settings) is False
+    assert calls == [
+        ("init", "http://127.0.0.1:6333"),
+        ("exists", "shadow"),
+    ]

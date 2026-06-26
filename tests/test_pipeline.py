@@ -392,6 +392,55 @@ def test_run_ingestion_writes_old_to_new_id_map(tmp_path, monkeypatch):
     assert id_map["rows"][0]["status"] == "mapped"
 
 
+def test_run_ingestion_writes_corpus_ledger_and_summary(tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "policy.txt").write_text("Регламент возврата брака.", encoding="utf-8")
+    _install_fake_dependencies(monkeypatch)
+
+    run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
+
+    ledger_path = tmp_path / ".imperial_rag" / "extracted" / "corpus-ledger.jsonl"
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert {
+        key: rows[0][key]
+        for key in (
+            "schema_version",
+            "file_id",
+            "relative_path",
+            "status",
+            "extraction_method",
+            "chunk_count",
+            "source_document_count",
+            "locator_coverage",
+            "required_metadata_coverage",
+            "duplicate_action",
+            "index_inclusion_reason",
+        )
+    } == {
+        "schema_version": "corpus-ledger-v1",
+        "file_id": "file1",
+        "relative_path": "policy.txt",
+        "status": "indexed",
+        "extraction_method": "fake",
+        "chunk_count": 1,
+        "source_document_count": 1,
+        "locator_coverage": 1.0,
+        "required_metadata_coverage": 1.0,
+        "duplicate_action": "unique",
+        "index_inclusion_reason": "indexable",
+    }
+
+    summary_path = tmp_path / ".imperial_rag" / "extracted" / "corpus-ledger-summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["schema_version"] == "corpus-ledger-summary-v1"
+    assert summary["total_files"] == 1
+    assert summary["status_counts"] == {"indexed": 1}
+    assert summary["chunk_count"] == 1
+    assert summary["locator_coverage"] == 1.0
+
+
 def test_run_ingestion_can_write_shadow_artifacts_without_mutating_canonical_root(tmp_path, monkeypatch):
     canonical = tmp_path / ".imperial_rag" / "extracted"
     canonical.mkdir(parents=True)
@@ -412,6 +461,8 @@ def test_run_ingestion_can_write_shadow_artifacts_without_mutating_canonical_roo
     assert "canonical" in (canonical / "chunks.jsonl").read_text(encoding="utf-8")
     assert (shadow / "chunks.jsonl").exists()
     assert (shadow / "old-to-new-id-map.json").exists()
+    assert FakeManifestStore.last is not None
+    assert FakeManifestStore.last.db_path == shadow / "manifest.sqlite3"
 
 
 def _capture_pipeline_spans(monkeypatch, pipeline_module):
@@ -523,7 +574,13 @@ def _install_fake_dependencies(
 
     chunk = SimpleNamespace(
         page_content=document.page_content,
-        metadata={**document.metadata, "chunk_id": "file1:body:0"},
+        metadata={
+            **document.metadata,
+            "chunk_id": "file1:body:0",
+            "citation_id": "policy.txt#body:body-1:start-0:chunk-0",
+            "source_locator": "body:1",
+            "body_start_index": 0,
+        },
     )
     chunking = _fake_module("imperial_rag.chunking")
 

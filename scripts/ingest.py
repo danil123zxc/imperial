@@ -30,13 +30,30 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         help="Read old chunks for old-to-new ID mapping from this immutable baseline artifact root.",
     )
+    parser.add_argument(
+        "--manifest-db-path",
+        type=Path,
+        help="Write manifest state to this SQLite path instead of the canonical .imperial_rag/manifest.sqlite3.",
+    )
+    parser.add_argument(
+        "--recreate-qdrant-collection",
+        action="store_true",
+        help="Delete the target Qdrant collection before vector indexing to avoid stale points.",
+    )
     parser.add_argument("--trace-phoenix", action="store_true", help="Send this run's traces to configured Phoenix.")
     parser.add_argument("--trace-session-id", help="Phoenix session.id for grouping traces.")
     args = parser.parse_args(argv)
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
-    settings = _settings_with_shadow_targets(settings, args.index_suffix, args.artifact_root, args.baseline_artifact_root)
+    settings = _settings_with_shadow_targets(
+        settings,
+        args.index_suffix,
+        args.artifact_root,
+        args.baseline_artifact_root,
+        args.manifest_db_path,
+        args.recreate_qdrant_collection,
+    )
     _configure_observability(settings)
     _configure_tracing(settings, args.trace_phoenix)
     trace_session_id = _trace_session_id(args.trace_session_id)
@@ -193,6 +210,10 @@ def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
 
     from imperial_rag.indexing import create_qdrant_vector_store
 
+    if getattr(settings, "recreate_qdrant_collection", False):
+        from imperial_rag.indexing import reset_qdrant_collection
+
+        reset_qdrant_collection(settings)
     return create_qdrant_vector_store(settings)
 
 
@@ -213,25 +234,34 @@ def _settings_with_shadow_targets(
     suffix: str | None,
     artifact_root: Path | None,
     baseline_artifact_root: Path | None,
+    manifest_db_path: Path | None = None,
+    recreate_qdrant_collection: bool = False,
 ) -> Any:
     updates: dict[str, Any] = {}
     if suffix is not None and suffix.strip():
         clean = suffix.strip().replace(" ", "_")
         updates["elasticsearch_index"] = f"{settings.elasticsearch_index}_{clean}"
         updates["qdrant_collection"] = f"{settings.qdrant_collection}_{clean}"
+        updates["recreate_qdrant_collection"] = True
     if artifact_root is not None:
-        updates["extraction_root_override"] = _resolve_artifact_root(settings, artifact_root)
+        shadow_artifact_root = _resolve_workspace_path(settings, artifact_root)
+        updates["extraction_root_override"] = shadow_artifact_root
+        updates["manifest_db_path_override"] = shadow_artifact_root / "manifest.sqlite3"
     if baseline_artifact_root is not None:
-        updates["baseline_extraction_root"] = _resolve_artifact_root(settings, baseline_artifact_root)
+        updates["baseline_extraction_root"] = _resolve_workspace_path(settings, baseline_artifact_root)
+    if manifest_db_path is not None:
+        updates["manifest_db_path_override"] = _resolve_workspace_path(settings, manifest_db_path)
+    if recreate_qdrant_collection:
+        updates["recreate_qdrant_collection"] = True
     if not updates:
         return settings
     return replace(settings, **updates)
 
 
-def _resolve_artifact_root(settings: Any, artifact_root: Path) -> Path:
-    if artifact_root.is_absolute():
-        return artifact_root
-    return Path(settings.workspace_root) / artifact_root
+def _resolve_workspace_path(settings: Any, path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return Path(settings.workspace_root) / path
 
 
 def _load_project_env(workspace_root: Path | None) -> None:

@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import types
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +76,26 @@ def test_ingest_script_exposes_shadow_index_suffix_and_artifact_root_flags():
     assert "--index-suffix" in source
     assert "--artifact-root" in source
     assert "--baseline-artifact-root" in source
+    assert "--manifest-db-path" in source
+    assert "--recreate-qdrant-collection" in source
     assert "_settings_with_shadow_targets" in source
+
+
+def test_ingest_shadow_suffix_requests_qdrant_collection_recreate(tmp_path):
+    module = _load_script("scripts/ingest.py", "ingest_script_shadow_recreate")
+
+    @dataclass(frozen=True)
+    class FakeSettings:
+        workspace_root: Path
+        elasticsearch_index: str = "keyword"
+        qdrant_collection: str = "vectors"
+        recreate_qdrant_collection: bool = False
+
+    settings = module._settings_with_shadow_targets(FakeSettings(tmp_path), "migration v2", None, None)
+
+    assert settings.elasticsearch_index == "keyword_migration_v2"
+    assert settings.qdrant_collection == "vectors_migration_v2"
+    assert settings.recreate_qdrant_collection is True
 
 
 def test_event_log_setup_creates_templates_policies_and_streams():
@@ -426,6 +446,29 @@ def test_ingest_vector_store_builds_qdrant_after_dashscope_gate(monkeypatch):
 
     assert module._build_vector_store(settings, index_vectors=True) is vector_store
     assert created_with == [settings]
+
+
+def test_ingest_vector_store_resets_qdrant_when_requested(monkeypatch):
+    module = _load_script("scripts/ingest.py", "ingest_script_vector_reset")
+    providers = _fake_module("imperial_rag.providers")
+    providers.dashscope_configured = lambda: True
+    indexing = _fake_module("imperial_rag.indexing")
+    calls = []
+    vector_store = object()
+    indexing.reset_qdrant_collection = lambda settings: calls.append(("reset", settings)) or True
+    indexing.create_qdrant_vector_store = lambda settings: calls.append(("create", settings)) or vector_store
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.providers", providers)
+    monkeypatch.setitem(sys.modules, "imperial_rag.indexing", indexing)
+
+    settings = types.SimpleNamespace(
+        qdrant_url="http://localhost:6333",
+        qdrant_collection="test",
+        recreate_qdrant_collection=True,
+    )
+
+    assert module._build_vector_store(settings, index_vectors=True) is vector_store
+    assert calls == [("reset", settings), ("create", settings)]
 
 
 def test_ingest_vector_store_disabled_does_not_require_dashscope_key(monkeypatch):

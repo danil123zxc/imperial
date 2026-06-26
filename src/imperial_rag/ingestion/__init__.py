@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from imperial_rag.ingestion.chunking import build_chunks
 from imperial_rag.ingestion.extraction import ExtractionResult, SupportsOcr, extract_file
+from imperial_rag.ingestion.ledger import write_corpus_ledger
 from imperial_rag.ingestion.manifest import (
     FileRecord,
     FileStatus,
@@ -38,4 +39,5 @@ __all__ = [
     "run_ingestion",
     "scan_files",
     "stable_file_id",
+    "write_corpus_ledger",
 ]

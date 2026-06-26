@@ -72,6 +72,15 @@ def create_qdrant_vector_store(settings: Settings, embeddings: Embeddings | None
     )
 
 
+def reset_qdrant_collection(settings: Settings) -> bool:
+    client = QdrantClient(url=settings.qdrant_url)
+    collection_name = settings.qdrant_collection
+    if not client.collection_exists(collection_name):
+        return False
+    client.delete_collection(collection_name)
+    return True
+
+
 def embedding_model_identifier(provider_settings: QwenProviderSettings | None = None) -> str:
     resolved = provider_settings or QwenProviderSettings.from_env()
     dimensions = resolved.embedding_dimensions

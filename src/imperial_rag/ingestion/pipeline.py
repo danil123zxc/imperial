@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from imperial_rag.ingestion.ledger import write_corpus_ledger
 from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_lineage_attributes, trace_pipeline_step
 
 
@@ -122,7 +123,7 @@ def _run(
             scan_span.set_output(_scan_trace_output(records))
 
         with ExitStack() as resources:
-            manifest_store = resources.enter_context(deps["ManifestStore"](Path(settings.manifest_db_path)))
+            manifest_store = resources.enter_context(deps["ManifestStore"](_manifest_db_path(settings, extraction_root)))
             manifest_store.replace_records(records)
             ocr_cache = _build_ocr_cache(extraction_root) if ocr_client is not None else None
             if ocr_cache is not None:
@@ -132,6 +133,8 @@ def _run(
             status_by_file: dict[str, Any] = {}
             method_by_file: dict[str, str | None] = {}
             error_by_file: dict[str, str | None] = {}
+            source_document_count_by_file: dict[str, int] = {}
+            ocr_document_count_by_file: dict[str, int] = {}
 
             with trace_pipeline_step(
                 "ingest.extract_files",
@@ -156,6 +159,8 @@ def _run(
                         status_by_file[file_id] = deps["FileStatus"].FAILED
                         method_by_file[file_id] = _planned_extraction_method(record)
                         error_by_file[file_id] = str(exc)
+                        source_document_count_by_file[file_id] = 0
+                        ocr_document_count_by_file[file_id] = 0
                         manifest_store.update_status(
                             file_id=file_id,
                             status=deps["FileStatus"].FAILED,
@@ -169,6 +174,8 @@ def _run(
                     status_by_file[file_id] = result.status
                     method_by_file[file_id] = getattr(result, "extraction_method", None)
                     error_by_file[file_id] = getattr(result, "message", None) or None
+                    source_document_count_by_file[file_id] = len(documents)
+                    ocr_document_count_by_file[file_id] = _ocr_document_count(documents)
                     if documents:
                         _write_extracted_artifact(extraction_root, record, result)
                         extracted_documents.extend(documents)
@@ -306,6 +313,19 @@ def _run(
                 vector_indexed=vector_indexed,
                 extraction_root=str(extraction_root),
             )
+            write_corpus_ledger(
+                extraction_root,
+                records,
+                status_by_file=status_by_file,
+                method_by_file=method_by_file,
+                error_by_file=error_by_file,
+                source_document_count_by_file=source_document_count_by_file,
+                ocr_document_count_by_file=ocr_document_count_by_file,
+                chunks=chunks,
+                keyword_indexed=keyword_indexed,
+                vector_indexed=vector_indexed,
+                embedding_model=embedding_model if vector_indexed else None,
+            )
             index_version = _index_version(
                 corpus_version=corpus_version,
                 settings=settings,
@@ -371,6 +391,29 @@ def _load_dependencies() -> dict[str, Any]:
         "assign_duplicate_groups": assign_duplicate_groups,
         "scan_files": scan_files,
     }
+
+
+def _ocr_document_count(documents: list[Any]) -> int:
+    return sum(1 for document in documents if _has_metadata_value(document, "ocr_method"))
+
+
+def _has_metadata_value(document: Any, key: str) -> bool:
+    metadata = dict(getattr(document, "metadata", {}) or {})
+    value = metadata.get(key)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _manifest_db_path(settings: Any, extraction_root: Path) -> Path:
+    override = getattr(settings, "manifest_db_path_override", None)
+    if override is not None:
+        return Path(override)
+    if getattr(settings, "extraction_root_override", None) is not None:
+        return extraction_root / "manifest.sqlite3"
+    return Path(settings.manifest_db_path)
 
 
 def _scan_trace_output(records: list[Any]) -> dict[str, Any]:
@@ -603,6 +646,10 @@ def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
         return None
     from imperial_rag.indexing import create_qdrant_vector_store
 
+    if getattr(settings, "recreate_qdrant_collection", False):
+        from imperial_rag.indexing import reset_qdrant_collection
+
+        reset_qdrant_collection(settings)
     return create_qdrant_vector_store(settings)
 
 

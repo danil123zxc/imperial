@@ -104,6 +104,8 @@ class Settings:
     log_format: str = field(default_factory=_log_format_from_env)
     extraction_root_override: Path | None = None
     baseline_extraction_root: Path | None = None
+    manifest_db_path_override: Path | None = None
+    recreate_qdrant_collection: bool = False
 
     @property
     def documents_root(self) -> Path:
@@ -115,6 +117,10 @@ class Settings:
 
     @property
     def manifest_db_path(self) -> Path:
+        if self.manifest_db_path_override is not None:
+            return self.manifest_db_path_override
+        if self.extraction_root_override is not None:
+            return self.extraction_root / "manifest.sqlite3"
         return self.processed_root / "manifest.sqlite3"
 
     @property

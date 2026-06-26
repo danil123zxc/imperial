@@ -30,6 +30,7 @@ __all__ = [
     "make_qdrant_store",
     "qdrant_health",
     "qdrant_is_healthy",
+    "reset_qdrant_collection",
     "stable_chunk_id",
     "stable_chunk_ids",
 ]

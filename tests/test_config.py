@@ -59,6 +59,21 @@ def test_settings_allows_extraction_root_override(tmp_path):
 
     assert settings.processed_root == tmp_path / ".imperial_rag"
     assert settings.extraction_root == shadow_root
+    assert settings.manifest_db_path == shadow_root / "manifest.sqlite3"
+
+
+def test_settings_allows_explicit_manifest_db_override(tmp_path):
+    shadow_root = tmp_path / ".imperial_rag" / "extracted-shadow-v2"
+    manifest_path = tmp_path / ".imperial_rag" / "manifest-shadow-v2.sqlite3"
+
+    settings = Settings(
+        workspace_root=tmp_path,
+        extraction_root_override=shadow_root,
+        manifest_db_path_override=manifest_path,
+    )
+
+    assert settings.extraction_root == shadow_root
+    assert settings.manifest_db_path == manifest_path
 
 
 def test_load_project_env_reads_workspace_dotenv_without_overriding_exported_values(monkeypatch, tmp_path):
