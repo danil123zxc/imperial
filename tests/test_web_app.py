@@ -752,6 +752,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
 
     calls = []
     auth_db_path = tmp_path / "auth.sqlite3"
+    chat_history_db_path = tmp_path / "chat_history.sqlite3"
     store = AuthStore(auth_db_path)
     store.initialize()
     store.bootstrap_admin("admin@example.com", "admin-password")
@@ -764,6 +765,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
     class FakeSettings:
         def __init__(self):
             self.auth_db_path = auth_db_path
+            self.chat_history_db_path = chat_history_db_path
 
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings

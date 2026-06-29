@@ -83,7 +83,14 @@ def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):
     assert streamlit.session_state.chat_history_user_email == "user@example.com"
     assert streamlit.session_state.active_conversation_id == latest.id
     assert streamlit.session_state.phoenix_trace_session_id == "trace-new"
-    assert streamlit.session_state.messages == [{"role": "user", "content": "Latest question"}]
+    assert streamlit.session_state.messages == [
+        {"role": "user", "content": "Latest question"},
+        {
+            "role": "assistant",
+            "content": "The previous answer was not saved. Ask again to regenerate it.",
+            "error": {"type": "incomplete_assistant_turn"},
+        },
+    ]
     assert "Other user's private question" not in str(streamlit.session_state.messages)
 
 

@@ -16,6 +16,8 @@ PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
 AUTH_SESSION_EMAIL_KEY = "auth_user_email"
 CHAT_HISTORY_USER_KEY = "chat_history_user_email"
 ACTIVE_CONVERSATION_ID_KEY = "active_conversation_id"
+QUERY_FAILURE_TEXT = "Something went wrong while answering. Check local logs for details."
+INCOMPLETE_ANSWER_TEXT = "The previous answer was not saved. Ask again to regenerate it."
 FILE_PREVIEW_CHAR_LIMIT = 12_000
 FILE_DOWNLOAD_BYTE_LIMIT = 50 * 1024 * 1024
 _RUNTIME_CACHE_WRAPPER: Any | None = None
@@ -288,11 +290,26 @@ def main() -> None:
             session_id=phoenix_session_id,
             user_hash=user_hash,
         )
-        with st.chat_message("assistant"):
-            st.error("Something went wrong while answering. Check local logs for details.")
+        assistant_message = _build_query_failure_message(exc)
+        message_index = _persist_chat_message(
+            st,
+            chat_store,
+            current_user.email,
+            conversation.id,
+            assistant_message,
+        )
+        _render_chat_message(st, assistant_message, message_index, settings)
         return
     from imperial_rag.observability import log_event
 
+    assistant_message = _build_assistant_message(result, settings)
+    message_index = _persist_chat_message(
+        st,
+        chat_store,
+        current_user.email,
+        conversation.id,
+        assistant_message,
+    )
     log_event(
         "imperial_rag.web_query",
         operation="web_query",
@@ -304,16 +321,7 @@ def main() -> None:
         user_hash=user_hash,
         **_query_log_fields(result),
     )
-    assistant_message = _build_assistant_message(result, settings)
-    st.session_state.messages.append(assistant_message)
-    chat_store.add_message(
-        current_user.email,
-        conversation.id,
-        "assistant",
-        assistant_message["content"],
-        payload=_chat_message_payload(assistant_message),
-    )
-    _render_chat_message(st, assistant_message, len(st.session_state.messages) - 1, settings)
+    _render_chat_message(st, assistant_message, message_index, settings)
 
 
 def _prepare_auth_store(settings: Any) -> Any:
@@ -365,9 +373,7 @@ def _sync_chat_history_state(st: Any, chat_store: Any, user_email: str) -> None:
         if conversation is None:
             _start_new_chat_state(st, normalized_email)
             return
-        st.session_state.messages = [
-            message.to_chat_message() for message in chat_store.list_messages(normalized_email, conversation.id)
-        ]
+        st.session_state.messages = _chat_messages_from_history(chat_store, normalized_email, conversation.id)
         st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id or str(uuid.uuid4())
         return
 
@@ -412,9 +418,7 @@ def _load_conversation_state(st: Any, chat_store: Any, user_email: str, conversa
         return
     st.session_state[CHAT_HISTORY_USER_KEY] = conversation.user_email
     st.session_state[ACTIVE_CONVERSATION_ID_KEY] = conversation.id
-    st.session_state.messages = [
-        message.to_chat_message() for message in chat_store.list_messages(conversation.user_email, conversation.id)
-    ]
+    st.session_state.messages = _chat_messages_from_history(chat_store, conversation.user_email, conversation.id)
     st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id or str(uuid.uuid4())
 
 
@@ -566,6 +570,50 @@ def _build_assistant_message(result: dict[str, Any], settings: Any) -> dict[str,
         "retrieved_documents": _retrieved_documents_payload(evidence),
         "retrieval": _json_safe(result.get("retrieval") or {}),
     }
+
+
+def _build_query_failure_message(exc: Exception) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": QUERY_FAILURE_TEXT,
+        "error": {
+            "type": "web_query_error",
+            "exception_type": type(exc).__name__,
+        },
+    }
+
+
+def _build_incomplete_assistant_message() -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": INCOMPLETE_ANSWER_TEXT,
+        "error": {"type": "incomplete_assistant_turn"},
+    }
+
+
+def _chat_messages_from_history(chat_store: Any, user_email: str, conversation_id: str) -> list[dict[str, Any]]:
+    messages = [message.to_chat_message() for message in chat_store.list_messages(user_email, conversation_id)]
+    if messages and messages[-1].get("role") == "user":
+        return [*messages, _build_incomplete_assistant_message()]
+    return messages
+
+
+def _persist_chat_message(
+    st: Any,
+    chat_store: Any,
+    user_email: str,
+    conversation_id: str,
+    message: dict[str, Any],
+) -> int:
+    chat_store.add_message(
+        user_email,
+        conversation_id,
+        message["role"],
+        message["content"],
+        payload=_chat_message_payload(message),
+    )
+    st.session_state.messages.append(message)
+    return len(st.session_state.messages) - 1
 
 
 def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:
