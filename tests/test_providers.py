@@ -656,6 +656,57 @@ def test_qwen_ocr_client_calls_multimodal_conversation(tmp_path, monkeypatch):
     assert calls[0]["messages"][0]["role"] == "user"
 
 
+def test_build_qwen_ocr_message_can_include_text_prompt(tmp_path, monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    image_path = tmp_path / "scan.png"
+    image_path.write_bytes(b"fake-image")
+
+    from imperial_rag.integrations.dashscope import build_qwen_ocr_message, QwenProviderSettings
+
+    message = build_qwen_ocr_message(image_path, QwenProviderSettings.from_env(), include_text_prompt=True)
+
+    content = message["content"]
+    assert content[0]["image"].startswith("data:image/png;base64,")
+    assert content[1]["text"].startswith("Extract all visible Russian and English text")
+
+
+def test_qwen_ocr_client_uses_compatible_chat_for_qwen_vl_max(tmp_path, monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setenv("IMPERIAL_RAG_QWEN_VISION_MODEL", "qwen-vl-max")
+    monkeypatch.setenv("IMPERIAL_RAG_DASHSCOPE_COMPAT_BASE_URL", "https://example.test/compatible-mode/v1")
+    image_path = tmp_path / "scan.png"
+    image_path.write_bytes(b"fake-image")
+    calls = []
+
+    class FakeChatModel:
+        def invoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(content="Compatible vision OCR text")
+
+    class NativeConversationShouldNotBeUsed:
+        @staticmethod
+        def call(**kwargs):
+            raise AssertionError("native multimodal client should not be used for qwen-vl-max")
+
+    from imperial_rag.ingestion.ocr import OcrResult, QwenOcrClient
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
+
+    client = QwenOcrClient(
+        settings=QwenProviderSettings.from_env(),
+        conversation_client=NativeConversationShouldNotBeUsed,
+        compatible_chat_model=FakeChatModel(),
+    )
+    result = client.extract_image_text(image_path)
+
+    assert result == OcrResult(text="Compatible vision OCR text", method="dashscope-compatible:qwen-vl-max")
+    content = calls[0][0].content
+    assert content[0]["type"] == "text"
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def test_qwen_ocr_client_wraps_sdk_exception_without_secret(tmp_path, monkeypatch):
     clear_provider_env(monkeypatch)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-secret-key")

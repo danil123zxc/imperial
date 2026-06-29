@@ -17,18 +17,27 @@ class OcrResult:
 
 
 class QwenOcrClient:
-    def __init__(self, settings=None, conversation_client=None) -> None:
+    def __init__(self, settings=None, conversation_client=None, compatible_chat_model=None) -> None:
         from imperial_rag.integrations.dashscope import QwenProviderSettings
 
         self.settings = settings or QwenProviderSettings.from_env()
         self.api_key = self.settings.require_api_key()
-        if conversation_client is None:
+        self.use_ocr_options = _uses_qwen_ocr_options(self.settings.vision_model)
+        if conversation_client is None and self.use_ocr_options:
             import dashscope
 
             conversation_client = dashscope.MultiModalConversation
         self.conversation_client = conversation_client
+        if compatible_chat_model is None and not self.use_ocr_options:
+            compatible_chat_model = _build_compatible_chat_model(self.settings, self.api_key)
+        self.compatible_chat_model = compatible_chat_model
 
     def extract_image_text(self, image_path: Path) -> OcrResult:
+        if self.compatible_chat_model is not None:
+            return self._extract_image_text_with_compatible_chat(image_path)
+        return self._extract_image_text_with_native_ocr(image_path)
+
+    def _extract_image_text_with_native_ocr(self, image_path: Path) -> OcrResult:
         from imperial_rag.integrations.dashscope import (
             DashScopeProviderError,
             _sanitize_provider_message,
@@ -36,13 +45,15 @@ class QwenOcrClient:
             parse_qwen_ocr_response,
         )
 
+        kwargs = {
+            "api_key": self.api_key,
+            "model": self.settings.vision_model,
+            "messages": [build_qwen_ocr_message(image_path, self.settings)],
+        }
+        if self.use_ocr_options:
+            kwargs["ocr_options"] = {"task": self.settings.ocr_task}
         try:
-            response = self.conversation_client.call(
-                api_key=self.api_key,
-                model=self.settings.vision_model,
-                messages=[build_qwen_ocr_message(image_path, self.settings)],
-                ocr_options={"task": self.settings.ocr_task},
-            )
+            response = self.conversation_client.call(**kwargs)
         except Exception as exc:
             message = _sanitize_provider_message(str(exc), self.api_key)
             raise DashScopeProviderError(
@@ -52,6 +63,49 @@ class QwenOcrClient:
             text=parse_qwen_ocr_response(response, api_key=self.api_key),
             method=f"dashscope:{self.settings.vision_model}",
         )
+
+    def _extract_image_text_with_compatible_chat(self, image_path: Path) -> OcrResult:
+        from langchain_core.messages import HumanMessage
+
+        from imperial_rag.integrations.dashscope import (
+            DashScopeProviderError,
+            QWEN_VISION_OCR_PROMPT,
+            _sanitize_provider_message,
+        )
+
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        mime_type, _ = mimetypes.guess_type(image_path.name)
+        mime_type = mime_type or "image/jpeg"
+        try:
+            response = self.compatible_chat_model.invoke(
+                [
+                    HumanMessage(
+                        content=[
+                            {"type": "text", "text": QWEN_VISION_OCR_PROMPT},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
+                        ]
+                    )
+                ]
+            )
+        except Exception as exc:
+            message = _sanitize_provider_message(str(exc), self.api_key)
+            raise DashScopeProviderError(
+                f"DashScope compatible vision OCR failed: exception={exc.__class__.__name__} message={message}"
+            ) from None
+        return OcrResult(
+            text=str(getattr(response, "content", response)).strip(),
+            method=f"dashscope-compatible:{self.settings.vision_model}",
+        )
+
+
+def _build_compatible_chat_model(settings, api_key: str):
+    from langchain_qwq import ChatQwen
+
+    return ChatQwen(model=settings.vision_model, temperature=0, api_key=api_key, base_url=settings.compat_base_url)
+
+
+def _uses_qwen_ocr_options(model: str) -> bool:
+    return "ocr" in model.casefold()
 
 
 class LegacyOpenAIOcrClient:

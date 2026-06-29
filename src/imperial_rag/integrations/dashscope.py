@@ -20,6 +20,7 @@ DEFAULT_DASHSCOPE_COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-m
 DEFAULT_QWEN_CHAT_MODEL = "qwen3.7-plus"
 DEFAULT_QWEN_VISION_MODEL = "qwen-vl-ocr-2025-11-20"
 DEFAULT_QWEN_OCR_TASK = "multi_lan"
+QWEN_VISION_OCR_PROMPT = "Extract all visible Russian and English text verbatim. Do not summarize."
 DEFAULT_QWEN_EMBEDDING_MODEL = "text-embedding-v4"
 DEFAULT_QWEN_EMBEDDING_DIMENSIONS = 2048
 DEFAULT_QWEN_RERANK_MODEL = "qwen3-rerank"
@@ -305,7 +306,12 @@ def _raise_dashscope_response_error(operation: str, response: Any, api_key: str 
     )
 
 
-def build_qwen_ocr_message(image_path: Path, settings: QwenProviderSettings | None = None) -> dict[str, Any]:
+def build_qwen_ocr_message(
+    image_path: Path,
+    settings: QwenProviderSettings | None = None,
+    *,
+    include_text_prompt: bool = False,
+) -> dict[str, Any]:
     resolved = settings or QwenProviderSettings.from_env()
     mime_type, _ = mimetypes.guess_type(image_path.name)
     mime_type = mime_type or "image/jpeg"
@@ -317,7 +323,10 @@ def build_qwen_ocr_message(image_path: Path, settings: QwenProviderSettings | No
         image_payload["max_pixels"] = resolved.ocr_max_pixels
     if resolved.ocr_enable_rotate is not None:
         image_payload["enable_rotate"] = resolved.ocr_enable_rotate
-    return {"role": "user", "content": [image_payload]}
+    content = [image_payload]
+    if include_text_prompt:
+        content.append({"text": QWEN_VISION_OCR_PROMPT})
+    return {"role": "user", "content": content}
 
 
 def parse_qwen_ocr_response(response: Any, api_key: str | None = None) -> str:
