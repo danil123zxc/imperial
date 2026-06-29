@@ -27,14 +27,18 @@ def test_eval_questions_are_russian_jsonl_with_expected_behavior():
     behavior_counts = Counter(row["expected_behavior"] for row in rows)
     lane_counts = Counter(row["lane"] for row in rows)
 
-    assert len(rows) >= 37
+    assert 18 <= len(rows) <= 24
     assert len(ids) == len(set(ids))
-    assert behavior_counts["surface_conflict"] >= 5
-    assert behavior_counts["refuse_if_not_found"] >= 5
-    assert lane_counts["indexed_answerability"] >= 26
-    assert lane_counts["conflict_version_behavior"] >= 5
-    assert lane_counts["refusal_out_of_corpus_behavior"] >= 5
-    assert sum(bool(row.get("reference_context_ids")) for row in rows) >= 31
+    assert behavior_counts["cite_answer"] >= 12
+    assert behavior_counts["surface_conflict"] >= 4
+    assert behavior_counts["refuse_if_not_found"] >= 3
+    assert lane_counts["indexed_answerability"] >= 12
+    assert lane_counts["conflict_version_behavior"] >= 4
+    assert lane_counts["refusal_out_of_corpus_behavior"] >= 3
+    assert all(not row.get("quarantine_reason") for row in rows)
+    assert all(row.get("reference_context_ids") for row in rows if row["expected_behavior"] == "cite_answer")
+    assert all(len(row.get("reference_context_ids") or []) >= 2 for row in rows if row["expected_behavior"] == "surface_conflict")
+    assert all(not row.get("reference_context_ids") for row in rows if row["expected_behavior"] == "refuse_if_not_found")
     audit_rows = audit_eval_rows(
         rows,
         corpus_index=load_corpus_index(Path(".imperial_rag/extracted/chunks.jsonl")),
@@ -42,9 +46,6 @@ def test_eval_questions_are_russian_jsonl_with_expected_behavior():
     )
     findings = validate_eval_contract(audit_rows)
     assert [finding for finding in findings if finding["severity"] == "error"] == []
-    cite003 = next(row for row in rows if row["id"] == "imperial-cite-003")
-    assert cite003["reference_context_ids"] == []
-    assert cite003["quarantine_reason"] == "source_document_exists_but_is_not_indexed"
     for payload in rows:
         assert payload["id"].startswith("imperial-")
         assert payload["suite"]
