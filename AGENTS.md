@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Python 3.12+ local RAG project for the Imperial document corpus. Core package code lives in directories under `src/imperial_rag/`: ingestion and extraction in `ingestion/`, vector indexing in `indexing/`, retrieval in `retrieval/`, query runtime and workflows in `answering/`, provider integrations in `integrations/`, observability in `observability/`, and the Streamlit UI in `app/` with a compatibility launch package in `web_app/`. Tests live in `tests/` and mirror the subsystem names with `test_*.py` files. Operational scripts live in `scripts/`, eval prompts in `evals/questions.jsonl`, design/planning notes in `docs/superpowers/`, source documents in `documents/`, and generated local state in `.imperial_rag/`.
+This is a Python 3.12+ local RAG project for the Imperial document corpus. Core package code lives in directories under `src/imperial_rag/`: ingestion and extraction in `ingestion/`, vector indexing in `indexing/`, retrieval in `retrieval/`, query runtime and workflows in `answering/`, provider integrations in `integrations/`, observability in `observability/`, and the Streamlit UI in `app/`. Tests live in `tests/` and mirror the subsystem names with `test_*.py` files. Operational scripts live in `scripts/`, eval prompts in `evals/questions.jsonl`, design/planning notes in `docs/superpowers/`, source documents in `documents/`, and generated local state in `.imperial_rag/`.
 
 ## Build, Test, and Development Commands
 
@@ -12,11 +12,11 @@ This is a Python 3.12+ local RAG project for the Imperial document corpus. Core 
 - `docker compose up phoenix` starts Phoenix tracing/eval storage on port `6006`.
 - `uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial` ingests the corpus; add `--index-vectors` after Qdrant is running.
 - `uv run python scripts/query.py "question text"` queries the processed RAG state.
-- `uv run python -m streamlit run src/imperial_rag/web_app/__main__.py --server.address 127.0.0.1 --server.port 8501` runs the local UI.
+- `uv run python -m streamlit run src/imperial_rag/app/web.py --server.address 127.0.0.1 --server.port 8501` runs the local UI.
 
 To run the server locally, use the Streamlit command above from the repository root, then open `http://127.0.0.1:8501`. If port `8501` is already in use, choose another local port with `--server.port <port>` and report the final URL. Verify startup with `curl -fsS -I http://127.0.0.1:<port>/` or a browser smoke check before telling the user it is running.
 
-The main query and UI entrypoints (`scripts/query.py` and `src/imperial_rag/web_app/__main__.py`) call `load_project_env()` and automatically load the repository `.env` without overriding already-exported shell variables. Vector search still requires Qdrant to be running and `DASHSCOPE_API_KEY` to be present in `.env` or the process environment. For ad hoc Python probes that import runtime/provider modules directly, call `from imperial_rag.env import load_project_env; load_project_env()` before creating `Settings()` or checking provider state.
+The main query and UI entrypoints (`scripts/query.py` and `src/imperial_rag/app/web.py`) call `load_project_env()` and automatically load the repository `.env` without overriding already-exported shell variables. Vector search still requires Qdrant to be running and `DASHSCOPE_API_KEY` to be present in `.env` or the process environment. For ad hoc Python probes that import runtime/provider modules directly, call `from imperial_rag.env import load_project_env; load_project_env()` before creating `Settings()` or checking provider state.
 
 ## Coding Style & Naming Conventions
 

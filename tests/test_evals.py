@@ -232,7 +232,7 @@ def test_phoenix_evaluator_wrappers_accept_phoenix_bound_keywords(monkeypatch):
         expected={"expected_source_hints": ["брак"]},
     ) is True
 
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 

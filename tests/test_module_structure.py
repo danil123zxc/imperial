@@ -1,14 +1,43 @@
 from __future__ import annotations
 
-from pathlib import Path
+import importlib
+
+import pytest
+
+# Legacy top-level redirect packages that were removed in favour of importing
+# the canonical domain modules directly.
+REMOVED_SHIM_MODULES = (
+    "imperial_rag.auth",
+    "imperial_rag.chunking",
+    "imperial_rag.extraction",
+    "imperial_rag.manifest",
+    "imperial_rag.ocr",
+    "imperial_rag.pipeline",
+    "imperial_rag.keyword",
+    "imperial_rag.elasticsearch_keyword",
+    "imperial_rag.runtime",
+    "imperial_rag.workflows",
+    "imperial_rag.providers",
+    "imperial_rag.tracing",
+    "imperial_rag.ragas_eval",
+    "imperial_rag.web_app",
+)
 
 
-def test_imperial_rag_root_contains_only_directories():
-    package_root = Path("src/imperial_rag")
+@pytest.mark.parametrize("module_name", REMOVED_SHIM_MODULES)
+def test_legacy_shim_modules_are_gone(module_name):
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(module_name)
 
-    direct_files = sorted(path.name for path in package_root.iterdir() if path.is_file())
 
-    assert direct_files == []
+def test_flattened_single_file_modules_import():
+    for module_name in (
+        "imperial_rag.cli",
+        "imperial_rag.config",
+        "imperial_rag.document_ids",
+        "imperial_rag.env",
+    ):
+        assert importlib.import_module(module_name) is not None
 
 
 def test_lifecycle_import_paths_are_available():
@@ -70,66 +99,3 @@ def test_lifecycle_import_paths_are_available():
     assert callable(searchable_document_text)
     assert callable(stable_chunk_id)
     assert callable(trace_pipeline_step)
-
-
-def test_old_import_paths_remain_compatible_with_lifecycle_modules():
-    import imperial_rag.auth as old_auth
-    import imperial_rag.chunking as old_chunking
-    import imperial_rag.elasticsearch_keyword as old_elasticsearch_keyword
-    import imperial_rag.extraction as old_extraction
-    import imperial_rag.keyword as old_keyword
-    import imperial_rag.manifest as old_manifest
-    import imperial_rag.ocr as old_ocr
-    import imperial_rag.pipeline as old_pipeline
-    import imperial_rag.providers as old_providers
-    import imperial_rag.ragas_eval as old_ragas_eval
-    import imperial_rag.runtime as old_runtime
-    import imperial_rag.tracing as old_tracing
-    import imperial_rag.web_app as old_web_app
-    import imperial_rag.workflows as old_workflows
-    from imperial_rag.answering import build_strict_messages as old_build_strict_messages
-    from imperial_rag.indexing import create_qdrant_vector_store as old_create_qdrant_vector_store
-    from imperial_rag.indexing import stable_chunk_id as old_stable_chunk_id
-    from imperial_rag.observability import configure_observability as old_configure_observability
-    from imperial_rag.retrieval import RetrievalService as old_retrieval_service
-
-    from imperial_rag.answering.strict import build_strict_messages
-    from imperial_rag.answering.runtime import Runtime, create_runtime
-    from imperial_rag.answering.workflow import build_ingestion_workflow, build_query_workflow
-    from imperial_rag.app.auth import AuthStore
-    from imperial_rag.app.web import APP_TITLE
-    from imperial_rag.evals.ragas import parse_ragas_metric_names
-    from imperial_rag.indexing.vector import create_qdrant_vector_store, stable_chunk_id
-    from imperial_rag.ingestion.chunking import build_chunks
-    from imperial_rag.ingestion.extraction import extract_file
-    from imperial_rag.ingestion.manifest import ManifestStore
-    from imperial_rag.ingestion.ocr import OcrCache
-    from imperial_rag.ingestion.pipeline import run_ingestion
-    from imperial_rag.integrations.dashscope import QwenProviderSettings
-    from imperial_rag.observability.logging import configure_observability
-    from imperial_rag.observability.phoenix import configure_phoenix_tracing
-    from imperial_rag.retrieval.elasticsearch import ElasticsearchKeywordIndex
-    from imperial_rag.retrieval.lexical import searchable_document_text
-    from imperial_rag.retrieval.service import RetrievalService
-
-    assert old_auth.AuthStore is AuthStore
-    assert old_build_strict_messages is build_strict_messages
-    assert old_chunking.build_chunks is build_chunks
-    assert old_configure_observability is configure_observability
-    assert old_create_qdrant_vector_store is create_qdrant_vector_store
-    assert old_elasticsearch_keyword.ElasticsearchKeywordIndex is ElasticsearchKeywordIndex
-    assert old_extraction.extract_file is extract_file
-    assert old_keyword.searchable_document_text is searchable_document_text
-    assert old_manifest.ManifestStore is ManifestStore
-    assert old_ocr.OcrCache is OcrCache
-    assert old_pipeline.run_ingestion is run_ingestion
-    assert old_providers.QwenProviderSettings is QwenProviderSettings
-    assert old_ragas_eval.parse_ragas_metric_names is parse_ragas_metric_names
-    assert old_retrieval_service is RetrievalService
-    assert old_runtime.Runtime is Runtime
-    assert old_runtime.create_runtime is create_runtime
-    assert old_stable_chunk_id is stable_chunk_id
-    assert old_tracing.configure_phoenix_tracing is configure_phoenix_tracing
-    assert old_web_app.APP_TITLE == APP_TITLE
-    assert old_workflows.build_ingestion_workflow is build_ingestion_workflow
-    assert old_workflows.build_query_workflow is build_query_workflow

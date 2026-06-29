@@ -11,8 +11,8 @@ from typing import Any, TypedDict
 import pytest
 
 from imperial_rag.config import Settings
-import imperial_rag.tracing as tracing_module
-from imperial_rag.tracing import _reset_phoenix_tracing_for_tests, configure_phoenix_tracing
+import imperial_rag.observability.phoenix as tracing_module
+from imperial_rag.observability.phoenix import _reset_phoenix_tracing_for_tests, configure_phoenix_tracing
 
 
 class FakeSpan:
@@ -185,7 +185,7 @@ def test_configure_phoenix_tracing_can_be_enabled_by_env(monkeypatch, tmp_path: 
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
     monkeypatch.setenv("PHOENIX_TRACING_ENABLED", "true")
-    monkeypatch.setattr("imperial_rag.tracing._collector_endpoint_reachable", lambda endpoint: True)
+    monkeypatch.setattr("imperial_rag.observability.phoenix._collector_endpoint_reachable", lambda endpoint: True)
 
     assert configure_phoenix_tracing(Settings(workspace_root=tmp_path), enabled=None) is provider
 
@@ -198,7 +198,7 @@ def test_env_enabled_phoenix_tracing_skips_when_collector_is_unreachable(monkeyp
     monkeypatch.setitem(sys.modules, "phoenix", fake_phoenix)
     monkeypatch.setitem(sys.modules, "phoenix.otel", fake_otel)
     monkeypatch.setenv("PHOENIX_TRACING_ENABLED", "true")
-    monkeypatch.setattr("imperial_rag.tracing._collector_endpoint_reachable", lambda endpoint: False)
+    monkeypatch.setattr("imperial_rag.observability.phoenix._collector_endpoint_reachable", lambda endpoint: False)
     settings = Settings(
         workspace_root=tmp_path,
         phoenix_collector_endpoint="http://localhost:6006/v1/traces",

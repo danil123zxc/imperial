@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from imperial_rag.config import Settings
 from imperial_rag.integrations.dashscope import QwenProviderSettings
-from imperial_rag.runtime import Runtime, _DeferredProviderChatModel, build_query_dependencies, create_runtime
+from imperial_rag.answering.runtime import Runtime, _DeferredProviderChatModel, build_query_dependencies, create_runtime
 
 
 def test_create_runtime_constructs_without_live_services(monkeypatch):
@@ -17,7 +17,7 @@ def test_create_runtime_constructs_without_live_services(monkeypatch):
             created["state"] = input
             return {"answer": "ok"}
 
-    monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow())
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow())
 
     runtime = create_runtime()
 
@@ -51,9 +51,9 @@ def test_runtime_query_wraps_workflow_in_chain_span(monkeypatch):
                 },
             }
 
-    monkeypatch.setattr("imperial_rag.runtime.trace_pipeline_step", fake_trace_pipeline_step)
+    monkeypatch.setattr("imperial_rag.answering.runtime.trace_pipeline_step", fake_trace_pipeline_step)
     monkeypatch.setattr(
-        "imperial_rag.runtime.trace_provenance_attributes",
+        "imperial_rag.answering.runtime.trace_provenance_attributes",
         lambda settings, run_id=None: {
             "imperial.trace_run_id": run_id,
             "imperial.phoenix_project": settings.phoenix_project_name,
@@ -62,7 +62,7 @@ def test_runtime_query_wraps_workflow_in_chain_span(monkeypatch):
             "imperial.trace_suppress_internals": True,
         },
     )
-    monkeypatch.setattr("imperial_rag.runtime._new_trace_run_id", lambda: "run-123")
+    monkeypatch.setattr("imperial_rag.answering.runtime._new_trace_run_id", lambda: "run-123")
     runtime = Runtime(settings=Settings(), workflow=FakeWorkflow())
 
     assert runtime.query("Что делать с браком?")["answer"] == "Оформить акт. [S1]"
@@ -122,7 +122,7 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
             return self.generate(input["question"], docs)
 
     monkeypatch.setattr(
-        "imperial_rag.runtime.build_query_dependencies",
+        "imperial_rag.answering.runtime.build_query_dependencies",
         lambda settings: type(
             "Deps",
             (),
@@ -134,7 +134,7 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
         )(),
     )
     monkeypatch.setattr(
-        "imperial_rag.runtime.RetrievalService",
+        "imperial_rag.answering.runtime.RetrievalService",
         lambda vector_search, keyword_search, settings: type(
             "Service",
             (),
@@ -152,7 +152,7 @@ def test_create_runtime_generate_returns_trace_attrs_for_success_and_model_failu
             },
         )(),
     )
-    monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
 
     settings = Settings(workspace_root=tmp_path)
     runtime = create_runtime(settings)
@@ -241,17 +241,17 @@ def test_runtime_query_uses_retrieval_service(monkeypatch, tmp_path):
 
     fake_vector_search = object()
     fake_keyword_search = object()
-    monkeypatch.setattr("imperial_rag.runtime.RetrievalSettings", FakeRetrievalSettings)
-    monkeypatch.setattr("imperial_rag.runtime.RetrievalService", FakeRetrievalService)
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalSettings", FakeRetrievalSettings)
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalService", FakeRetrievalService)
     monkeypatch.setattr(
-        "imperial_rag.runtime.build_query_dependencies",
+        "imperial_rag.answering.runtime.build_query_dependencies",
         lambda settings: type(
             "Deps",
             (),
             {"vector_search": fake_vector_search, "keyword_search": fake_keyword_search},
         )(),
     )
-    monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
 
     runtime = create_runtime(Settings(workspace_root=tmp_path))
 
@@ -274,7 +274,7 @@ def test_semantic_search_enabled_uses_dashscope_key(monkeypatch):
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
-    from imperial_rag.runtime import _semantic_search_enabled
+    from imperial_rag.answering.runtime import _semantic_search_enabled
 
     assert _semantic_search_enabled() is False
 
@@ -292,13 +292,13 @@ def test_build_query_dependencies_defers_chat_model_without_dashscope(monkeypatc
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", lambda settings: object())
+    monkeypatch.setattr("imperial_rag.answering.runtime.ElasticsearchKeywordIndex", lambda settings: object())
 
     def fake_create_chat_model():
         calls.append("factory")
         raise RuntimeError("missing dashscope")
 
-    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", fake_create_chat_model)
+    monkeypatch.setattr("imperial_rag.answering.runtime.create_chat_model", fake_create_chat_model)
 
     deps = build_query_dependencies(Settings(workspace_root=tmp_path))
 
@@ -322,9 +322,9 @@ def test_build_query_dependencies_skips_vector_search_on_metadata_mismatch(monke
             calls["settings"] = settings
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
-    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
-    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
-    monkeypatch.setattr("imperial_rag.runtime.vector_metadata_matches_config", lambda settings: False, raising=False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
+    monkeypatch.setattr("imperial_rag.answering.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.vector_metadata_matches_config", lambda settings: False, raising=False)
 
     settings = Settings(workspace_root=tmp_path)
     dependencies = build_query_dependencies(settings)
@@ -354,11 +354,11 @@ def test_build_query_dependencies_uses_qdrant_mmr_retriever(monkeypatch, tmp_pat
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
-    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
-    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
-    monkeypatch.setattr("imperial_rag.runtime.vector_metadata_matches_config", lambda settings: True, raising=False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
+    monkeypatch.setattr("imperial_rag.answering.runtime.create_chat_model", lambda: fake_chat_model, raising=False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.vector_metadata_matches_config", lambda settings: True, raising=False)
     monkeypatch.setattr(
-        "imperial_rag.runtime.make_qdrant_store",
+        "imperial_rag.answering.runtime.make_qdrant_store",
         lambda qdrant_url, collection_name: FakeQdrantStore(),
         raising=False,
     )
@@ -382,15 +382,15 @@ def test_build_query_dependencies_marks_vector_construction_failure_unavailable(
             self.settings = settings
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
-    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
-    monkeypatch.setattr("imperial_rag.runtime.vector_metadata_matches_config", lambda settings: True, raising=False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.ElasticsearchKeywordIndex", FakeElasticsearchKeywordIndex)
+    monkeypatch.setattr("imperial_rag.answering.runtime.vector_metadata_matches_config", lambda settings: True, raising=False)
     monkeypatch.setattr(
-        "imperial_rag.runtime.make_qdrant_store",
+        "imperial_rag.answering.runtime.make_qdrant_store",
         lambda qdrant_url, collection_name: (_ for _ in ()).throw(RuntimeError("qdrant unavailable secret")),
         raising=False,
     )
     monkeypatch.setattr(
-        "imperial_rag.runtime.log_event",
+        "imperial_rag.answering.runtime.log_event",
         lambda event, level="info", **fields: events.append((event, level, fields)),
     )
 
@@ -425,9 +425,9 @@ def test_runtime_uses_provider_chat_model_by_default(monkeypatch, tmp_path):
     fake_chat_model = FakeChatModel()
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
-    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", lambda: calls.append("factory") or fake_chat_model)
-    monkeypatch.setattr("imperial_rag.runtime.ElasticsearchKeywordIndex", lambda settings: object())
-    monkeypatch.setattr("imperial_rag.runtime._semantic_search_enabled", lambda: False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.create_chat_model", lambda: calls.append("factory") or fake_chat_model)
+    monkeypatch.setattr("imperial_rag.answering.runtime.ElasticsearchKeywordIndex", lambda settings: object())
+    monkeypatch.setattr("imperial_rag.answering.runtime._semantic_search_enabled", lambda: False)
 
     deps = build_query_dependencies(Settings(workspace_root=tmp_path))
 
@@ -453,7 +453,7 @@ def test_deferred_provider_chat_model_initializes_once_under_concurrency(monkeyp
         time.sleep(0.02)
         return FakeChatModel()
 
-    monkeypatch.setattr("imperial_rag.runtime.create_chat_model", fake_create_chat_model)
+    monkeypatch.setattr("imperial_rag.answering.runtime.create_chat_model", fake_create_chat_model)
     model = _DeferredProviderChatModel()
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -508,10 +508,10 @@ def test_create_runtime_lazy_caches_initialize_once_under_concurrent_retrieval(m
             },
         )()
 
-    monkeypatch.setattr("imperial_rag.runtime.RetrievalSettings", FakeRetrievalSettings)
-    monkeypatch.setattr("imperial_rag.runtime.RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr("imperial_rag.runtime.build_query_dependencies", fake_build_query_dependencies)
-    monkeypatch.setattr("imperial_rag.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalSettings", FakeRetrievalSettings)
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalService", FakeRetrievalService)
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_dependencies", fake_build_query_dependencies)
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
 
     runtime = create_runtime(Settings(workspace_root=tmp_path))
     retrieve = cast(Any, runtime.workflow).retrieve

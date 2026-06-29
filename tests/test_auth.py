@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from imperial_rag.auth import AuthStore, AuthenticationStatus
+from imperial_rag.app.auth import AuthStore, AuthenticationStatus
 
 
 def test_register_authenticate_and_admin_approval_flow(tmp_path):

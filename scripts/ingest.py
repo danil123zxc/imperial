@@ -176,14 +176,14 @@ def _run(settings: Any, enable_ocr: bool, index_vectors: bool) -> Any:
             return result["summary"]
         return result
 
-    from imperial_rag.pipeline import run_ingestion
+    from imperial_rag.ingestion.pipeline import run_ingestion
 
     return run_ingestion(settings=settings, enable_ocr=enable_ocr, index_vectors=index_vectors)
 
 
 def _build_ingestion_workflow() -> Any | None:
     try:
-        from imperial_rag.workflows import build_ingestion_workflow
+        from imperial_rag.answering.workflow import build_ingestion_workflow
     except (ImportError, AttributeError):
         return None
     return build_ingestion_workflow()
@@ -193,7 +193,7 @@ def _build_ocr_client(enable_ocr: bool) -> Any | None:
     if not enable_ocr or not _ocr_appears_configured():
         return None
     try:
-        from imperial_rag.ocr import OcrClient
+        from imperial_rag.ingestion.ocr import OcrClient
     except ImportError:
         return None
     return OcrClient()
@@ -202,7 +202,7 @@ def _build_ocr_client(enable_ocr: bool) -> Any | None:
 def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
     if not index_vectors:
         return None
-    from imperial_rag.providers import dashscope_configured
+    from imperial_rag.integrations.dashscope import dashscope_configured
 
     if not dashscope_configured():
         print("DASHSCOPE_API_KEY is required when --index-vectors is used.", file=sys.stderr)
@@ -218,7 +218,7 @@ def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
 
 
 def _ocr_appears_configured() -> bool:
-    from imperial_rag.providers import dashscope_configured
+    from imperial_rag.integrations.dashscope import dashscope_configured
 
     return dashscope_configured()
 

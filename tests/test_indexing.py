@@ -140,7 +140,7 @@ def test_create_qdrant_vector_store_uses_qwen_embeddings_by_default(monkeypatch,
 
 
 def test_index_vector_documents_records_qwen_vector_metadata(monkeypatch, tmp_path: Path) -> None:
-    from imperial_rag.providers import read_vector_metadata
+    from imperial_rag.integrations.dashscope import read_vector_metadata
 
     class FakeVectorStore:
         def add_documents(self, documents, ids):
@@ -160,7 +160,7 @@ def test_index_vector_documents_records_qwen_vector_metadata(monkeypatch, tmp_pa
 
 
 def test_create_qdrant_vector_store_rejects_mismatched_vector_metadata(monkeypatch, tmp_path: Path) -> None:
-    from imperial_rag.providers import VectorProviderMetadata, VectorProviderMismatchError, write_vector_metadata
+    from imperial_rag.integrations.dashscope import VectorProviderMetadata, VectorProviderMismatchError, write_vector_metadata
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     settings = Settings(workspace_root=tmp_path)

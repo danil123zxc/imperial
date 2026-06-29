@@ -358,16 +358,16 @@ def _run(
 
 
 def _load_dependencies() -> dict[str, Any]:
-    from imperial_rag.chunking import build_chunks
+    from imperial_rag.ingestion.chunking import build_chunks
     from imperial_rag.config import Settings
-    from imperial_rag.elasticsearch_keyword import ElasticsearchKeywordIndex
-    from imperial_rag.extraction import extract_file
+    from imperial_rag.retrieval.elasticsearch import ElasticsearchKeywordIndex
+    from imperial_rag.ingestion.extraction import extract_file
     from imperial_rag.indexing import (
         create_qdrant_vector_store,
         embedding_model_identifier,
         index_vector_documents,
     )
-    from imperial_rag.manifest import (
+    from imperial_rag.ingestion.manifest import (
         FileStatus,
         IndexStatus,
         ManifestStore,
@@ -628,14 +628,14 @@ def _embedding_dimensions_from_identifier(identifier: str | None) -> int | None:
 def _build_ocr_client(enable_ocr: bool) -> Any | None:
     if not enable_ocr or not _ocr_appears_configured():
         return None
-    from imperial_rag.ocr import OcrClient
+    from imperial_rag.ingestion.ocr import OcrClient
 
     return OcrClient()
 
 
 def _build_ocr_cache(extraction_root: Path) -> Any | None:
     try:
-        from imperial_rag.ocr import OcrCache
+        from imperial_rag.ingestion.ocr import OcrCache
     except ImportError:
         return None
     return OcrCache(extraction_root / "ocr-cache")
@@ -654,7 +654,7 @@ def _build_vector_store(settings: Any, index_vectors: bool) -> Any | None:
 
 
 def _ocr_appears_configured() -> bool:
-    from imperial_rag.providers import dashscope_configured
+    from imperial_rag.integrations.dashscope import dashscope_configured
 
     return dashscope_configured()
 

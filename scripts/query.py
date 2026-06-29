@@ -39,14 +39,14 @@ def main(argv: list[str] | None = None) -> None:
 
 def _query(settings: Any, question: str) -> dict[str, Any]:
     try:
-        from imperial_rag.runtime import create_runtime
+        from imperial_rag.answering.runtime import create_runtime
     except (ImportError, AttributeError):
         create_runtime = None
     if create_runtime is not None:
         return _coerce_result(create_runtime(settings).query(question))
 
     try:
-        from imperial_rag.runtime import Runtime
+        from imperial_rag.answering.runtime import Runtime
     except (ImportError, AttributeError):
         Runtime = None
 
@@ -54,7 +54,7 @@ def _query(settings: Any, question: str) -> dict[str, Any]:
         runtime = Runtime(settings=settings)
         return _coerce_result(runtime.query(question))
 
-    from imperial_rag.runtime import build_live_query_workflow
+    from imperial_rag.answering.runtime import build_live_query_workflow
 
     workflow = build_live_query_workflow(settings)
     return _coerce_result(workflow.invoke({"question": question}))

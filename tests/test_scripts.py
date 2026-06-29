@@ -283,7 +283,7 @@ def test_query_script_logs_safe_completion_fields(monkeypatch, capsys):
     env_module.load_project_env = lambda workspace_root=None: None
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = lambda **kwargs: types.SimpleNamespace(log_level="INFO", log_format="json")
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
     tracing_module.phoenix_trace_context = _null_trace_context
     observability_module = _fake_module("imperial_rag.observability")
@@ -305,14 +305,14 @@ def test_query_script_logs_safe_completion_fields(monkeypatch, capsys):
                 },
             }
 
-    runtime_module = _fake_module("imperial_rag.runtime")
+    runtime_module = _fake_module("imperial_rag.answering.runtime")
     runtime_module.create_runtime = lambda settings: FakeRuntime()
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.answering.runtime", runtime_module)
 
     module.main(["private question"])
 
@@ -333,7 +333,7 @@ def test_ingest_script_logs_failed_file_completion(monkeypatch, capsys):
     env_module.load_project_env = lambda workspace_root=None: None
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = lambda **kwargs: types.SimpleNamespace(log_level="INFO", log_format="json")
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
     tracing_module.phoenix_trace_context = _null_trace_context
     observability_module = _fake_module("imperial_rag.observability")
@@ -355,7 +355,7 @@ def test_ingest_script_logs_failed_file_completion(monkeypatch, capsys):
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setattr(module, "_run", lambda **kwargs: summary)
 
@@ -409,7 +409,7 @@ def test_ingest_ocr_gate_uses_dashscope_key(monkeypatch):
 
 def test_ingest_vector_store_requires_dashscope_key_before_importing_qdrant(monkeypatch, capsys):
     module = _load_script("scripts/ingest.py", "ingest_script_vector_gate")
-    providers = _fake_module("imperial_rag.providers")
+    providers = _fake_module("imperial_rag.integrations.dashscope")
     providers.dashscope_configured = lambda: False
     indexing = _fake_module("imperial_rag.indexing")
     indexing.make_qdrant_store = lambda qdrant_url, collection_name: pytest.fail(
@@ -418,7 +418,7 @@ def test_ingest_vector_store_requires_dashscope_key_before_importing_qdrant(monk
     indexing.create_qdrant_vector_store = lambda settings: pytest.fail("Qdrant builder should not run without key")
 
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.setitem(sys.modules, "imperial_rag.providers", providers)
+    monkeypatch.setitem(sys.modules, "imperial_rag.integrations.dashscope", providers)
     monkeypatch.setitem(sys.modules, "imperial_rag.indexing", indexing)
 
     with pytest.raises(SystemExit) as exc_info:
@@ -431,7 +431,7 @@ def test_ingest_vector_store_requires_dashscope_key_before_importing_qdrant(monk
 
 def test_ingest_vector_store_builds_qdrant_after_dashscope_gate(monkeypatch):
     module = _load_script("scripts/ingest.py", "ingest_script_vector_build")
-    providers = _fake_module("imperial_rag.providers")
+    providers = _fake_module("imperial_rag.integrations.dashscope")
     providers.dashscope_configured = lambda: True
     indexing = _fake_module("imperial_rag.indexing")
     vector_store = object()
@@ -439,7 +439,7 @@ def test_ingest_vector_store_builds_qdrant_after_dashscope_gate(monkeypatch):
     indexing.make_qdrant_store = lambda qdrant_url, collection_name: pytest.fail("legacy builder should not run")
     indexing.create_qdrant_vector_store = lambda settings: created_with.append(settings) or vector_store
 
-    monkeypatch.setitem(sys.modules, "imperial_rag.providers", providers)
+    monkeypatch.setitem(sys.modules, "imperial_rag.integrations.dashscope", providers)
     monkeypatch.setitem(sys.modules, "imperial_rag.indexing", indexing)
 
     settings = types.SimpleNamespace(qdrant_url="http://localhost:6333", qdrant_collection="test")
@@ -450,7 +450,7 @@ def test_ingest_vector_store_builds_qdrant_after_dashscope_gate(monkeypatch):
 
 def test_ingest_vector_store_resets_qdrant_when_requested(monkeypatch):
     module = _load_script("scripts/ingest.py", "ingest_script_vector_reset")
-    providers = _fake_module("imperial_rag.providers")
+    providers = _fake_module("imperial_rag.integrations.dashscope")
     providers.dashscope_configured = lambda: True
     indexing = _fake_module("imperial_rag.indexing")
     calls = []
@@ -458,7 +458,7 @@ def test_ingest_vector_store_resets_qdrant_when_requested(monkeypatch):
     indexing.reset_qdrant_collection = lambda settings: calls.append(("reset", settings)) or True
     indexing.create_qdrant_vector_store = lambda settings: calls.append(("create", settings)) or vector_store
 
-    monkeypatch.setitem(sys.modules, "imperial_rag.providers", providers)
+    monkeypatch.setitem(sys.modules, "imperial_rag.integrations.dashscope", providers)
     monkeypatch.setitem(sys.modules, "imperial_rag.indexing", indexing)
 
     settings = types.SimpleNamespace(
@@ -473,14 +473,14 @@ def test_ingest_vector_store_resets_qdrant_when_requested(monkeypatch):
 
 def test_ingest_vector_store_disabled_does_not_require_dashscope_key(monkeypatch):
     module = _load_script("scripts/ingest.py", "ingest_script_vector_disabled")
-    providers = _fake_module("imperial_rag.providers")
+    providers = _fake_module("imperial_rag.integrations.dashscope")
     providers.dashscope_configured = lambda: pytest.fail("DashScope gate should not run")
     indexing = _fake_module("imperial_rag.indexing")
     indexing.make_qdrant_store = lambda qdrant_url, collection_name: pytest.fail("Qdrant builder should not run")
     indexing.create_qdrant_vector_store = lambda settings: pytest.fail("Qdrant builder should not run")
 
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.setitem(sys.modules, "imperial_rag.providers", providers)
+    monkeypatch.setitem(sys.modules, "imperial_rag.integrations.dashscope", providers)
     monkeypatch.setitem(sys.modules, "imperial_rag.indexing", indexing)
 
     assert module._build_vector_store(object(), index_vectors=False) is None
@@ -494,7 +494,7 @@ def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
     env_module.load_project_env = lambda workspace_root=None: None
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = lambda **kwargs: types.SimpleNamespace(log_level="INFO", log_format="json")
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda *args, **kwargs: None
 
     @contextmanager
@@ -512,14 +512,14 @@ def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
         def query(self, question):
             return {"answer": "ok", "sources": []}
 
-    runtime_module = _fake_module("imperial_rag.runtime")
+    runtime_module = _fake_module("imperial_rag.answering.runtime")
     runtime_module.create_runtime = lambda settings: FakeRuntime()
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.answering.runtime", runtime_module)
 
     module.main(["private question", "--trace-session-id", "session-explicit"])
 

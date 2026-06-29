@@ -10,7 +10,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
-from imperial_rag.pipeline import run_ingestion
+from imperial_rag.ingestion.pipeline import run_ingestion
 
 
 class FileStatus(str, Enum):
@@ -131,7 +131,7 @@ def test_run_ingestion_uses_retrieval_chunk_settings(tmp_path, monkeypatch):
 
     run_ingestion(settings=FakeSettings(tmp_path), enable_ocr=False, index_vectors=False)
 
-    build_chunks = sys.modules["imperial_rag.chunking"].build_chunks
+    build_chunks = sys.modules["imperial_rag.ingestion.chunking"].build_chunks
     assert build_chunks.calls == [{"chunk_size": 321, "chunk_overlap": 45}]
 
 
@@ -168,7 +168,7 @@ def test_run_ingestion_records_embedding_model_only_for_indexed_vectors(tmp_path
 
 
 def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path, monkeypatch):
-    from imperial_rag import pipeline as pipeline_module
+    from imperial_rag.ingestion import pipeline as pipeline_module
 
     docs = tmp_path / "documents"
     docs.mkdir()
@@ -244,7 +244,7 @@ def test_run_ingestion_traces_aggregate_lifecycle_without_vector_stage(tmp_path,
 
 
 def test_run_ingestion_traces_vector_stage_only_when_enabled(tmp_path, monkeypatch):
-    from imperial_rag import pipeline as pipeline_module
+    from imperial_rag.ingestion import pipeline as pipeline_module
 
     docs = tmp_path / "documents"
     docs.mkdir()
@@ -274,7 +274,7 @@ def test_run_ingestion_traces_vector_stage_only_when_enabled(tmp_path, monkeypat
 
 
 def test_run_ingestion_traces_lineage_and_index_metadata(tmp_path, monkeypatch):
-    from imperial_rag import pipeline as pipeline_module
+    from imperial_rag.ingestion import pipeline as pipeline_module
 
     docs = tmp_path / "documents"
     docs.mkdir()
@@ -340,7 +340,7 @@ def test_run_ingestion_traces_lineage_and_index_metadata(tmp_path, monkeypatch):
 
 
 def test_run_ingestion_traces_extraction_failure_summary(tmp_path, monkeypatch):
-    from imperial_rag import pipeline as pipeline_module
+    from imperial_rag.ingestion import pipeline as pipeline_module
 
     docs = tmp_path / "documents"
     docs.mkdir()
@@ -540,7 +540,7 @@ def _install_fake_dependencies(
         records.append(no_text_record)
     if include_failed_record:
         records.append(failed_record)
-    manifest = _fake_module("imperial_rag.manifest")
+    manifest = _fake_module("imperial_rag.ingestion.manifest")
     manifest.FileStatus = FileStatus
     manifest.IndexStatus = IndexStatus
     manifest.ManifestStore = FakeManifestStore
@@ -551,7 +551,7 @@ def _install_fake_dependencies(
         page_content="Регламент возврата брака.",
         metadata={"file_id": "file1", "relative_path": "policy.txt", "source_type": "body"},
     )
-    extraction = _fake_module("imperial_rag.extraction")
+    extraction = _fake_module("imperial_rag.ingestion.extraction")
 
     def extract_file(record, **kwargs):
         if record.file_id == "file3":
@@ -582,7 +582,7 @@ def _install_fake_dependencies(
             "body_start_index": 0,
         },
     )
-    chunking = _fake_module("imperial_rag.chunking")
+    chunking = _fake_module("imperial_rag.ingestion.chunking")
 
     class FakeBuildChunks:
         def __init__(self) -> None:
@@ -595,7 +595,7 @@ def _install_fake_dependencies(
     build_chunks = FakeBuildChunks()
     chunking.build_chunks = build_chunks
 
-    elasticsearch_keyword = _fake_module("imperial_rag.elasticsearch_keyword")
+    elasticsearch_keyword = _fake_module("imperial_rag.retrieval.elasticsearch")
     elasticsearch_keyword.ElasticsearchKeywordIndex = FakeKeywordSearchIndex
 
     indexing = _fake_module("imperial_rag.indexing")

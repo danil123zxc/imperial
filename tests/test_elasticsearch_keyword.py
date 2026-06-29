@@ -12,14 +12,14 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
 from imperial_rag.config import Settings
-import imperial_rag.elasticsearch_keyword as elasticsearch_keyword_module
-from imperial_rag.elasticsearch_keyword import (
+import imperial_rag.retrieval.elasticsearch as elasticsearch_keyword_module
+from imperial_rag.retrieval.elasticsearch import (
     ElasticsearchKeywordIndex,
     ElasticsearchKeywordRetriever,
     elasticsearch_health,
 )
 from imperial_rag.indexing import stable_chunk_id
-from imperial_rag.keyword import (
+from imperial_rag.retrieval.lexical import (
     ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
     build_elasticsearch_token_query,
     relaxed_query_token_sets,

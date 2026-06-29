@@ -15,4 +15,4 @@ def load_project_env(workspace_root: Path | str | None = None) -> bool:
 def _env_path(workspace_root: Path | str | None = None) -> Path:
     if workspace_root is not None:
         return Path(workspace_root).expanduser().resolve() / ".env"
-    return Path(__file__).resolve().parents[3] / ".env"
+    return Path(__file__).resolve().parents[2] / ".env"

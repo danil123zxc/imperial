@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 from docx import Document as DocxDocument
-from imperial_rag.extraction import extract_file
-from imperial_rag.manifest import FileStatus, scan_files
-from imperial_rag.ocr import OcrCache, OcrResult
+from imperial_rag.ingestion.extraction import extract_file
+from imperial_rag.ingestion.manifest import FileStatus, scan_files
+from imperial_rag.ingestion.ocr import OcrCache, OcrResult
 from openpyxl import Workbook
 from PIL import Image
 

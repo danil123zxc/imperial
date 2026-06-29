@@ -31,7 +31,7 @@ def clear_provider_env(monkeypatch):
 def test_qwen_provider_settings_defaults(monkeypatch):
     clear_provider_env(monkeypatch)
 
-    from imperial_rag.providers import QwenProviderSettings
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
 
     settings = QwenProviderSettings.from_env()
 
@@ -70,7 +70,7 @@ def test_qwen_provider_settings_read_environment(monkeypatch):
     monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "1")
     monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_COHERE", "yes")
 
-    from imperial_rag.providers import QwenProviderSettings
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
 
     settings = QwenProviderSettings.from_env()
 
@@ -93,7 +93,7 @@ def test_qwen_provider_settings_read_environment(monkeypatch):
 def test_dashscope_configured_requires_key(monkeypatch):
     clear_provider_env(monkeypatch)
 
-    from imperial_rag.providers import dashscope_configured
+    from imperial_rag.integrations.dashscope import dashscope_configured
 
     assert dashscope_configured() is False
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
@@ -103,7 +103,7 @@ def test_dashscope_configured_requires_key(monkeypatch):
 def test_legacy_openai_ocr_requires_explicit_opt_in(monkeypatch):
     clear_provider_env(monkeypatch)
 
-    from imperial_rag.ocr import LegacyOpenAIOcrClient
+    from imperial_rag.ingestion.ocr import LegacyOpenAIOcrClient
 
     with pytest.raises(RuntimeError, match="Legacy OpenAI OCR is disabled"):
         LegacyOpenAIOcrClient()
@@ -113,7 +113,7 @@ def test_legacy_openai_ocr_can_be_enabled_explicitly(monkeypatch):
     clear_provider_env(monkeypatch)
     monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "true")
 
-    from imperial_rag.ocr import LegacyOpenAIOcrClient
+    from imperial_rag.ingestion.ocr import LegacyOpenAIOcrClient
 
     client = LegacyOpenAIOcrClient(model="legacy-test-model")
 
@@ -122,7 +122,7 @@ def test_legacy_openai_ocr_can_be_enabled_explicitly(monkeypatch):
 
 
 def test_qwen_provider_vector_metadata_defaults():
-    from imperial_rag.providers import QwenProviderSettings
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
 
     metadata = QwenProviderSettings(api_key=None).vector_metadata()
 
@@ -133,7 +133,7 @@ def test_qwen_provider_vector_metadata_defaults():
 
 
 def test_vector_metadata_write_read_round_trip(tmp_path):
-    from imperial_rag.providers import QwenProviderSettings, read_vector_metadata, write_vector_metadata
+    from imperial_rag.integrations.dashscope import QwenProviderSettings, read_vector_metadata, write_vector_metadata
 
     settings = Settings(workspace_root=tmp_path)
     metadata = QwenProviderSettings(api_key=None).vector_metadata()
@@ -144,7 +144,7 @@ def test_vector_metadata_write_read_round_trip(tmp_path):
 
 
 def test_missing_vector_metadata_returns_none_and_does_not_match_config(tmp_path):
-    from imperial_rag.providers import read_vector_metadata, vector_metadata_matches_config
+    from imperial_rag.integrations.dashscope import read_vector_metadata, vector_metadata_matches_config
 
     settings = Settings(workspace_root=tmp_path)
 
@@ -153,7 +153,7 @@ def test_missing_vector_metadata_returns_none_and_does_not_match_config(tmp_path
 
 
 def test_vector_metadata_matches_config(tmp_path):
-    from imperial_rag.providers import QwenProviderSettings, vector_metadata_matches_config, write_vector_metadata
+    from imperial_rag.integrations.dashscope import QwenProviderSettings, vector_metadata_matches_config, write_vector_metadata
 
     settings = Settings(workspace_root=tmp_path)
     provider_settings = QwenProviderSettings(api_key=None)
@@ -164,7 +164,7 @@ def test_vector_metadata_matches_config(tmp_path):
 
 
 def test_vector_metadata_mismatch_raises_without_dashscope_key_value(tmp_path):
-    from imperial_rag.providers import (
+    from imperial_rag.integrations.dashscope import (
         QwenProviderSettings,
         VectorProviderMismatchError,
         ensure_vector_metadata_compatible,
@@ -196,7 +196,7 @@ def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
             created["api_key"] = api_key
             created["base_url"] = base_url
 
-    import imperial_rag.providers as providers
+    import imperial_rag.integrations.dashscope as providers
 
     monkeypatch.setattr(providers, "_import_chat_qwen", lambda: FakeChatQwen)
 
@@ -222,7 +222,7 @@ def test_qwen_chat_factory_uses_explicit_key_and_compat_base_url(monkeypatch):
             created["api_key"] = api_key
             created["base_url"] = base_url
 
-    import imperial_rag.providers as providers
+    import imperial_rag.integrations.dashscope as providers
 
     monkeypatch.setattr(providers, "_import_chat_qwen", lambda: FakeChatQwen)
 
@@ -246,7 +246,7 @@ def test_qwen_embedding_factory_uses_dimension_aware_wrapper(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     monkeypatch.setenv("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS", "2048")
 
-    from imperial_rag.providers import DashScopeTextEmbeddings, create_embeddings
+    from imperial_rag.integrations.dashscope import DashScopeTextEmbeddings, create_embeddings
 
     embeddings = create_embeddings()
 
@@ -265,7 +265,7 @@ def test_create_embeddings_configures_sdk_before_wrapper(monkeypatch):
             created["settings"] = settings
             created["config_calls_before_init"] = list(config_calls)
 
-    import imperial_rag.providers as providers
+    import imperial_rag.integrations.dashscope as providers
 
     settings = providers.QwenProviderSettings(api_key="explicit-key")
     monkeypatch.setattr(providers, "configure_dashscope_sdk", lambda settings: config_calls.append(settings))
@@ -292,7 +292,7 @@ def test_qwen_reranker_factory_uses_dashscope_rerank(monkeypatch):
             created["api_key"] = api_key
             created["client"] = client
 
-    import imperial_rag.providers as providers
+    import imperial_rag.integrations.dashscope as providers
 
     monkeypatch.setattr(providers, "_import_dashscope_rerank", lambda: FakeDashScopeRerank)
     monkeypatch.setattr(providers, "_import_dashscope_text_rerank", lambda: FakeTextReRank, raising=False)
@@ -318,7 +318,7 @@ def test_qwen_reranker_factory_configures_sdk_and_uses_client_with_explicit_sett
             created["api_key"] = api_key
             created["client"] = client
 
-    import imperial_rag.providers as providers
+    import imperial_rag.integrations.dashscope as providers
 
     settings = providers.QwenProviderSettings(api_key="explicit-key")
     monkeypatch.setattr(providers, "configure_dashscope_sdk", lambda settings: config_calls.append(settings))
@@ -344,7 +344,7 @@ def test_dashscope_text_embeddings_call_sdk_with_dimensions(monkeypatch):
                 output={"embeddings": [{"embedding": [1.0, 2.0]}, {"embedding": [3.0, 4.0]}]},
             )
 
-    from imperial_rag.providers import DashScopeTextEmbeddings, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import DashScopeTextEmbeddings, QwenProviderSettings
 
     settings = QwenProviderSettings(api_key="key", embedding_dimensions=2048)
     embeddings = DashScopeTextEmbeddings(settings=settings, client=FakeTextEmbedding)
@@ -374,7 +374,7 @@ def test_dashscope_text_embeddings_batches_documents_at_dashscope_limit():
                 output={"embeddings": [{"embedding": [float(index)]} for index, _ in enumerate(batch)]},
             )
 
-    from imperial_rag.providers import DashScopeTextEmbeddings, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import DashScopeTextEmbeddings, QwenProviderSettings
 
     settings = QwenProviderSettings(api_key="key", embedding_dimensions=2048)
     embeddings = DashScopeTextEmbeddings(settings=settings, client=FakeTextEmbedding)
@@ -427,8 +427,8 @@ def test_dashscope_text_embeddings_traces_embedding_batches(monkeypatch):
                 output={"embeddings": [{"embedding": [1.0, 2.0]}, {"embedding": [3.0, 4.0]}]},
             )
 
-    import imperial_rag.tracing as tracing_module
-    from imperial_rag.providers import DashScopeTextEmbeddings, QwenProviderSettings
+    import imperial_rag.observability.phoenix as tracing_module
+    from imperial_rag.integrations.dashscope import DashScopeTextEmbeddings, QwenProviderSettings
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
     settings = QwenProviderSettings(api_key="key", embedding_dimensions=2048)
@@ -484,8 +484,8 @@ def test_dashscope_text_embeddings_trace_records_provider_errors_without_secret(
         def call(**kwargs):
             raise RuntimeError("network failed for sk-secret")
 
-    import imperial_rag.tracing as tracing_module
-    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+    import imperial_rag.observability.phoenix as tracing_module
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
 
     monkeypatch.setattr(tracing_module.trace, "get_tracer", lambda name: FakeTracer())
     embeddings = DashScopeTextEmbeddings(
@@ -508,7 +508,7 @@ def test_dashscope_text_embeddings_configures_sdk(monkeypatch):
         def call(**kwargs):
             raise AssertionError("call should not be reached")
 
-    import imperial_rag.providers as providers
+    import imperial_rag.integrations.dashscope as providers
 
     settings = providers.QwenProviderSettings(api_key="key")
     config_calls = []
@@ -526,7 +526,7 @@ def test_dashscope_text_embeddings_raise_clean_error_without_secret():
         def call(**kwargs):
             return SimpleNamespace(status_code=401, code="InvalidApiKey", message="bad key sk-secret")
 
-    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
 
     embeddings = DashScopeTextEmbeddings(
         settings=QwenProviderSettings(api_key="sk-secret"),
@@ -546,7 +546,7 @@ def test_dashscope_text_embeddings_wrap_sdk_exception_without_secret():
         def call(**kwargs):
             raise RuntimeError("network failed for sk-secret")
 
-    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
 
     embeddings = DashScopeTextEmbeddings(
         settings=QwenProviderSettings(api_key="sk-secret"),
@@ -567,7 +567,7 @@ def test_dashscope_text_embeddings_raise_clean_error_for_missing_embeddings():
         def call(**kwargs):
             return SimpleNamespace(status_code=200, output={})
 
-    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
 
     embeddings = DashScopeTextEmbeddings(
         settings=QwenProviderSettings(api_key="sk-secret"),
@@ -588,7 +588,7 @@ def test_dashscope_text_embeddings_raise_clean_error_for_empty_embeddings():
         def call(**kwargs):
             return SimpleNamespace(status_code=200, output={"embeddings": []})
 
-    from imperial_rag.providers import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, DashScopeTextEmbeddings, QwenProviderSettings
 
     embeddings = DashScopeTextEmbeddings(
         settings=QwenProviderSettings(api_key="sk-secret"),
@@ -612,7 +612,7 @@ def test_build_qwen_ocr_message_includes_base64_and_options(tmp_path, monkeypatc
     image_path = tmp_path / "scan.jpg"
     image_path.write_bytes(b"fake-image")
 
-    from imperial_rag.providers import build_qwen_ocr_message, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import build_qwen_ocr_message, QwenProviderSettings
 
     message = build_qwen_ocr_message(image_path, QwenProviderSettings.from_env())
 
@@ -643,8 +643,8 @@ def test_qwen_ocr_client_calls_multimodal_conversation(tmp_path, monkeypatch):
                 }
             }
 
-    from imperial_rag.ocr import OcrResult, QwenOcrClient
-    from imperial_rag.providers import QwenProviderSettings
+    from imperial_rag.ingestion.ocr import OcrResult, QwenOcrClient
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
 
     client = QwenOcrClient(settings=QwenProviderSettings.from_env(), conversation_client=FakeConversation)
     result = client.extract_image_text(image_path)
@@ -667,8 +667,8 @@ def test_qwen_ocr_client_wraps_sdk_exception_without_secret(tmp_path, monkeypatc
         def call(**kwargs):
             raise RuntimeError("bad dashscope-secret-key")
 
-    from imperial_rag.ocr import QwenOcrClient
-    from imperial_rag.providers import DashScopeProviderError, QwenProviderSettings
+    from imperial_rag.ingestion.ocr import QwenOcrClient
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, QwenProviderSettings
 
     client = QwenOcrClient(settings=QwenProviderSettings.from_env(), conversation_client=FakeConversation)
 
@@ -695,8 +695,8 @@ def test_qwen_ocr_client_sanitizes_response_error_without_secret(tmp_path, monke
                 "message": "bad dashscope-secret-key",
             }
 
-    from imperial_rag.ocr import QwenOcrClient
-    from imperial_rag.providers import DashScopeProviderError, QwenProviderSettings
+    from imperial_rag.ingestion.ocr import QwenOcrClient
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, QwenProviderSettings
 
     client = QwenOcrClient(settings=QwenProviderSettings.from_env(), conversation_client=FakeConversation)
 
@@ -709,7 +709,7 @@ def test_qwen_ocr_client_sanitizes_response_error_without_secret(tmp_path, monke
 
 
 def test_parse_qwen_ocr_response_extracts_text():
-    from imperial_rag.providers import parse_qwen_ocr_response
+    from imperial_rag.integrations.dashscope import parse_qwen_ocr_response
 
     response = {
         "output": {
@@ -729,13 +729,13 @@ def test_parse_qwen_ocr_response_extracts_text():
 
 
 def test_parse_qwen_ocr_response_extracts_output_text():
-    from imperial_rag.providers import parse_qwen_ocr_response
+    from imperial_rag.integrations.dashscope import parse_qwen_ocr_response
 
     assert parse_qwen_ocr_response({"output": {"text": "OCR text"}}) == "OCR text"
 
 
 def test_parse_qwen_ocr_response_raises_clean_error_for_provider_failure():
-    from imperial_rag.providers import DashScopeProviderError, parse_qwen_ocr_response
+    from imperial_rag.integrations.dashscope import DashScopeProviderError, parse_qwen_ocr_response
 
     response = {
         "status_code": 401,

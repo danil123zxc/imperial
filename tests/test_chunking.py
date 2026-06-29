@@ -1,6 +1,6 @@
 from langchain_core.documents import Document
 
-from imperial_rag.chunking import build_chunks
+from imperial_rag.ingestion.chunking import build_chunks
 
 
 def test_build_chunks_defaults_to_structure_token_budget_and_overlap():

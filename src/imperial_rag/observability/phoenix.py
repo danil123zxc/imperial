@@ -22,7 +22,7 @@ from imperial_rag.config import Settings, env_bool, env_int
 
 _CONFIGURED_PROVIDER: object | None = None
 _CONFIGURED_KEY: tuple[str, str] | None = None
-_TRACER_NAME = "imperial_rag.tracing"
+_TRACER_NAME = "imperial_rag.observability.phoenix"
 _SPAN_KIND = SpanAttributes.OPENINFERENCE_SPAN_KIND
 _INPUT_VALUE = SpanAttributes.INPUT_VALUE
 _OUTPUT_VALUE = SpanAttributes.OUTPUT_VALUE

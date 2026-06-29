@@ -217,7 +217,7 @@ def main() -> None:
     st.title(APP_TITLE)
     settings = Settings()
     from imperial_rag.observability import configure_observability
-    from imperial_rag.tracing import configure_phoenix_tracing, phoenix_trace_context
+    from imperial_rag.observability.phoenix import configure_phoenix_tracing, phoenix_trace_context
 
     configure_observability(settings)
     configure_phoenix_tracing(settings)
@@ -263,7 +263,7 @@ def main() -> None:
     with st.chat_message("user"):
         st.write(question)
 
-    from imperial_rag.tracing import trace_user_id_from_email
+    from imperial_rag.observability.phoenix import trace_user_id_from_email
 
     user_hash = trace_user_id_from_email(current_user.email)
     phoenix_session_id = st.session_state.phoenix_trace_session_id

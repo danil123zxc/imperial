@@ -11,9 +11,9 @@ from openpyxl import Workbook
 from PIL import Image
 
 from imperial_rag.config import Settings
-from imperial_rag.manifest import FileStatus, IndexStatus, ManifestStore
-from imperial_rag.ocr import OcrResult
-from imperial_rag.pipeline import ingest_corpus
+from imperial_rag.ingestion.manifest import FileStatus, IndexStatus, ManifestStore
+from imperial_rag.ingestion.ocr import OcrResult
+from imperial_rag.ingestion.pipeline import ingest_corpus
 
 
 class DeterministicOcrClient:
@@ -52,7 +52,7 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, 
     ocr_client = DeterministicOcrClient()
     FakeKeywordSearchIndex.last_settings = None
     FakeKeywordSearchIndex.last_documents = None
-    monkeypatch.setattr("imperial_rag.elasticsearch_keyword.ElasticsearchKeywordIndex", FakeKeywordSearchIndex)
+    monkeypatch.setattr("imperial_rag.retrieval.elasticsearch.ElasticsearchKeywordIndex", FakeKeywordSearchIndex)
 
     summary = ingest_corpus(settings=settings, ocr_client=ocr_client, vector_store=None)
 

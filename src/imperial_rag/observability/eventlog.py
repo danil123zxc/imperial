@@ -98,7 +98,7 @@ LEGACY_EVENT_MAP = {
     "imperial_rag.ingest": "ingest.completed",
     "imperial_rag.all_evals": "eval.completed",
     "imperial_rag.phoenix_eval": "eval.completed",
-    "imperial_rag.ragas_eval": "eval.completed",
+    "imperial_rag.evals.ragas": "eval.completed",
     "imperial_rag.vector_store_unavailable": "dependency.unavailable",
 }
 FAILED_OPERATION_EVENTS = {

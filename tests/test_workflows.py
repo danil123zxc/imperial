@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableLambda
 
 from imperial_rag.answering import REFUSAL_TEXT
 from imperial_rag.document_ids import document_key
-from imperial_rag.workflows import (
+from imperial_rag.answering.workflow import (
     build_ingestion_workflow,
     build_query_workflow,
     rank_hybrid_candidates,
@@ -115,7 +115,7 @@ def test_query_workflow_default_generation_uses_lcel_prompt_chain():
 
 
 def test_query_workflow_traces_answer_generation(monkeypatch):
-    from imperial_rag import workflows as workflows_module
+    from imperial_rag.answering import workflow as workflows_module
 
     docs = [
         Document(
@@ -211,7 +211,7 @@ def test_query_workflow_traces_answer_generation(monkeypatch):
 
 
 def test_query_workflow_sets_prompt_provenance_and_generator_trace_attributes(monkeypatch):
-    from imperial_rag import workflows as workflows_module
+    from imperial_rag.answering import workflow as workflows_module
 
     docs = [
         Document(
@@ -278,7 +278,7 @@ def test_query_workflow_sets_prompt_provenance_and_generator_trace_attributes(mo
 
 
 def test_query_workflow_traces_refusal_without_evidence(monkeypatch):
-    from imperial_rag import workflows as workflows_module
+    from imperial_rag.answering import workflow as workflows_module
 
     trace_calls = []
 
@@ -514,7 +514,7 @@ def test_query_workflow_preserves_uncited_generated_answer_with_invalid_diagnost
 
 
 def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypatch):
-    from imperial_rag import workflows as workflows_module
+    from imperial_rag.answering import workflow as workflows_module
 
     docs = [Document(page_content="Known fact.", metadata={"citation_id": "known"})]
     generated_answer = "Unsupported fact. [missing]"
@@ -669,7 +669,7 @@ def test_query_workflow_default_generation_requires_legacy_openai_flag(monkeypat
             return type("Response", (), {"content": "Возврат брака оформляется актом. [S1]"})()
 
     monkeypatch.delenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", raising=False)
-    monkeypatch.setattr("imperial_rag.workflows.ChatOpenAI", lambda **kwargs: FakeModel(), raising=False)
+    monkeypatch.setattr("imperial_rag.answering.workflow.ChatOpenAI", lambda **kwargs: FakeModel(), raising=False)
 
     workflow = build_query_workflow(retrieve=lambda question: docs)
 

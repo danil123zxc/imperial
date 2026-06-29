@@ -11,7 +11,7 @@ import pytest
 
 
 def test_faithfulness_row_from_run_output_extracts_docs_and_skips_empty_cases():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     row = ragas_eval.faithfulness_row_from_run_output(
         {"question": " Как оформить возврат брака? "},
@@ -46,7 +46,7 @@ def test_faithfulness_row_from_run_output_extracts_docs_and_skips_empty_cases():
 
 
 def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monkeypatch):
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -87,7 +87,7 @@ def test_build_faithfulness_scorer_uses_openai_compatible_dashscope_client(monke
 
 
 def test_build_answer_relevancy_scorer_uses_qwen_llm_and_embeddings(monkeypatch):
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -140,7 +140,7 @@ def test_build_answer_relevancy_scorer_uses_qwen_llm_and_embeddings(monkeypatch)
 
 
 def test_import_faithfulness_metric_prefers_ragas_collections_api():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     metric_cls = ragas_eval._import_faithfulness_metric()
 
@@ -149,7 +149,7 @@ def test_import_faithfulness_metric_prefers_ragas_collections_api():
 
 
 def test_score_faithfulness_for_phoenix_returns_score_dictionary():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -182,7 +182,7 @@ def test_score_faithfulness_for_phoenix_returns_score_dictionary():
 
 
 def test_score_faithfulness_for_phoenix_skips_empty_response_or_contexts():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     result = ragas_eval.score_faithfulness_for_phoenix(
         input={"question": "Что делать с браком?"},
@@ -196,7 +196,7 @@ def test_score_faithfulness_for_phoenix_skips_empty_response_or_contexts():
 
 
 def test_score_answer_relevancy_for_phoenix_uses_question_and_response_without_contexts():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -228,7 +228,7 @@ def test_score_answer_relevancy_for_phoenix_uses_question_and_response_without_c
 
 
 def test_score_answer_relevancy_for_phoenix_skips_empty_question_or_response():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     result = ragas_eval.score_answer_relevancy_for_phoenix(
         input={"question": "Что делать с браком?"},
@@ -242,7 +242,7 @@ def test_score_answer_relevancy_for_phoenix_skips_empty_question_or_response():
 
 
 def test_retrieved_context_ids_from_output_extracts_unique_file_ids():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     output = {
         "documents": [
@@ -257,7 +257,7 @@ def test_retrieved_context_ids_from_output_extracts_unique_file_ids():
 
 
 def test_score_id_context_recall_row_uses_ragas_single_turn_sample():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -293,7 +293,7 @@ def test_score_id_context_recall_row_uses_ragas_single_turn_sample():
 
 
 def test_score_id_context_recall_row_skips_missing_ids():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     missing_reference = ragas_eval.score_id_context_recall_row(
         {"user_input": "q", "retrieved_context_ids": ["file-a"], "reference_context_ids": []},
@@ -313,7 +313,7 @@ def test_score_id_context_recall_row_skips_missing_ids():
 
 
 def test_single_turn_sample_from_row_populates_text_and_context_id_fields(monkeypatch):
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -346,7 +346,7 @@ def test_single_turn_sample_from_row_populates_text_and_context_id_fields(monkey
 
 
 def test_evaluation_dataset_from_rows_uses_single_turn_samples(monkeypatch):
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     captured: dict[str, Any] = {}
 
@@ -370,7 +370,7 @@ def test_evaluation_dataset_from_rows_uses_single_turn_samples(monkeypatch):
 
 
 def test_parse_ragas_metric_names_accepts_id_context_recall_aliases():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     assert ragas_eval.parse_ragas_metric_names("id-context-recall") == ["id_context_recall"]
     assert ragas_eval.parse_ragas_metric_names("id_based_context_recall") == ["id_context_recall"]
@@ -380,7 +380,7 @@ def test_parse_ragas_metric_names_accepts_id_context_recall_aliases():
 
 
 def test_evaluate_id_context_recall_rows_returns_sidecar_records():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     class FakeScorer:
         def single_turn_ascore(self, sample):
@@ -412,7 +412,7 @@ def test_evaluate_id_context_recall_rows_returns_sidecar_records():
 
 
 def test_evaluate_answer_relevancy_rows_returns_sidecar_records():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     class FakeScorer:
         def score(self, **kwargs):
@@ -431,7 +431,7 @@ def test_evaluate_answer_relevancy_rows_returns_sidecar_records():
 
 
 def test_evaluate_faithfulness_rows_returns_sidecar_records():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     class FakeScorer:
         def score(self, **kwargs):
@@ -458,7 +458,7 @@ def test_ragas_eval_script_imports_without_importing_ragas_at_module_load():
 
 
 def test_run_coroutine_rejects_sync_bridge_inside_running_loop():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     async def runner():
         with pytest.raises(RuntimeError, match="running event loop"):
@@ -490,7 +490,7 @@ def test_ragas_eval_rejects_non_positive_cli_concurrency_before_running():
 
 
 def test_async_faithfulness_row_awaits_scorer_inside_running_loop(monkeypatch):
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     monkeypatch.setattr(ragas_eval, "_run_coroutine", lambda awaitable: pytest.fail("sync bridge used"))
 
@@ -517,7 +517,7 @@ def test_async_faithfulness_row_awaits_scorer_inside_running_loop(monkeypatch):
 
 
 def test_async_answer_relevancy_rows_preserve_order_under_concurrency():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     class FakeScorer:
         async def ascore(self, **kwargs):
@@ -905,7 +905,7 @@ def test_build_ragas_metrics_imports_installed_ragas_metrics():
 
 
 def test_import_answer_relevancy_metric_prefers_ragas_collections_api():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     metric_cls = ragas_eval._import_answer_relevancy_metric()
 
@@ -933,7 +933,7 @@ def test_result_records_support_scores_and_pandas_like_results():
 
 
 def test_map_rows_bounded_asserts_all_result_slots_are_filled():
-    from imperial_rag import ragas_eval
+    from imperial_rag.evals import ragas as ragas_eval
 
     async def evaluator(row):
         return None

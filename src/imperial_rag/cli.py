@@ -33,7 +33,7 @@ def configure_observability(settings: Any) -> None:
 
 
 def configure_tracing(settings: Any, *, trace_phoenix: bool | None = None, enabled: bool | None = None) -> None:
-    from imperial_rag.tracing import configure_phoenix_tracing
+    from imperial_rag.observability.phoenix import configure_phoenix_tracing
 
     if enabled is None and trace_phoenix is not None:
         enabled = True if trace_phoenix else None
@@ -42,7 +42,7 @@ def configure_tracing(settings: Any, *, trace_phoenix: bool | None = None, enabl
 
 @contextmanager
 def trace_context(session_id: str, *, entrypoint: str = "cli", tags: list[str] | None = None):
-    from imperial_rag.tracing import phoenix_trace_context
+    from imperial_rag.observability.phoenix import phoenix_trace_context
 
     with phoenix_trace_context(
         session_id,

@@ -9,8 +9,8 @@ from typing import Any
 
 from langchain_core.documents import Document
 
-from imperial_rag import web_app
-from imperial_rag.web_app import (
+from imperial_rag.app import web as web_app
+from imperial_rag.app.web import (
     APP_TITLE,
     RetrievedFileGroup,
     build_retrieved_file_groups,
@@ -327,7 +327,7 @@ def test_query_runtime_reuses_streamlit_cached_runtime(monkeypatch, tmp_path):
         return wrapper
 
     monkeypatch.setitem(sys.modules, "streamlit", types.SimpleNamespace(cache_resource=fake_cache_resource))
-    monkeypatch.setattr("imperial_rag.runtime.create_runtime", fake_create_runtime)
+    monkeypatch.setattr("imperial_rag.answering.runtime.create_runtime", fake_create_runtime)
     monkeypatch.setattr(web_app, "_RUNTIME_CACHE_WRAPPER", None, raising=False)
     settings = SimpleNamespace(
         workspace_root=tmp_path,
@@ -400,7 +400,7 @@ def test_render_chat_message_surfaces_model_provider_error(tmp_path):
 
 
 def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
-    from imperial_rag import web_app
+    from imperial_rag.app import web as web_app
 
     calls = []
 
@@ -415,7 +415,7 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: calls.append("tracing")
     tracing_module.phoenix_trace_context = _null_trace_context
 
@@ -457,7 +457,7 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
 
@@ -467,7 +467,7 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
 
 
 def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_path):
-    from imperial_rag import web_app
+    from imperial_rag.app import web as web_app
 
     env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
@@ -479,7 +479,7 @@ def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_pat
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
@@ -529,7 +529,7 @@ def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_pat
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
 
@@ -539,8 +539,8 @@ def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_pat
 
 
 def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path):
-    from imperial_rag import web_app
-    from imperial_rag.auth import AuthStore
+    from imperial_rag.app import web as web_app
+    from imperial_rag.app.auth import AuthStore
 
     auth_db_path = tmp_path / "auth.sqlite3"
     store = AuthStore(auth_db_path)
@@ -558,7 +558,7 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
@@ -597,7 +597,7 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
 
@@ -607,8 +607,8 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
 
 
 def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
-    from imperial_rag import web_app
-    from imperial_rag.auth import AuthStore
+    from imperial_rag.app import web as web_app
+    from imperial_rag.app.auth import AuthStore
 
     auth_db_path = tmp_path / "auth.sqlite3"
 
@@ -622,7 +622,7 @@ def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
@@ -666,7 +666,7 @@ def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
 
@@ -678,8 +678,8 @@ def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
 
 
 def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
-    from imperial_rag import web_app
-    from imperial_rag.auth import AuthStore, AuthenticationStatus
+    from imperial_rag.app import web as web_app
+    from imperial_rag.app.auth import AuthStore, AuthenticationStatus
 
     auth_db_path = tmp_path / "auth.sqlite3"
     store = AuthStore(auth_db_path)
@@ -697,7 +697,7 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
 
@@ -737,7 +737,7 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
 
@@ -747,8 +747,8 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
 
 
 def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_path):
-    from imperial_rag import web_app
-    from imperial_rag.auth import AuthStore
+    from imperial_rag.app import web as web_app
+    from imperial_rag.app.auth import AuthStore
 
     calls = []
     auth_db_path = tmp_path / "auth.sqlite3"
@@ -768,7 +768,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
     config_module = _fake_module("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = _fake_module("imperial_rag.tracing")
+    tracing_module = _fake_module("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     trace_contexts = []
 
@@ -824,7 +824,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
     monkeypatch.setattr(web_app, "query_runtime", lambda settings, question: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -893,7 +893,7 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
             info=lambda *args, **kwargs: None,
             chat_input=lambda *args, **kwargs: None,
         )
-        namespace = runpy.run_path('src/imperial_rag/web_app/__main__.py', run_name='imperial_web_app_test')
+        namespace = runpy.run_path('src/imperial_rag/app/web.py', run_name='imperial_web_app_test')
         namespace['main']()
         """
     )

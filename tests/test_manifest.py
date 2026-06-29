@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from imperial_rag.manifest import FileStatus, assign_duplicate_groups, scan_files, stable_file_id
+from imperial_rag.ingestion.manifest import FileStatus, assign_duplicate_groups, scan_files, stable_file_id
 
 
 def test_scan_files_filters_hidden_system_and_lock_files_but_keeps_real_unsupported_files(tmp_path):

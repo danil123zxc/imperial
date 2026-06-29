@@ -9,7 +9,7 @@ import pytest
 from langchain_core.documents import Document
 
 from imperial_rag.config import Settings
-from imperial_rag.elasticsearch_keyword import (
+from imperial_rag.retrieval.elasticsearch import (
     ElasticsearchKeywordIndex,
     ElasticsearchKeywordRetriever,
     elasticsearch_health,

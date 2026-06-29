@@ -8,8 +8,8 @@ import types
 import pytest
 from langchain_core.documents import Document
 
-from imperial_rag import web_app
-from imperial_rag.auth import AuthStore
+from imperial_rag.app import web as web_app
+from imperial_rag.app.auth import AuthStore
 from imperial_rag.app.chat_history import ChatHistoryStore
 
 
@@ -148,7 +148,7 @@ def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkey
     config_module = types.ModuleType("imperial_rag.config")
     config_module.Settings = FakeSettings
 
-    tracing_module = types.ModuleType("imperial_rag.tracing")
+    tracing_module = types.ModuleType("imperial_rag.observability.phoenix")
     tracing_module.configure_phoenix_tracing = lambda settings: None
     tracing_module.phoenix_trace_context = _null_trace_context
     tracing_module.trace_user_id_from_email = lambda email: "user_sha256:testhash"
@@ -183,7 +183,7 @@ def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkey
 
     monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
-    monkeypatch.setitem(sys.modules, "imperial_rag.tracing", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
     monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
     monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
     monkeypatch.setattr(
@@ -210,6 +210,84 @@ def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkey
     ]
     assert messages[1].to_chat_message()["sources"] == ["travel-policy.docx"]
     assert history.list_conversations("other@example.com") == []
+
+
+def test_main_persists_assistant_error_when_signed_in_query_fails(monkeypatch, tmp_path):
+    auth_db_path = tmp_path / "auth.sqlite3"
+    chat_history_db_path = tmp_path / "chat_history.sqlite3"
+    auth_store = AuthStore(auth_db_path)
+    auth_store.initialize()
+    auth_store.bootstrap_admin("admin@example.com", "admin-password")
+    auth_store.register_user("user@example.com", "user-password", "User", "Testing")
+    auth_store.approve_user("admin@example.com", "user@example.com")
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_db_path = auth_db_path
+            self.chat_history_db_path = chat_history_db_path
+            self.documents_root = tmp_path / "documents"
+            self.extraction_root = tmp_path / "extracted"
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.observability.phoenix")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
+    tracing_module.trace_user_id_from_email = lambda email: "user_sha256:testhash"
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+    observability_module.log_event = lambda *args, **kwargs: None
+    observability_module.log_failure = lambda *args, **kwargs: None
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    errors = []
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        sidebar=Context(),
+        header=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        session_state=SessionState(auth_user_email="user@example.com"),
+        caption=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: False,
+        chat_input=lambda *args, **kwargs: "How do I expense travel?",
+        chat_message=lambda *args, **kwargs: Context(),
+        write=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda message: errors.append(message),
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+    monkeypatch.setattr(web_app, "query_runtime", lambda settings, question: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    web_app.main()
+
+    history = ChatHistoryStore(chat_history_db_path)
+    conversations = history.list_conversations("user@example.com")
+    assert len(conversations) == 1
+    messages = history.list_messages("user@example.com", conversations[0].id)
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert messages[1].content == "Something went wrong while answering. Check local logs for details."
+    assert messages[1].to_chat_message()["error"] == {
+        "type": "web_query_error",
+        "exception_type": "RuntimeError",
+    }
+    assert errors == ["Something went wrong while answering. Check local logs for details."]
 
 
 @contextmanager

@@ -23,7 +23,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from run_phoenix_eval import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, positive_int, run_target
-from imperial_rag.ragas_eval import (
+from imperial_rag.evals.ragas import (
     DEFAULT_RAGAS_CONCURRENCY,
     DEFAULT_RAGAS_METRICS,
     REFERENCE_REQUIRED_RAGAS_METRICS,
@@ -203,7 +203,7 @@ def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any
     unsupported_here = sorted(set(metric_names) & {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported_here:
         raise SystemExit(
-            "Ragas Faithfulness, Answer Relevancy, and ID context recall are evaluated through imperial_rag.ragas_eval."
+            "Ragas Faithfulness, Answer Relevancy, and ID context recall are evaluated through imperial_rag.evals.ragas."
         )
 
     _install_ragas_langchain_community_compat()
@@ -231,7 +231,7 @@ def build_ragas_metrics(metric_names: list[str], evaluator_llm: Any) -> list[Any
 
 
 def build_evaluator_llm(provider_settings: Any | None = None) -> Any:
-    from imperial_rag.providers import MissingDashScopeKeyError, QwenProviderSettings
+    from imperial_rag.integrations.dashscope import MissingDashScopeKeyError, QwenProviderSettings
 
     settings = provider_settings or QwenProviderSettings.from_env()
 
@@ -337,7 +337,7 @@ def _log_completion(started_at: float, **fields: Any) -> None:
     from imperial_rag.observability import log_event
 
     log_event(
-        "imperial_rag.ragas_eval",
+        "imperial_rag.evals.ragas",
         operation="ragas_eval",
         status="success",
         component="cli",

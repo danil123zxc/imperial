@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from imperial_rag.manifest import (
+from imperial_rag.ingestion.manifest import (
     FileStatus,
     IndexStatus,
     ManifestStore,

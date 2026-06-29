@@ -139,14 +139,14 @@ def run_target(inputs: dict[str, Any], runtime: Any | None = None) -> dict[str, 
 
 def build_runtime(settings: Any | None = None) -> Any:
     try:
-        from imperial_rag.runtime import create_runtime
+        from imperial_rag.answering.runtime import create_runtime
     except (ImportError, AttributeError):
         create_runtime = None
     if create_runtime is not None:
         return create_runtime(settings) if settings is not None else create_runtime()
 
     try:
-        from imperial_rag.runtime import Runtime
+        from imperial_rag.answering.runtime import Runtime
     except (ImportError, AttributeError):
         Runtime = None
 
@@ -154,7 +154,7 @@ def build_runtime(settings: Any | None = None) -> Any:
         RuntimeClass = cast(Any, Runtime)
         return RuntimeClass(settings=settings) if settings is not None else RuntimeClass()
 
-    from imperial_rag.runtime import build_live_query_workflow
+    from imperial_rag.answering.runtime import build_live_query_workflow
 
     workflow = build_live_query_workflow(settings) if settings is not None else build_live_query_workflow()
 
@@ -343,7 +343,7 @@ def phoenix_ragas_faithfulness(
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import score_faithfulness_for_phoenix
+    from imperial_rag.evals.ragas import score_faithfulness_for_phoenix
 
     if not _answer_quality_metric_applies(expected or input or {}):
         return _metric_not_applicable_result("faithfulness", expected or input or {})
@@ -359,7 +359,7 @@ async def phoenix_ragas_faithfulness_async(
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import score_faithfulness_for_phoenix_async
+    from imperial_rag.evals.ragas import score_faithfulness_for_phoenix_async
 
     if not _answer_quality_metric_applies(expected or input or {}):
         return _metric_not_applicable_result("faithfulness", expected or input or {})
@@ -375,7 +375,7 @@ def phoenix_ragas_answer_relevancy(
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import score_answer_relevancy_for_phoenix
+    from imperial_rag.evals.ragas import score_answer_relevancy_for_phoenix
 
     if not _answer_quality_metric_applies(expected or input or {}):
         return _metric_not_applicable_result("answer_relevancy", expected or input or {})
@@ -391,7 +391,7 @@ async def phoenix_ragas_answer_relevancy_async(
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import score_answer_relevancy_for_phoenix_async
+    from imperial_rag.evals.ragas import score_answer_relevancy_for_phoenix_async
 
     if not _answer_quality_metric_applies(expected or input or {}):
         return _metric_not_applicable_result("answer_relevancy", expected or input or {})
@@ -407,7 +407,7 @@ def phoenix_id_context_recall(
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import score_id_context_recall_for_phoenix
+    from imperial_rag.evals.ragas import score_id_context_recall_for_phoenix
 
     return score_id_context_recall_for_phoenix(
         input=input or {},
@@ -421,7 +421,7 @@ async def phoenix_id_context_recall_async(
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import score_id_context_recall_for_phoenix_async
+    from imperial_rag.evals.ragas import score_id_context_recall_for_phoenix_async
 
     return await score_id_context_recall_for_phoenix_async(
         input=input or {},
@@ -590,7 +590,7 @@ async def run_phoenix_experiment_async(
 ) -> None:
     concurrency = positive_int(concurrency)
     if ragas_metric_names is None:
-        from imperial_rag.ragas_eval import DEFAULT_RAGAS_METRICS
+        from imperial_rag.evals.ragas import DEFAULT_RAGAS_METRICS
 
         resolved_ragas_metric_names = list(DEFAULT_RAGAS_METRICS)
     else:
@@ -686,7 +686,7 @@ def _duration_ms(started_at: float) -> int:
 
 
 def parse_phoenix_ragas_metrics(raw_metrics: str | None) -> list[str]:
-    from imperial_rag.ragas_eval import DEFAULT_RAGAS_METRICS, parse_ragas_metric_names
+    from imperial_rag.evals.ragas import DEFAULT_RAGAS_METRICS, parse_ragas_metric_names
 
     return parse_ragas_metric_names(raw_metrics, default=DEFAULT_RAGAS_METRICS, allow_none=True)
 
@@ -695,7 +695,7 @@ def _validate_phoenix_ragas_metric_requirements(
     metric_names: Sequence[str],
     examples: list[dict[str, Any]],
 ) -> None:
-    from imperial_rag.ragas_eval import validate_ragas_metric_requirements
+    from imperial_rag.evals.ragas import validate_ragas_metric_requirements
 
     validate_ragas_metric_requirements(
         metric_names,
@@ -849,7 +849,7 @@ def id_retrieval_metrics(
     *,
     k: int = DEFAULT_RETRIEVAL_METRIC_K,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import retrieved_context_ids_from_output
+    from imperial_rag.evals.ragas import retrieved_context_ids_from_output
 
     reference_ids = _clean_context_ids((reference_outputs or inputs).get("reference_context_ids") or [])
     if not reference_ids:
@@ -960,7 +960,7 @@ def build_eval_artifact_row(
     ragas_results: Mapping[str, Mapping[str, Any]] | None = None,
     phoenix_experiment: str | None = None,
 ) -> dict[str, Any]:
-    from imperial_rag.ragas_eval import retrieved_context_ids_from_output
+    from imperial_rag.evals.ragas import retrieved_context_ids_from_output
 
     inputs = {"question": example["question"]}
     reference_outputs = {
@@ -1120,7 +1120,7 @@ def _configure_tracing(settings: Any, enabled: bool) -> None:
 def _get_ragas_faithfulness_scorer() -> Any:
     global _RAGAS_FAITHFULNESS_SCORER
     if _RAGAS_FAITHFULNESS_SCORER is None:
-        from imperial_rag.ragas_eval import build_faithfulness_scorer
+        from imperial_rag.evals.ragas import build_faithfulness_scorer
 
         _RAGAS_FAITHFULNESS_SCORER = build_faithfulness_scorer()
     return _RAGAS_FAITHFULNESS_SCORER
@@ -1129,7 +1129,7 @@ def _get_ragas_faithfulness_scorer() -> Any:
 def _get_ragas_answer_relevancy_scorer() -> Any:
     global _RAGAS_ANSWER_RELEVANCY_SCORER
     if _RAGAS_ANSWER_RELEVANCY_SCORER is None:
-        from imperial_rag.ragas_eval import build_answer_relevancy_scorer
+        from imperial_rag.evals.ragas import build_answer_relevancy_scorer
 
         _RAGAS_ANSWER_RELEVANCY_SCORER = build_answer_relevancy_scorer()
     return _RAGAS_ANSWER_RELEVANCY_SCORER

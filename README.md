@@ -37,7 +37,7 @@ Core package code lives in `src/imperial_rag/`:
 - `answering/` owns query-time RAG runtime, workflows, and strict answer formatting.
 - `integrations/` centralizes Qwen/DashScope chat, embedding, reranking, and OCR provider defaults.
 - `observability/` configures logs, event logs, and Phoenix tracing.
-- `app/` provides the Streamlit UI; `web_app/` keeps the UI import and launch path compatible.
+- `app/` provides the Streamlit UI and its launch entrypoint (`app/web.py`).
 
 ## Current Local Snapshot
 
@@ -94,7 +94,7 @@ uv run python scripts/query.py "question text"
 Run the local UI:
 
 ```bash
-uv run python -m streamlit run src/imperial_rag/web_app/__main__.py --server.address 127.0.0.1 --server.port 8501
+uv run python -m streamlit run src/imperial_rag/app/web.py --server.address 127.0.0.1 --server.port 8501
 ```
 
 Then open `http://127.0.0.1:8501`. Sign in with the bootstrap admin account, then approve pending signup requests from the sidebar access panel. Auth state is stored locally in `.imperial_rag/auth.sqlite3`.

@@ -164,7 +164,7 @@ def summarize_calibration(
 
 def resolve_judge_settings(judge_model: str | None = None) -> Any:
     from dataclasses import replace
-    from imperial_rag.providers import QwenProviderSettings
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
 
     settings = QwenProviderSettings.from_env()
     if judge_model:

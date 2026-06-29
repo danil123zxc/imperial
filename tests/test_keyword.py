@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.documents import Document
 
-from imperial_rag.keyword import (
+from imperial_rag.retrieval.lexical import (
     ELASTICSEARCH_BOOSTED_SEARCH_FIELDS,
     ELASTICSEARCH_REQUIRED_SEARCH_FIELDS,
     build_elasticsearch_token_query,
