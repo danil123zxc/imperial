@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMPERIAL_RAG_WORKSPACE_ROOT: /Users/danil/Public/imperial
+  IMPERIAL_RAG_LIVE_API: "0"
+  IMPERIAL_RAG_LIVE_CORPUS: "0"
+  IMPERIAL_RAG_LIVE_QDRANT: "0"
+  IMPERIAL_RAG_LIVE_ELASTICSEARCH: "0"
+  PHOENIX_TRACING_ENABLED: "false"
+  IMPERIAL_RAG_TRACING_ENABLED: "false"
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run checks
+        run: ./scripts/check.sh

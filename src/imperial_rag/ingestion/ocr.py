@@ -6,7 +6,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,12 @@ class QwenOcrClient:
 def _build_compatible_chat_model(settings, api_key: str):
     from langchain_qwq import ChatQwen
 
-    return ChatQwen(model=settings.vision_model, temperature=0, api_key=api_key, base_url=settings.compat_base_url)
+    return ChatQwen(
+        model=settings.vision_model,
+        temperature=0,
+        api_key=cast(Any, api_key),
+        base_url=settings.compat_base_url,
+    )
 
 
 def _uses_qwen_ocr_options(model: str) -> bool:

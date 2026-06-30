@@ -349,39 +349,39 @@ def extract_file(
             message="archive files recorded but not extracted in v1",
         )
     if record.extension == ".docx":
-        warnings: list[str] = []
+        docx_warnings: list[str] = []
         documents = _extract_docx(
             record,
             ocr_client=ocr_client,
             ocr_cache=ocr_cache,
             artifact_root=artifact_root,
-            warnings=warnings,
+            warnings=docx_warnings,
         )
         return ExtractionResult(
             record,
             FileStatus.INDEXED if documents else FileStatus.NO_TEXT,
             documents,
             "python_docx",
-            "; ".join(warnings),
+            "; ".join(docx_warnings),
         )
     if record.extension == ".pdf":
-        warnings: list[str] = []
+        pdf_warnings: list[str] = []
         documents = _extract_pdf(
             record,
             ocr_client=ocr_client,
             ocr_cache=ocr_cache,
             artifact_root=artifact_root,
-            warnings=warnings,
+            warnings=pdf_warnings,
         )
         return ExtractionResult(
             record,
             FileStatus.INDEXED if documents else FileStatus.NO_TEXT,
             documents,
             "pymupdf",
-            "; ".join(warnings),
+            "; ".join(pdf_warnings),
         )
     if record.extension in IMAGE_EXTENSIONS:
-        warnings: list[str] = []
+        image_warnings: list[str] = []
         documents = _ocr_image(
             record,
             record.absolute_path,
@@ -390,7 +390,7 @@ def extract_file(
             {"image_hash": record.sha256},
             ocr_cache=ocr_cache,
             image_id="image",
-            warnings=warnings,
+            warnings=image_warnings,
             empty_label="image",
         )
         return ExtractionResult(
@@ -398,7 +398,7 @@ def extract_file(
             FileStatus.INDEXED if documents else FileStatus.NO_TEXT,
             documents,
             "image_ocr",
-            "; ".join(warnings),
+            "; ".join(image_warnings),
         )
     if record.extension == ".xlsx":
         documents = _extract_xlsx(record)
