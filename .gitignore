@@ -1,6 +1,15 @@
 documents/
 .imperial_rag/
 
+# OS / editor junk
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
 .env
 .env.*
 !.env.example
@@ -17,8 +26,16 @@ htmlcov/
 
 .venv/
 venv/
+.uv-cache/
 
 *.sqlite3
 *.sqlite3-*
+
+# Local logs and temporary office lock files
+*.log
+~$*
+
+# Local tool settings
+.claude/settings.local.json
 
 docs/
