@@ -32,6 +32,20 @@ def test_local_check_script_runs_offline_quality_gate() -> None:
     assert "uv run --extra dev mypy src/imperial_rag" in script
     assert "uv run --extra dev python -m pytest --cov=imperial_rag -q" in script
     assert "git diff --check" in script
+    assert "GITHUB_BASE_REF" in script
+    assert 'git diff --check "origin/${GITHUB_BASE_REF}...HEAD"' in script
+
+
+def test_gitignore_keeps_docs_trackable_except_generated_reports() -> None:
+    ignore_path = ROOT / ".gitignore"
+    ignore_lines = {
+        line.strip()
+        for line in ignore_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+    assert "docs/" not in ignore_lines
+    assert "docs/superpowers/reports/" in ignore_lines
 
 
 def test_pyright_contract_targets_repo_sources_without_broad_ignores() -> None:

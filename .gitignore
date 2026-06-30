@@ -38,4 +38,5 @@ venv/
 # Local tool settings
 .claude/settings.local.json
 
-docs/
+# Generated planning/report artifacts
+docs/superpowers/reports/

@@ -5,6 +5,7 @@ import argparse
 from collections import Counter
 import importlib.util
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -12,6 +13,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+
+PORTABLE_EVAL_CORPUS_PATH = Path("tests/fixtures/eval_corpus_chunks.jsonl")
+LIVE_EVAL_CORPUS_PATH = Path(".imperial_rag/extracted/chunks.jsonl")
 
 
 def _fake_module(name: str) -> Any:
@@ -39,9 +44,11 @@ def test_eval_questions_are_russian_jsonl_with_expected_behavior():
     assert all(row.get("reference_context_ids") for row in rows if row["expected_behavior"] == "cite_answer")
     assert all(len(row.get("reference_context_ids") or []) >= 2 for row in rows if row["expected_behavior"] == "surface_conflict")
     assert all(not row.get("reference_context_ids") for row in rows if row["expected_behavior"] == "refuse_if_not_found")
+    corpus_path = _eval_corpus_chunks_path()
+    assert corpus_path.exists(), f"missing eval corpus chunks: {corpus_path}"
     audit_rows = audit_eval_rows(
         rows,
-        corpus_index=load_corpus_index(Path(".imperial_rag/extracted/chunks.jsonl")),
+        corpus_index=load_corpus_index(corpus_path),
         documents_root=Path("documents"),
     )
     findings = validate_eval_contract(audit_rows)
@@ -65,6 +72,12 @@ def test_eval_questions_are_russian_jsonl_with_expected_behavior():
         assert _contains_cyrillic(payload["reference_answer"])
         if "reference_context_ids" in payload:
             assert all(isinstance(context_id, str) and context_id.strip() for context_id in payload["reference_context_ids"])
+
+
+def _eval_corpus_chunks_path() -> Path:
+    if os.environ.get("IMPERIAL_RAG_LIVE_CORPUS") == "1":
+        return LIVE_EVAL_CORPUS_PATH
+    return PORTABLE_EVAL_CORPUS_PATH
 
 
 def test_russian_judge_calibration_fixture_has_locked_human_labels():

@@ -1,8 +1,8 @@
 # Imperial RAG — Codebase Review
 
-**Date:** 2026-06-19  
-**Branch:** `codex/phoenix-trace-quality`  
-**Scope:** Full `src/imperial_rag/` codebase (all Python source files)  
+**Date:** 2026-06-19
+**Branch:** `codex/phoenix-trace-quality`
+**Scope:** Full `src/imperial_rag/` codebase (all Python source files)
 **Focus:** Correctness bugs, missing guards, custom code that should be replaced with frameworks/libraries
 
 ---

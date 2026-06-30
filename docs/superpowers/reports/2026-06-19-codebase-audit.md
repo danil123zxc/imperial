@@ -1,6 +1,6 @@
 # Imperial RAG Codebase Audit
 
-Date: 2026-06-19  
+Date: 2026-06-19
 Scope: tracked application code, scripts, tests, configuration, Docker/Compose, README, and current repository runtime conventions under `/Users/danil/Public/imperial`. I did not change application code.
 
 ## Verification performed
