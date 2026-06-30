@@ -24,6 +24,9 @@ class QwenOcrClient:
         self.api_key = self.settings.require_api_key()
         self.use_ocr_options = _uses_qwen_ocr_options(self.settings.vision_model)
         if conversation_client is None and self.use_ocr_options:
+            from imperial_rag.integrations.dashscope import configure_dashscope_sdk
+
+            configure_dashscope_sdk(self.settings)
             import dashscope
 
             conversation_client = dashscope.MultiModalConversation

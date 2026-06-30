@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -654,6 +655,27 @@ def test_qwen_ocr_client_calls_multimodal_conversation(tmp_path, monkeypatch):
     assert calls[0]["api_key"] == "dashscope-test-key"
     assert calls[0]["ocr_options"] == {"task": "multi_lan"}
     assert calls[0]["messages"][0]["role"] == "user"
+
+
+def test_qwen_ocr_client_configures_native_dashscope_base_url(monkeypatch):
+    clear_provider_env(monkeypatch)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
+    monkeypatch.setenv("IMPERIAL_RAG_DASHSCOPE_BASE_URL", "https://workspace.example.test/api/v1")
+    fake_dashscope = SimpleNamespace(
+        api_key=None,
+        base_http_api_url=None,
+        MultiModalConversation=object(),
+    )
+    monkeypatch.setitem(sys.modules, "dashscope", fake_dashscope)
+
+    from imperial_rag.ingestion.ocr import QwenOcrClient
+    from imperial_rag.integrations.dashscope import QwenProviderSettings
+
+    client = QwenOcrClient(settings=QwenProviderSettings.from_env())
+
+    assert fake_dashscope.api_key == "dashscope-test-key"
+    assert fake_dashscope.base_http_api_url == "https://workspace.example.test/api/v1"
+    assert client.conversation_client is fake_dashscope.MultiModalConversation
 
 
 def test_build_qwen_ocr_message_can_include_text_prompt(tmp_path, monkeypatch):
