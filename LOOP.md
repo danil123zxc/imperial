@@ -12,9 +12,9 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 | Loop ID | Cadence / trigger | Status | Command / prompt |
 | --- | --- | --- | --- |
 | `daily-triage` | Manual or exactly once daily (`1d`) | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$loop-triage`. Update `STATE.md` and `loop-run-log.md`; do not edit source. |
-| `ci-sweeper-manual` | Manual or after failed CI only | Planned L1 report-only | Read GitHub Actions / local check results, map failures to `./scripts/check.sh`, and write findings only. |
-| `eval-regression-check` | Manual before eval changes | Planned L1 report-only | Audit eval dataset quality and summarize drift; provider-backed runs require human approval. |
-| `ingestion-promotion-review` | Manual before promotion | Planned L1 report-only | Compare baseline and shadow artifacts with `scripts/check_ingestion_promotion.py`; no direct promotion. |
+| `ci-sweeper-manual` | Manual or after failed CI only | Planned L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ci-sweeper-manual`. Read CI/local-check failures, map them to local verifiers, and write findings only. |
+| `eval-regression-check` | Manual before eval changes | Planned L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$eval-regression-check`. Audit eval dataset drift without provider-backed runs or dataset edits. |
+| `ingestion-promotion-review` | Manual before promotion | Planned L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ingestion-promotion-review`. Compare approved baseline/shadow context; never promote artifacts. |
 | `post-merge-cleanup` | Manual after merge review | Candidate L1 report-only | Summarize follow-up cleanup only; any source edit requires later L2 approval. |
 
 ## Enablement Terms

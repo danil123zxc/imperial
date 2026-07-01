@@ -45,6 +45,7 @@ patterns:
     status: planned
     level: L1
     cadence: manual
+    skill_path: .codex/skills/ci-sweeper-manual/SKILL.md
     trigger: failed-ci-or-human-request
     goal: Map failed CI or local check output to concise report-only findings.
     allowed_writes:
@@ -72,6 +73,7 @@ patterns:
     status: planned
     level: L1
     cadence: manual
+    skill_path: .codex/skills/eval-regression-check/SKILL.md
     trigger: before-eval-changes
     goal: Summarize eval dataset quality or drift without running provider-backed evals.
     allowed_writes:
@@ -93,6 +95,7 @@ patterns:
     status: planned
     level: L1
     cadence: manual
+    skill_path: .codex/skills/ingestion-promotion-review/SKILL.md
     trigger: before-ingestion-promotion
     goal: Summarize baseline/shadow promotion checks without changing generated corpus state.
     allowed_writes:
