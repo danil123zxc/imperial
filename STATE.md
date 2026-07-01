@@ -8,6 +8,21 @@ Allowed L1 write paths: `STATE.md`, `loop-run-log.md`.
 
 This file is the durable memory spine for Imperial automation loops. L1 loops may update this file with findings, status, and suggested next actions only. They must not edit source, generated corpus state, secrets, or runtime configuration unless a human explicitly asks in the active thread.
 
+## Current Decision
+
+On 2026-07-02, use only `daily-triage`; keep all other configured loops planned or candidate. In this file, "enable" means allowing a manual L1 report-only run when its trigger and gates pass. It does not mean promoting a loop to active, scheduling it, granting connector access, or allowing source edits.
+
+`daily-triage` is active L1 report-only, but it already ran twice on 2026-07-02. Run it again only on explicit human request or on a later day, after checking the pause flag, cadence, daily token estimate, 0-subagent rule, allowed writes, and privacy diff. If there is no new signal, append a short skipped/no-signal run entry and stop.
+
+Next candidates remain gated:
+
+- `ci-sweeper-manual`: run only with failed CI/local-check evidence or explicit request.
+- `eval-regression-check`: run only before eval changes; no provider evals/dataset edits without approval.
+- `ingestion-promotion-review`: run only with baseline/shadow context; never promote artifacts.
+- `post-merge-cleanup`: candidate only; GitHub PR metadata read requires approval.
+
+Future ideas such as `dependency-sweeper`, `issue-triage`, `changelog-drafter`, and `pr-babysitter` are not configured loops. They need registry entries, budgets, connector policy, allowed writes, and human gates before use.
+
 ## Active Loops
 
 Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
@@ -29,6 +44,7 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 - Loop scaffold created for report-only daily triage, CI sweeps, eval drift checks, ingestion promotion reviews, and post-merge cleanup review.
 - Baseline verifier gate: `./scripts/check.sh`.
 - Operator CLI cadence for `daily-triage` is pinned to manual or exactly `1d`; do not use the upstream default `1d-2h` window for Imperial.
+- Before any manual run, capture `git status --short`; on 2026-07-02 the baseline already included modified `STATE.md` and `loop-run-log.md`, plus unrelated local dirt, so preserve in-flight changes and compare the post-run diff against allowed writes.
 - Pre-existing unrelated local dirt remains outside loop ownership: `.DS_Store` is modified, and local council/planning docs are untracked.
 - RAG-specific gates to reference when relevant:
   - `uv run python scripts/audit_eval_rows.py --strict --output-path <tmp>`

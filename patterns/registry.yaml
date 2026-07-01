@@ -6,7 +6,7 @@ patterns:
     status: active
     level: L1
     cadence: 1d
-    trigger: manual-or-once-daily
+    trigger: manual-or-once-daily-after-gates
     goal: Summarize repo health signals and update durable loop state.
     allowed_writes:
       - STATE.md
@@ -27,9 +27,9 @@ patterns:
       suggested_daily_cap_tokens: 100000
       expected_tokens_per_run: 23000
       expected_runs_per_day: 1
-      early_exit: no-signal runs append a short log entry and stop.
+      early_exit: no-signal or same-day reruns append a short skipped/no-signal entry and stop.
     verifier:
-      report_only_diff: STATE.md and loop-run-log.md only.
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       privacy_review: counts, paths, IDs, checksums, and statuses only.
       source_gate: ./scripts/check.sh only after L2 source changes are approved.
     human_gates:
@@ -59,7 +59,7 @@ patterns:
       expected_runs_per_day: 1
       early_exit: exit when CI is green or no failing run is provided.
     verifier:
-      report_only_diff: STATE.md and loop-run-log.md only.
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       source_gate: ./scripts/check.sh only after L2 source changes are approved.
     human_gates:
       - infrastructure failures
@@ -81,7 +81,7 @@ patterns:
     provider_backed: false
     max_subagents_per_run: 0
     verifier:
-      report_only_diff: STATE.md and loop-run-log.md only.
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       optional_gate: uv run python scripts/audit_eval_rows.py --strict --output-path <tmp>
     human_gates:
       - provider-backed evals
@@ -102,7 +102,7 @@ patterns:
     provider_backed: false
     max_subagents_per_run: 0
     verifier:
-      report_only_diff: STATE.md and loop-run-log.md only.
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       optional_gate: uv run python scripts/check_ingestion_promotion.py --baseline-root <path> --shadow-root <path>
     human_gates:
       - corpus artifact regeneration
@@ -123,7 +123,7 @@ patterns:
     provider_backed: false
     max_subagents_per_run: 0
     verifier:
-      report_only_diff: STATE.md and loop-run-log.md only.
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       source_gate: ./scripts/check.sh only after L2 source changes are approved.
     human_gates:
       - source cleanup edits

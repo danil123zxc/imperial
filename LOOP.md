@@ -17,6 +17,13 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 | `ingestion-promotion-review` | Manual before promotion | Planned L1 report-only | Compare baseline and shadow artifacts with `scripts/check_ingestion_promotion.py`; no direct promotion. |
 | `post-merge-cleanup` | Manual after merge review | Candidate L1 report-only | Summarize follow-up cleanup only; any source edit requires later L2 approval. |
 
+## Enablement Terms
+
+- `daily-triage` is the only active loop. All other configured loops remain planned or candidate until a human explicitly promotes them.
+- "Enable" means allowing a manual L1 report-only run after trigger, pause, cadence, budget, write-scope, and privacy gates pass.
+- "Enable" does not mean scheduling, promotion to active, connector access, source edits, dependency changes, provider-backed evals, ingestion promotion, or PR/GitHub writes.
+- Future loop ideas such as `dependency-sweeper`, `issue-triage`, `changelog-drafter`, and `pr-babysitter` are not configured loops until they have registry entries, budgets, connector policy, allowed writes, and human gates.
+
 ## Current Findings
 
 - None yet. `STATE.md` is the durable source for active findings.
@@ -29,6 +36,9 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 - Any source edit, dependency change, generated corpus rewrite, provider-backed eval run, or runtime restart requires human approval in the active thread.
 - High-risk paths and data-egress rules are binding in `loop-constraints.md` and `docs/safety.md`.
 - Report-only output must pass a privacy diff review before a loop is considered successful.
+- Every manual run must record pre/post `git status --short`, branch, and SHA. If `STATE.md` or `loop-run-log.md` are already modified, preserve the pre-existing entries and explicitly report the dirty baseline.
+- L1 success requires a post-run allowed-path diff check. Expected L1 writes are `STATE.md` and `loop-run-log.md` unless the active thread authorizes a narrower report artifact.
+- `daily-triage` already ran twice on 2026-07-02; rerun it the same day only on explicit request, and early-exit with a short skipped/no-signal entry when no new signal exists.
 
 ## Operator Tooling
 

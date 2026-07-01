@@ -16,6 +16,7 @@ Kill switch: inactive.
 - If estimated usage reaches 80% of the daily cap, switch to report-only.
 - If estimated usage reaches 100% of the daily cap, stop and write a skipped-run entry.
 - Empty or no-signal runs should exit quickly after updating `loop-run-log.md`.
+- A same-day `daily-triage` rerun must count earlier same-day estimates against the 100k L1 cap; without explicit request, wait for a later-day cadence window.
 - CI sweeper loops must early-exit when CI is green.
 - Provider-backed evals, live Phoenix checks, ingestion promotion, and service restarts do not run on a schedule without explicit approval.
 
