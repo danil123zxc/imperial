@@ -24,8 +24,28 @@ def test_project_uses_phoenix_dependencies_instead_of_legacy_tracing_package():
     assert "openinference-instrumentation-openai" in dependencies
 
 
-def test_project_includes_cohere_reranking_dependency():
+def test_project_default_provider_dependencies_are_dashscope_qwen():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = {_normalize_dependency_name(dependency) for dependency in pyproject["project"]["dependencies"]}
 
-    assert "langchain-cohere" in dependencies
+    assert "dashscope" in dependencies
+    assert "langchain-qwq" in dependencies
+
+
+def test_dashscope_qwen_imports_are_available_after_sync():
+    import dashscope
+    from langchain_qwq import ChatQwen
+
+    assert hasattr(dashscope, "TextEmbedding")
+    assert hasattr(dashscope, "TextReRank")
+    assert hasattr(dashscope, "MultiModalConversation")
+    assert ChatQwen is not None
+
+
+def test_ragas_is_declared_as_dev_eval_dependency():
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    dev_dependencies = {
+        _normalize_dependency_name(dependency) for dependency in pyproject["project"]["optional-dependencies"]["dev"]
+    }
+
+    assert "ragas" in dev_dependencies

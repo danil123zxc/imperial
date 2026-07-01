@@ -1,21 +1,19 @@
 from langchain_core.documents import Document
 
-from imperial_rag.chunking import build_chunks
+from imperial_rag.ingestion.chunking import build_chunks
 
 
-def test_build_chunks_defaults_to_accuracy_spec_size_and_overlap():
-    expected_overlap = "0123456789" * 5
+def test_build_chunks_defaults_to_structure_token_budget_and_overlap():
     source = Document(
-        page_content=("А" * 350) + expected_overlap + ("Б" * 100),
-        metadata={"file_id": "file123", "relative_path": "policy.docx", "source_type": "body"},
+        page_content=" ".join(f"токен{i}" for i in range(900)),
+        metadata={"file_id": "file123", "relative_path": "policy.docx", "source_type": "body", "source_locator": "body:1"},
     )
 
     chunks = build_chunks([source])
 
     assert len(chunks) == 2
-    assert len(chunks[0].page_content) <= 400
-    assert chunks[0].page_content[-50:] == expected_overlap
-    assert chunks[1].page_content[:51] == expected_overlap + "Б"
+    assert all(chunk.metadata["body_token_count"] <= 650 for chunk in chunks)
+    assert all(chunk.metadata["body_start_index"] >= 0 for chunk in chunks)
     assert chunks[0].metadata["chunk_index"] == 0
     assert chunks[1].metadata["chunk_index"] == 1
 
@@ -44,7 +42,11 @@ def test_build_chunks_preserves_citation_metadata_and_adds_citation_id():
         assert chunk.metadata["page_number"] == 3
         assert chunk.metadata["file_hash"] == "abc"
         assert chunk.metadata["chunk_index"] == index
-        assert chunk.metadata["citation_id"] == f"reglament.pdf#pdf_page:page-3:chunk-{index}"
+        assert isinstance(chunk.metadata["body_start_index"], int)
+        assert chunk.metadata["body_token_count"] > 0
+        assert chunk.metadata["citation_id"] == (
+            f"reglament.pdf#pdf_page:page-3:start-{chunk.metadata['body_start_index']}:chunk-{index}"
+        )
 
 
 def test_build_chunks_uses_sheet_name_in_citation_identity():
@@ -62,7 +64,7 @@ def test_build_chunks_uses_sheet_name_in_citation_identity():
     chunks = build_chunks(documents)
 
     assert [chunk.metadata["citation_id"] for chunk in chunks] == [
-        "book.xlsx#sheet:sheet-Склад:chunk-0",
-        "book.xlsx#sheet:sheet-Продажи:chunk-0",
+        "book.xlsx#sheet:sheet-Склад:start-0:chunk-0",
+        "book.xlsx#sheet:sheet-Продажи:start-0:chunk-0",
     ]
     assert chunks[0].metadata["chunk_id"] != chunks[1].metadata["chunk_id"]

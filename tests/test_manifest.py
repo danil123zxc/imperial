@@ -1,13 +1,15 @@
 from pathlib import Path
 
-from imperial_rag.manifest import FileStatus, assign_duplicate_groups, scan_files, stable_file_id
+from imperial_rag.ingestion.manifest import FileStatus, assign_duplicate_groups, scan_files, stable_file_id
 
 
-def test_scan_files_records_every_file_including_temp_and_archives(tmp_path):
+def test_scan_files_filters_hidden_system_and_lock_files_but_keeps_real_unsupported_files(tmp_path):
     docs = tmp_path / "documents"
     docs.mkdir()
     (docs / "~$lock.docx").write_bytes(b"lock")
     (docs / ".~lock.file.docx#").write_bytes(b"lock2")
+    (docs / ".DS_Store").write_bytes(b"dsstore")
+    (docs / ".hidden.docx").write_bytes(b"hidden")
     (docs / "Thumbs.db").write_bytes(b"thumbs")
     (docs / "archive.rar").write_bytes(b"rar")
     (docs / "policy.docx").write_bytes(b"docx")
@@ -15,9 +17,6 @@ def test_scan_files_records_every_file_including_temp_and_archives(tmp_path):
     records = scan_files(docs)
 
     assert {record.relative_path for record in records} == {
-        Path("~$lock.docx"),
-        Path(".~lock.file.docx#"),
-        Path("Thumbs.db"),
         Path("archive.rar"),
         Path("policy.docx"),
     }
@@ -29,7 +28,7 @@ def test_scan_files_hashes_duplicates_without_removing_them(tmp_path):
     (docs / "a.docx").write_bytes(b"same")
     (docs / "b.docx").write_bytes(b"same")
 
-    records = scan_files(docs)
+    records = assign_duplicate_groups(scan_files(docs))
 
     assert len(records) == 2
     assert records[0].sha256 == records[1].sha256
@@ -81,3 +80,14 @@ def test_assign_duplicate_groups_marks_same_hash_records(tmp_path):
     assert duplicate_groups[Path("a.pdf")] is not None
     assert duplicate_groups[Path("a.pdf")] == duplicate_groups[Path("b.pdf")]
     assert duplicate_groups[Path("c.pdf")] is None
+
+
+def test_scan_files_leaves_duplicate_group_assignment_to_explicit_step(tmp_path):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    (docs / "a.pdf").write_bytes(b"same")
+    (docs / "b.pdf").write_bytes(b"same")
+
+    records = scan_files(docs)
+
+    assert [record.duplicate_group_id for record in records] == [None, None]

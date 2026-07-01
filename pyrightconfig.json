@@ -1,0 +1,9 @@
+{
+  "include": ["src", "scripts", "tests"],
+  "exclude": [".venv", ".imperial_rag", "documents", "docs"],
+  "extraPaths": ["src"],
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Darwin",
+  "venvPath": ".",
+  "venv": ".venv"
+}

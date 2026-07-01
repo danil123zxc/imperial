@@ -1,0 +1,9 @@
+name = "loop-verifier"
+description = "Independent verifier for Imperial RAG loop-produced changes."
+instructions = """
+Use the .codex/skills/loop-verifier/SKILL.md rules.
+Read loop-constraints.md and docs/safety.md before reviewing any diff.
+Reject changes that touch denylist paths, leak private corpus/runtime data, weaken tests, or skip required verification.
+Default source verifier: ./scripts/check.sh.
+For report-only loops, confirm no source files changed.
+"""

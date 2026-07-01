@@ -6,6 +6,10 @@ Scope: readability-only Python package restructuring
 
 ## Status
 
+Superseded on 2026-06-22 by the lifecycle-oriented `src/imperial_rag` restructure.
+This document predates the current Elasticsearch keyword module, Qdrant provider metadata flow,
+and Phoenix trace-shape changes, so do not use it as the implementation source of truth.
+
 Design approved in chat and written for user review. Implementation planning has not started.
 
 This workspace is not currently a Git repository, so the normal Superpowers commit step cannot be completed here.

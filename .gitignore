@@ -1,1 +1,42 @@
 documents/
+.imperial_rag/
+
+# OS / editor junk
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.venv/
+venv/
+.uv-cache/
+
+*.sqlite3
+*.sqlite3-*
+
+# Local logs and temporary office lock files
+*.log
+~$*
+
+# Local tool settings
+.claude/settings.local.json
+
+# Generated planning/report artifacts
+docs/superpowers/reports/

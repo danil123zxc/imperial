@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def _dockerignore_entries() -> set[str]:
+    lines = _read(".dockerignore").splitlines()
+    return {line.strip() for line in lines if line.strip() and not line.strip().startswith("#")}
+
+
+def _service_block(compose: str, service_name: str) -> str:
+    lines = compose.splitlines()
+    start = lines.index(f"  {service_name}:")
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line.startswith("  ") and not line.startswith("    ") and line.endswith(":"):
+            end = index
+            break
+        if line and not line.startswith(" "):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def test_dockerignore_excludes_private_and_generated_data() -> None:
+    entries = _dockerignore_entries()
+
+    assert ".env" in entries
+    assert ".env.*" in entries
+    assert "documents/" in entries
+    assert ".imperial_rag/" in entries
+    assert ".git/" in entries
+    assert "__pycache__/" in entries
+    assert "**/__pycache__/" in entries
+    assert "**/*.py[cod]" in entries
+    assert ".pytest_cache/" in entries
+    assert ".venv/" in entries
+
+
+def test_dockerfile_builds_uv_streamlit_runtime() -> None:
+    dockerfile = _read("Dockerfile")
+
+    assert "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in dockerfile
+    assert "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:" in dockerfile
+    assert "WORKDIR /app" in dockerfile
+    assert "IMPERIAL_RAG_WORKSPACE_ROOT=/app" in dockerfile
+    assert "PYTHONPATH=/app/src" in dockerfile
+    assert "uv sync --frozen --no-dev --no-cache" in dockerfile
+    assert "COPY pyproject.toml uv.lock ./" in dockerfile
+    assert "COPY src ./src" in dockerfile
+    assert "COPY scripts ./scripts" in dockerfile
+    assert "EXPOSE 8501" in dockerfile
+    assert '"streamlit", "run", "src/imperial_rag/app/web.py"' in dockerfile
+    assert '"--server.address", "0.0.0.0"' in dockerfile
+    assert '"--server.port", "8501"' in dockerfile
+    assert '"--server.headless", "true"' in dockerfile
+
+
+def test_compose_defines_private_app_and_ingest_services() -> None:
+    compose = _read("compose.yaml")
+    app_base = compose.split("services:", maxsplit=1)[0]
+    app = _service_block(compose, "app")
+    ingest = _service_block(compose, "ingest")
+    phoenix = _service_block(compose, "phoenix")
+    qdrant = _service_block(compose, "qdrant")
+    elasticsearch = _service_block(compose, "elasticsearch")
+    kibana = _service_block(compose, "kibana")
+
+    required_snippets = [
+        "x-imperial-app-base:",
+        "driver: json-file",
+        'max-size: "10m"',
+        'max-file: "10"',
+        "app:",
+        "ingest:",
+        "elasticsearch:",
+        "kibana:",
+        "path: .env",
+        "required: false",
+        'profiles: ["ingest"]',
+        '"127.0.0.1:8501:8501"',
+        '"127.0.0.1:6006:6006"',
+        '"127.0.0.1:4317:4317"',
+        '"127.0.0.1:6333:6333"',
+        '"127.0.0.1:9200:9200"',
+        '"127.0.0.1:5601:5601"',
+        "QDRANT_URL: http://qdrant:6333",
+        "ELASTICSEARCH_URL: http://elasticsearch:9200",
+        "ELASTICSEARCH_INDEX: imperial_keyword_chunks",
+        "PHOENIX_CLIENT_ENDPOINT: http://phoenix:6006",
+        "PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces",
+        "docker.elastic.co/elasticsearch/elasticsearch:8.19.15",
+        "docker.elastic.co/kibana/kibana:8.19.15",
+        "discovery.type: single-node",
+        'xpack.security.enabled: "false"',
+        'xpack.security.http.ssl.enabled: "false"',
+        "SERVER_NAME: kibana",
+        "ELASTICSEARCH_HOSTS: '[\"http://elasticsearch:9200\"]'",
+        "ES_JAVA_OPTS: -Xms512m -Xmx512m",
+        "./documents:/app/documents:ro",
+        "./.imperial_rag:/app/.imperial_rag",
+        "elasticsearch_data:/usr/share/elasticsearch/data",
+        "  elasticsearch_data:\n    driver: local",
+        "scripts/ingest.py",
+        "--index-vectors",
+    ]
+
+    for snippet in required_snippets:
+        assert snippet in compose
+
+    assert compose.count("condition: service_healthy") >= 2
+    assert "phoenix:\n      condition: service_healthy" not in app_base
+    assert "ports:" not in ingest
+    assert "logging: &imperial-json-log-options" in app_base
+    assert "logging: *imperial-json-log-options" in phoenix
+    assert "logging: *imperial-json-log-options" in qdrant
+    assert "logging: *imperial-json-log-options" in elasticsearch
+    assert "logging: *imperial-json-log-options" in kibana
+    assert '"127.0.0.1:8501:8501"' in app
+    assert '"127.0.0.1:6333:6333"' in qdrant
+    assert '"127.0.0.1:9200:9200"' in elasticsearch
+    assert '"127.0.0.1:6006:6006"' in phoenix
+    assert '"127.0.0.1:4317:4317"' in phoenix
+    assert '"127.0.0.1:5601:5601"' in kibana
+    assert "http://elasticsearch:9200" in kibana
+
+
+def test_compose_pins_phoenix_and_qdrant_images() -> None:
+    compose = _read("compose.yaml")
+    phoenix = _service_block(compose, "phoenix")
+    qdrant = _service_block(compose, "qdrant")
+
+    assert "image: arizephoenix/phoenix:latest\n" not in compose
+    assert "image: qdrant/qdrant:latest\n" not in compose
+    assert "image: arizephoenix/phoenix:" in phoenix
+    assert "image: qdrant/qdrant:" in qdrant
+    assert "@sha256:" in phoenix
+    assert "@sha256:" in qdrant
+
+
+def test_env_example_documents_compose_overrides() -> None:
+    env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
+
+    assert "Compose container overrides" in env_example
+    assert "# IMPERIAL_RAG_WORKSPACE_ROOT=/app" in lines
+    assert "# ELASTICSEARCH_URL=http://elasticsearch:9200" in lines
+    assert "# QDRANT_URL=http://qdrant:6333" in lines
+    assert "# PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" in lines
+    assert "# PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" in lines
+    assert "IMPERIAL_RAG_WORKSPACE_ROOT=/app" not in lines
+    assert "ELASTICSEARCH_URL=http://elasticsearch:9200" not in lines
+    assert "QDRANT_URL=http://qdrant:6333" not in lines
+    assert "PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" not in lines
+    assert "PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" not in lines
+
+
+def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
+    env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
+
+    assert "OPENINFERENCE_HIDE_INPUTS=false" in lines
+    assert "OPENINFERENCE_HIDE_OUTPUTS=false" in lines
+    assert "OPENINFERENCE_HIDE_INPUT_MESSAGES=false" in lines
+    assert "OPENINFERENCE_HIDE_LLM_PROMPTS=false" in lines
+    assert "OPENINFERENCE_HIDE_OUTPUT_MESSAGES=false" in lines
+    assert "OPENINFERENCE_HIDE_INPUT_IMAGES=true" in lines
+    assert "OPENINFERENCE_HIDE_INPUT_TEXT=false" in lines
+    assert "OPENINFERENCE_HIDE_LLM_TOOLS=false" in lines
+    assert "OPENINFERENCE_BASE64_IMAGE_MAX_LENGTH=10000" in lines
+    assert "OTEL_BSP_SCHEDULE_DELAY=5000" in lines
+    assert "OTEL_BSP_MAX_QUEUE_SIZE=2048" in lines
+    assert "OTEL_BSP_MAX_EXPORT_BATCH_SIZE=512" in lines
+    assert "IMPERIAL_RAG_INGEST_RUN_ID=" in lines
+    assert "IMPERIAL_RAG_TRACE_FULL_METADATA=false" in lines
+    assert "IMPERIAL_RAG_TRACE_MODE=compact" in lines
+    assert "IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS=false" in lines
+    assert "IMPERIAL_RAG_TRACE_BATCH=false" in lines
+    assert "IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT=false" in lines
+    assert "IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=true" in lines
+    assert "IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT=" in lines
+    assert "IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS=800" in lines
+    assert "IMPERIAL_RAG_TRACE_USER_HASH_SECRET=" in lines
+
+
+def test_env_example_documents_local_event_log_knobs() -> None:
+    env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
+
+    assert "IMPERIAL_RAG_LOG_LEVEL=INFO" in lines
+    assert "IMPERIAL_RAG_LOG_FORMAT=json" in lines
+    assert "IMPERIAL_RAG_SERVICE_NAME=imperial-rag" in lines
+    assert "IMPERIAL_RAG_ENVIRONMENT=local" in lines
+    assert "IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_ENABLED=false" in lines
+    assert "IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_DATA_STREAM=imperial-rag-events-v1" in lines
+    assert "IMPERIAL_RAG_EVENTLOG_EVAL_DATA_STREAM=imperial-rag-eval-summaries-v1" in lines
+
+
+def test_readme_documents_private_compose_deployment() -> None:
+    readme = _read("README.md")
+
+    assert "## Private Compose Deployment" in readme
+    assert "docker compose up -d elasticsearch qdrant phoenix app kibana" in readme
+    assert "docker compose --profile ingest up ingest" in readme
+    assert "http://127.0.0.1:8501/_stcore/health" in readme
+    assert "http://127.0.0.1:9200" in readme
+    assert "http://127.0.0.1:5601" in readme
+    assert "unauthenticated by default and are safe only while bound to `127.0.0.1`" in readme
+    assert "Phoenix traces are private diagnostic records" in readme
+    assert "Searchable event logs are optional and local-only." in readme
+    assert "closed schema validation is the privacy boundary" in readme
+
+
+def test_compose_documents_local_only_unauthenticated_observability_services() -> None:
+    compose = _read("compose.yaml")
+
+    assert "Phoenix stores private traces and has no auth in this local stack." in compose
+    assert "Elasticsearch and Kibana have security disabled for local development." in compose
+    assert "Do not rebind these ports or deploy remotely without auth and TLS." in compose

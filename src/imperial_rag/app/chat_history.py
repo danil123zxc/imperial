@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+import json
+import sqlite3
+import time
+import uuid
+
+
+@dataclass(frozen=True)
+class ConversationRecord:
+    id: str
+    user_email: str
+    title: str
+    created_at: int
+    updated_at: int
+    phoenix_session_id: str
+
+
+@dataclass(frozen=True)
+class MessageRecord:
+    id: int
+    conversation_id: str
+    role: str
+    content: str
+    payload: dict[str, Any]
+    created_at: int
+    sequence: int
+
+    def to_chat_message(self) -> dict[str, Any]:
+        message = dict(self.payload)
+        message["role"] = self.role
+        message["content"] = self.content
+        return message
+
+
+class ChatHistoryStore:
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
+
+    def initialize(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id TEXT PRIMARY KEY,
+                    user_email TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    phoenix_session_id TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS conversations_user_updated_idx
+                ON conversations(user_email, updated_at DESC, created_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS messages_conversation_sequence_idx
+                ON messages(conversation_id, sequence ASC, id ASC)
+                """
+            )
+
+    def create_conversation(
+        self,
+        user_email: str,
+        title: str = "New chat",
+        phoenix_session_id: str | None = None,
+    ) -> ConversationRecord:
+        normalized_email = normalize_user_email(user_email)
+        self.initialize()
+        now = time.time_ns()
+        conversation_id = str(uuid.uuid4())
+        clean_title = _clean_title(title)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversations(id, user_email, title, created_at, updated_at, phoenix_session_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    normalized_email,
+                    clean_title,
+                    now,
+                    now,
+                    phoenix_session_id or str(uuid.uuid4()),
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
+                (conversation_id, normalized_email),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("failed to create chat conversation")
+        return _row_to_conversation(row)
+
+    def list_conversations(self, user_email: str) -> list[ConversationRecord]:
+        normalized_email = normalize_user_email(user_email)
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM conversations
+                WHERE user_email = ?
+                ORDER BY updated_at DESC, created_at DESC, title ASC
+                """,
+                (normalized_email,),
+            ).fetchall()
+        return [_row_to_conversation(row) for row in rows]
+
+    def get_conversation(self, user_email: str, conversation_id: str) -> ConversationRecord | None:
+        normalized_email = normalize_user_email(user_email)
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
+                (conversation_id, normalized_email),
+            ).fetchone()
+        return _row_to_conversation(row) if row is not None else None
+
+    def add_message(
+        self,
+        user_email: str,
+        conversation_id: str,
+        role: str,
+        content: str,
+        payload: dict[str, Any] | None = None,
+    ) -> MessageRecord:
+        normalized_email = normalize_user_email(user_email)
+        normalized_role = _normalize_role(role)
+        self.initialize()
+        now = time.time_ns()
+        payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
+        with self._connect() as conn:
+            conversation = conn.execute(
+                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
+                (conversation_id, normalized_email),
+            ).fetchone()
+            if conversation is None:
+                exists = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+                if exists is not None:
+                    raise PermissionError("conversation does not belong to this user")
+                raise KeyError(conversation_id)
+            sequence = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()[0]
+            )
+            cursor = conn.execute(
+                """
+                INSERT INTO messages(conversation_id, role, content, payload_json, created_at, sequence)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (conversation_id, normalized_role, str(content), payload_json, now, sequence),
+            )
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ? AND user_email = ?",
+                (now, conversation_id, normalized_email),
+            )
+            row = conn.execute("SELECT * FROM messages WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        if row is None:
+            raise RuntimeError("failed to append chat message")
+        return _row_to_message(row)
+
+    def list_messages(self, user_email: str, conversation_id: str) -> list[MessageRecord]:
+        normalized_email = normalize_user_email(user_email)
+        if self.get_conversation(normalized_email, conversation_id) is None:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = ?
+                ORDER BY sequence ASC, id ASC
+                """,
+                (conversation_id,),
+            ).fetchall()
+        return [_row_to_message(row) for row in rows]
+
+    def _connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+
+def normalize_user_email(email: str) -> str:
+    normalized = str(email or "").strip().casefold()
+    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+        raise ValueError("valid email is required")
+    return normalized
+
+
+def _clean_title(title: str) -> str:
+    normalized = " ".join(str(title or "").split())
+    if not normalized:
+        return "New chat"
+    return normalized[:80]
+
+
+def _normalize_role(role: str) -> str:
+    normalized = str(role or "").strip().casefold()
+    if normalized not in {"user", "assistant", "system"}:
+        raise ValueError("message role must be user, assistant, or system")
+    return normalized
+
+
+def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
+    return ConversationRecord(
+        id=str(row["id"]),
+        user_email=str(row["user_email"]),
+        title=str(row["title"] or "New chat"),
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+        phoenix_session_id=str(row["phoenix_session_id"] or ""),
+    )
+
+
+def _row_to_message(row: sqlite3.Row) -> MessageRecord:
+    return MessageRecord(
+        id=int(row["id"]),
+        conversation_id=str(row["conversation_id"]),
+        role=str(row["role"]),
+        content=str(row["content"]),
+        payload=_parse_payload(row["payload_json"]),
+        created_at=int(row["created_at"]),
+        sequence=int(row["sequence"]),
+    )
+
+
+def _parse_payload(raw: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}

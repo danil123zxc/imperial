@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import Counter
 from pathlib import Path
+from typing import Any, cast
 
 from docx import Document as DocxDocument
+from langchain_core.documents import Document
 from openpyxl import Workbook
 from PIL import Image
 
 from imperial_rag.config import Settings
-from imperial_rag.manifest import FileStatus, IndexStatus, ManifestStore
-from imperial_rag.ocr import OcrResult
-from imperial_rag.pipeline import ingest_corpus
+from imperial_rag.ingestion.manifest import FileStatus, IndexStatus, ManifestStore
+from imperial_rag.ingestion.ocr import OcrResult
+from imperial_rag.ingestion.pipeline import ingest_corpus
 
 
 class DeterministicOcrClient:
@@ -27,7 +28,18 @@ class DeterministicOcrClient:
         )
 
 
-def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) -> None:
+class FakeKeywordSearchIndex:
+    last_settings: Settings | None = None
+    last_documents: list[Any] | None = None
+
+    def __init__(self, settings: Settings) -> None:
+        FakeKeywordSearchIndex.last_settings = settings
+
+    def replace_all(self, documents: list[Any]) -> None:
+        FakeKeywordSearchIndex.last_documents = list(documents)
+
+
+def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path, monkeypatch) -> None:
     docs = tmp_path / "documents"
     docs.mkdir()
     _write_docx(docs / "policy.docx")
@@ -38,6 +50,9 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) 
     (docs / "corrupted.docx").write_bytes(b"not a valid docx zip package")
     settings = Settings(workspace_root=tmp_path)
     ocr_client = DeterministicOcrClient()
+    FakeKeywordSearchIndex.last_settings = None
+    FakeKeywordSearchIndex.last_documents = None
+    monkeypatch.setattr("imperial_rag.retrieval.elasticsearch.ElasticsearchKeywordIndex", FakeKeywordSearchIndex)
 
     summary = ingest_corpus(settings=settings, ocr_client=ocr_client, vector_store=None)
 
@@ -87,7 +102,9 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) 
             assert record.keyword_index_status == IndexStatus.SKIPPED
             assert record.vector_index_status == IndexStatus.SKIPPED
 
-    assert "archive files recorded but not extracted" in records["archive.rar"].error_message
+    archive_error = records["archive.rar"].error_message
+    assert archive_error is not None
+    assert "archive files recorded but not extracted" in archive_error
     corrupted_error = records["corrupted.docx"].error_message
     assert corrupted_error
     assert any(fragment in corrupted_error.casefold() for fragment in ("package", "zip"))
@@ -118,15 +135,18 @@ def test_real_pipeline_indexes_mixed_corpus_and_audits_failures(tmp_path: Path) 
     assert "RTF_SENTINEL" in chunk_text
     assert "OCR_SENTINEL_SCAN_TEXT" in chunk_text
 
-    keyword_rows = _read_keyword_rows(settings.keyword_db_path)
-    assert len(keyword_rows) == 5
-    assert Counter(json.loads(metadata)["relative_path"] for _text, metadata in keyword_rows) == {
+    keyword_documents = FakeKeywordSearchIndex.last_documents
+    assert FakeKeywordSearchIndex.last_settings is settings
+    assert keyword_documents is not None
+    keyword_documents = cast(list[Document], keyword_documents)
+    assert len(keyword_documents) == 5
+    assert Counter(document.metadata["relative_path"] for document in keyword_documents) == {
         "policy.docx": 2,
         "schedule.xlsx": 1,
         "note.rtf": 1,
         "scan.png": 1,
     }
-    keyword_text = "\n".join(text for text, _metadata in keyword_rows)
+    keyword_text = "\n".join(document.page_content for document in keyword_documents)
     assert "DOCX_BODY_SENTINEL" in keyword_text
     assert "DOCX_TABLE_SENTINEL" in keyword_text
     assert "XLSX_SENTINEL" in keyword_text
@@ -140,16 +160,17 @@ def _write_docx(path: Path) -> None:
     table = docx.add_table(rows=1, cols=2)
     table.cell(0, 0).text = "DOCX_TABLE_SENTINEL"
     table.cell(0, 1).text = "warehouse approval"
-    docx.save(path)
+    docx.save(str(path))
 
 
 def _write_xlsx(path: Path) -> None:
     workbook = Workbook()
     sheet = workbook.active
+    assert sheet is not None
     sheet.title = "Schedule"
     sheet.append(["Employee", "Shift"])
     sheet.append(["XLSX_SENTINEL", "Morning"])
-    workbook.save(path)
+    workbook.save(str(path))
 
 
 def _read_chunk_rows(path: Path) -> list[dict]:
@@ -158,15 +179,3 @@ def _read_chunk_rows(path: Path) -> list[dict]:
 
 def _relative_path_counts(rows: list[dict]) -> dict[str, int]:
     return dict(Counter(row["metadata"]["relative_path"] for row in rows))
-
-
-def _read_keyword_rows(db_path: Path) -> list[tuple[str, str]]:
-    with sqlite3.connect(db_path) as conn:
-        table_names = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'",
-            ).fetchall()
-        }
-        table = "chunks_fts" if "chunks_fts" in table_names else "chunks"
-        return conn.execute(f"SELECT text, metadata FROM {table}").fetchall()

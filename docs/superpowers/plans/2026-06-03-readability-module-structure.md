@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded:** This plan was superseded on 2026-06-22 by the lifecycle-oriented `src/imperial_rag` restructure. It predates the current Elasticsearch keyword module, Qdrant provider metadata flow, and Phoenix trace-shape changes.
+
 **Goal:** Reorganize the Imperial RAG Python package into readable workflow-focused modules while preserving existing behavior and public import paths.
 
 **Architecture:** Use package folders for `corpus`, `ingestion`, `indexing`, `query`, `evals`, `observability`, and `app`. Move code with minimal algorithmic edits, keep old top-level modules as compatibility wrappers, and turn `imperial_rag.indexing` into an `indexing/__init__.py` re-export package to avoid an import-name collision.
