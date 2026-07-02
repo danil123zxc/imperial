@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,7 @@ def check_promotion_gates(
 
     baseline_ids = {str(row.get("file_id")) for row in baseline_rows if row.get("file_id") is not None}
     shadow_ids = {str(row.get("file_id")) for row in shadow_rows if row.get("file_id") is not None}
-    if not shadow_ids.issuperset(baseline_ids):
-        for file_id in sorted(baseline_ids - shadow_ids):
-            errors.append(f"baseline file missing from shadow ledger: {file_id}")
+    errors.extend(f"baseline file missing from shadow ledger: {file_id}" for file_id in sorted(baseline_ids - shadow_ids))
 
     baseline_indexed = sum(1 for row in baseline_rows if row.get("status") == "indexed")
     shadow_indexed = sum(1 for row in shadow_rows if row.get("status") == "indexed")
@@ -74,8 +73,10 @@ def check_promotion_gates(
     }
     reviewed_drop_chunk_ids, reviewed_drop_citation_ids = _reviewed_drop_ids(reviewed_drops, errors)
     unmapped_old_chunk_ids = baseline_chunk_ids - mapped_old_chunk_ids - reviewed_drop_chunk_ids
-    for old_chunk_id in sorted(unmapped_old_chunk_ids):
-        errors.append(f"old chunk has no replacement or reviewed drop: {old_chunk_id}")
+    errors.extend(
+        f"old chunk has no replacement or reviewed drop: {old_chunk_id}"
+        for old_chunk_id in sorted(unmapped_old_chunk_ids)
+    )
 
     for context_id in _reference_context_ids(questions):
         if context_id in shadow_ids:
@@ -117,9 +118,11 @@ def _check_shadow_lineage(
 ) -> None:
     if not lineage:
         return
-    for field in ("ingest_run_id", "corpus_version", "index_version", "keyword_index"):
-        if not str(lineage.get(field) or "").strip():
-            errors.append(f"shadow lineage missing field: {field}")
+    errors.extend(
+        f"shadow lineage missing field: {field}"
+        for field in ("ingest_run_id", "corpus_version", "index_version", "keyword_index")
+        if not str(lineage.get(field) or "").strip()
+    )
     if lineage.get("keyword_indexed") is not True:
         errors.append("shadow lineage was not keyword indexed")
     if expected_keyword_index is not None and str(lineage.get("keyword_index") or "") != expected_keyword_index:
@@ -137,11 +140,7 @@ def _check_shadow_lineage(
 
 
 def _read_jsonl(path: Path) -> list[dict]:
-    rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def _read_jsonl_required(path: Path, errors: list[str]) -> list[dict]:

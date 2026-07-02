@@ -400,6 +400,11 @@ def test_trace_lineage_attributes_are_applied_to_embedding_children(monkeypatch)
     assert records[0]["attributes"]["imperial.qdrant_collection"] == "imperial_chunks_qwen"
 
 
+def test_default_trace_lineage_attributes_are_immutable() -> None:
+    with pytest.raises(TypeError):
+        tracing_module._TRACE_LINEAGE_ATTRIBUTES.get()["imperial.leaked"] = "yes"
+
+
 def test_trace_span_sets_native_retrieval_documents(monkeypatch) -> None:
     records: list[TraceRecord] = []
 

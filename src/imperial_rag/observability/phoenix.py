@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -43,6 +44,8 @@ _TRACE_DOCUMENT_CONTENT_CHARS = 800
 _TRACE_SCHEMA_VERSION_VALUE = "rag-v2"
 _TEXT_MIME_TYPE = "text/plain"
 _JSON_MIME_TYPE = "application/json"
+_INPUT_ATTRIBUTE_KEYS = (_INPUT_VALUE, _INPUT_MIME_TYPE)
+_OUTPUT_ATTRIBUTE_KEYS = (_OUTPUT_VALUE, _OUTPUT_MIME_TYPE)
 _IMPERIAL_PHASE = "imperial.phase"
 _IMPERIAL_STEP = "imperial.step"
 _IMPERIAL_TRACE_SCHEMA_VERSION = "imperial.trace_schema_version"
@@ -51,7 +54,7 @@ _TRACE_MODE_COMPACT = "compact"
 _TRACE_MODE_RETRIEVAL_DEBUG = "retrieval_debug"
 _TRACE_LINEAGE_ATTRIBUTES: ContextVar[Mapping[str, Any]] = ContextVar(
     "imperial_rag_trace_lineage_attributes",
-    default={},
+    default=MappingProxyType({}),
 )
 _TRACE_METADATA_ALLOWLIST = frozenset(
     {
@@ -680,9 +683,9 @@ def _trace_full_final_evidence() -> bool:
 
 
 def _attribute_hidden(key: str, kind: str | None = None) -> bool:
-    if _hide_span_input(kind) and (key == _INPUT_VALUE or key == _INPUT_MIME_TYPE or key.startswith("input.")):
+    if _hide_span_input(kind) and (key in _INPUT_ATTRIBUTE_KEYS or key.startswith("input.")):
         return True
-    if _hide_outputs() and (key == _OUTPUT_VALUE or key == _OUTPUT_MIME_TYPE or key.startswith("output.")):
+    if _hide_outputs() and (key in _OUTPUT_ATTRIBUTE_KEYS or key.startswith("output.")):
         return True
     if _hide_input_messages() and key.startswith(f"{_LLM_INPUT_MESSAGES}."):
         return True
@@ -690,9 +693,7 @@ def _attribute_hidden(key: str, kind: str | None = None) -> bool:
         return True
     if _hide_llm_tools() and key.startswith(f"{_LLM_TOOLS}."):
         return True
-    if _hide_input_text() and key.endswith(f".{_DOCUMENT_CONTENT}"):
-        return True
-    return False
+    return _hide_input_text() and key.endswith(f".{_DOCUMENT_CONTENT}")
 
 
 def _collector_endpoint_reachable(endpoint: str, timeout: float = 0.2) -> bool:
