@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import chain
 from typing import Any
 
 from langchain_core.documents import Document
@@ -16,12 +17,12 @@ class CandidateMerger:
         merged: list[Document] = []
         index_by_key: dict[str, int] = {}
         index_by_content: dict[str, int] = {}
-        for document in [*vector_docs, *keyword_docs]:
+        for document in chain(vector_docs, keyword_docs):
             candidate_document_key = document_key(document)
-            candidate_content_key = content_key(document)
+            candidate_content_key = self._content_lookup_key(document)
 
             existing_index = index_by_key.get(candidate_document_key)
-            if existing_index is None:
+            if existing_index is None and candidate_content_key is not None:
                 existing_index = index_by_content.get(candidate_content_key)
             if existing_index is not None:
                 kept = merged[existing_index]
@@ -30,14 +31,20 @@ class CandidateMerger:
                     metadata=self._merge_metadata(kept.metadata, document.metadata),
                 )
                 index_by_key.setdefault(candidate_document_key, existing_index)
-                index_by_content.setdefault(candidate_content_key, existing_index)
+                if candidate_content_key is not None:
+                    index_by_content.setdefault(candidate_content_key, existing_index)
                 continue
 
             index = len(merged)
             index_by_key[candidate_document_key] = index
-            index_by_content[candidate_content_key] = index
+            if candidate_content_key is not None:
+                index_by_content[candidate_content_key] = index
             merged.append(Document(page_content=document.page_content, metadata=dict(document.metadata or {})))
         return merged
+
+    def _content_lookup_key(self, document: Document) -> str | None:
+        key = content_key(document)
+        return key or None
 
     def _merge_metadata(self, kept_metadata: dict[str, Any], duplicate_metadata: dict[str, Any]) -> dict[str, Any]:
         merged = dict(kept_metadata or {})
@@ -88,7 +95,7 @@ class RrfCandidateFusion:
         ]
 
         fused: list[Document] = []
-        for fusion_rank, document in enumerate([*ordered, *tail]):
+        for fusion_rank, document in enumerate(chain(ordered, tail)):
             metadata = dict(document.metadata or {})
             metadata["_rrf_score"] = self._score(positions, _retrieval_id(document), rrf_k)
             metadata["_fusion_rank"] = fusion_rank

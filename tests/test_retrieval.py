@@ -929,6 +929,15 @@ def test_candidate_merger_keeps_same_file_sheet_chunks_when_citation_ids_differ(
     ]
 
 
+def test_candidate_merger_does_not_dedupe_distinct_blank_content_documents():
+    vector = Document(page_content="   ", metadata={"citation_id": "blank-vector", "_vector_rank": 0})
+    keyword = Document(page_content="", metadata={"citation_id": "blank-keyword", "_keyword_rank": 0})
+
+    merged = CandidateMerger().merge([vector], [keyword])
+
+    assert [doc.metadata["citation_id"] for doc in merged] == ["blank-vector", "blank-keyword"]
+
+
 def test_candidate_merger_reconciles_duplicate_vector_keyword_metadata():
     same_vector = Document(
         page_content="Возврат брака оформляется актом.",
