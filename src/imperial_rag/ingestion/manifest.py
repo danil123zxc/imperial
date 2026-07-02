@@ -120,6 +120,7 @@ class ManifestStore:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path)
+        self._closed = False
         self._conn.row_factory = sqlite3.Row
         self._create_schema()
 
@@ -224,7 +225,14 @@ class ManifestStore:
         return False
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._conn.close()
+        self._closed = True
+
+    def __del__(self) -> None:
+        if not getattr(self, "_closed", True):
+            self.close()
 
     def _create_schema(self) -> None:
         self._conn.execute(

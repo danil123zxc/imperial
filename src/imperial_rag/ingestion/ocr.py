@@ -166,6 +166,7 @@ class OcrCache:
         self.db_path = processed_root if processed_root.suffix == ".sqlite3" else processed_root / "ocr_cache.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path)
+        self._closed = False
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS ocr_cache (
@@ -212,4 +213,11 @@ class OcrCache:
         return False
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._conn.close()
+        self._closed = True
+
+    def __del__(self) -> None:
+        if not getattr(self, "_closed", True):
+            self.close()

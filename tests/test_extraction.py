@@ -5,9 +5,23 @@ import pytest
 from docx import Document as DocxDocument
 from imperial_rag.ingestion.extraction import extract_file
 from imperial_rag.ingestion.manifest import FileStatus, scan_files
+from imperial_rag.ingestion import ocr as ocr_module
 from imperial_rag.ingestion.ocr import OcrCache, OcrResult
 from openpyxl import Workbook
 from PIL import Image
+
+
+class TrackingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "closed", False)
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def close(self) -> None:
+        object.__setattr__(self, "closed", True)
+        self._connection.close()
 
 
 class FakeOcrClient:
@@ -200,6 +214,24 @@ def test_ocr_cache_context_manager_closes_connection(tmp_path):
 
     with pytest.raises(sqlite3.ProgrammingError):
         cache.read("scan")
+
+
+def test_ocr_cache_finalizer_closes_unclosed_connection(monkeypatch, tmp_path):
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(ocr_module.sqlite3, "connect", tracking_connect)
+    cache = OcrCache(tmp_path / "processed")
+
+    del cache
+
+    assert opened
+    assert all(connection.closed for connection in opened)
 
 
 def test_standalone_image_without_ocr_text_is_no_text(tmp_path):

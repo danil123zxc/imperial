@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from types import SimpleNamespace
+import sqlite3
 import sys
 import types
 
@@ -11,6 +12,7 @@ from langchain_core.documents import Document
 from imperial_rag.app import web as web_app
 from imperial_rag.app.auth import AuthStore
 from imperial_rag.app.chat_history import ChatHistoryStore
+from imperial_rag.app import chat_history as chat_history_module
 
 
 class SessionState(dict):
@@ -19,6 +21,32 @@ class SessionState(dict):
 
     def __setattr__(self, key, value):
         self[key] = value
+
+
+class TrackingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "closed", False)
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in {"_connection", "closed"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._connection, name, value)
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self._connection.__exit__(exc_type, exc, traceback)
+
+    def close(self) -> None:
+        object.__setattr__(self, "closed", True)
+        self._connection.close()
 
 
 def test_chat_history_store_persists_and_scopes_conversations_by_user(tmp_path):
@@ -65,6 +93,26 @@ def test_chat_history_store_persists_and_scopes_conversations_by_user(tmp_path):
     assert [message.role for message in messages] == ["user", "assistant"]
     assert messages[1].to_chat_message()["retrieved_documents"][0]["page_content"] == "Private retrieved text"
     assert messages[1].to_chat_message()["retrieval"] == {"final_evidence": 1}
+
+
+def test_chat_history_store_closes_short_lived_connections(monkeypatch, tmp_path):
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(chat_history_module.sqlite3, "connect", tracking_connect)
+    store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
+
+    conversation = store.create_conversation("user@example.com", "Question")
+    store.add_message("user@example.com", conversation.id, "user", "Hello")
+    store.list_messages("user@example.com", conversation.id)
+
+    assert opened
+    assert all(connection.closed for connection in opened)
 
 
 def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):

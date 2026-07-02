@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,7 +44,7 @@ class ChatHistoryStore:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversations (
@@ -93,7 +95,7 @@ class ChatHistoryStore:
         now = time.time_ns()
         conversation_id = str(uuid.uuid4())
         clean_title = _clean_title(title)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO conversations(id, user_email, title, created_at, updated_at, phoenix_session_id)
@@ -119,7 +121,7 @@ class ChatHistoryStore:
     def list_conversations(self, user_email: str) -> list[ConversationRecord]:
         normalized_email = normalize_user_email(user_email)
         self.initialize()
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM conversations
@@ -133,7 +135,7 @@ class ChatHistoryStore:
     def get_conversation(self, user_email: str, conversation_id: str) -> ConversationRecord | None:
         normalized_email = normalize_user_email(user_email)
         self.initialize()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
                 (conversation_id, normalized_email),
@@ -153,7 +155,7 @@ class ChatHistoryStore:
         self.initialize()
         now = time.time_ns()
         payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conversation = conn.execute(
                 "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
                 (conversation_id, normalized_email),
@@ -189,7 +191,7 @@ class ChatHistoryStore:
         normalized_email = normalize_user_email(user_email)
         if self.get_conversation(normalized_email, conversation_id) is None:
             return []
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM messages
@@ -206,6 +208,15 @@ class ChatHistoryStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def normalize_user_email(email: str) -> str:

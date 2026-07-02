@@ -1,6 +1,35 @@
 from __future__ import annotations
 
+import sqlite3
+
 from imperial_rag.app.auth import AuthStore, AuthenticationStatus
+from imperial_rag.app import auth as auth_module
+
+
+class TrackingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "closed", False)
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in {"_connection", "closed"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._connection, name, value)
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self._connection.__exit__(exc_type, exc, traceback)
+
+    def close(self) -> None:
+        object.__setattr__(self, "closed", True)
+        self._connection.close()
 
 
 def test_register_authenticate_and_admin_approval_flow(tmp_path):
@@ -61,3 +90,23 @@ def test_bootstrap_admin_refreshes_password(tmp_path):
 
     assert store.authenticate("admin@example.com", "old-password").status == AuthenticationStatus.INVALID_PASSWORD
     assert store.authenticate("admin@example.com", "new-password").status == AuthenticationStatus.AUTHENTICATED
+
+
+def test_auth_store_closes_short_lived_connections(monkeypatch, tmp_path):
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(auth_module.sqlite3, "connect", tracking_connect)
+    store = AuthStore(tmp_path / "auth.sqlite3")
+
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("user@example.com", "user-password", "User", "Need docs")
+    store.authenticate("user@example.com", "user-password")
+
+    assert opened
+    assert all(connection.closed for connection in opened)
