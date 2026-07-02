@@ -10,16 +10,16 @@ This file is the durable memory spine for Imperial automation loops. L1 loops ma
 
 ## Current Decision
 
-On 2026-07-02, use only `daily-triage`; keep all other configured loops planned or candidate. In this file, "enable" means allowing a manual L1 report-only run when its trigger and gates pass. It does not mean promoting a loop to active, scheduling it, granting connector access, or allowing source edits.
+On 2026-07-02, active manual L1 report-only loops are `daily-triage`, `ci-sweeper-manual`, `eval-regression-check`, and `ingestion-promotion-review`. In this file, "active" means allowing a manual L1 report-only run when the loop trigger and gates pass. It does not mean scheduling, connector access, source edits, provider-backed runs, ingestion promotion, or PR/GitHub writes.
 
 `daily-triage` is active L1 report-only, but it already ran twice on 2026-07-02. Run it again only on explicit human request or on a later day, after checking the pause flag, cadence, daily token estimate, 0-subagent rule, allowed writes, and privacy diff. If there is no new signal, append a short skipped/no-signal run entry and stop.
 
-Next candidates remain gated:
+Event-gated active loops remain gated:
 
 - `ci-sweeper-manual`: run only with failed CI/local-check evidence or explicit request.
-- `eval-regression-check`: run only before eval changes; no provider evals/dataset edits without approval.
-- `ingestion-promotion-review`: run only with baseline/shadow context; never promote artifacts.
-- `post-merge-cleanup`: candidate only; GitHub PR metadata read requires approval.
+- `eval-regression-check`: run only before eval changes or on explicit request; no provider evals/dataset edits without approval.
+- `ingestion-promotion-review`: run only with baseline/shadow context or explicit request; never promote artifacts.
+- `post-merge-cleanup`: candidate only; GitHub PR metadata read requires approval before use.
 
 Future ideas such as `dependency-sweeper`, `issue-triage`, `changelog-drafter`, and `pr-babysitter` are not configured loops. They need registry entries, budgets, connector policy, allowed writes, and human gates before use.
 
@@ -30,9 +30,9 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 | Loop ID | Status | Trigger | Level | Notes |
 | --- | --- | --- | --- | --- |
 | `daily-triage` | Active | Manual or at most once per day | L1 report-only | Reads local repo signals and updates state/logs only. |
-| `ci-sweeper-manual` | Planned | Manual or after failed CI | L1 report-only | Summarizes CI/local check failures; no fixes. |
-| `eval-regression-check` | Planned | Manual before eval changes | L1 report-only | Summarizes dataset audit or drift signals; provider-backed evals require approval. |
-| `ingestion-promotion-review` | Planned | Manual before promotion | L1 report-only | Summarizes baseline/shadow checks; no promotion. |
+| `ci-sweeper-manual` | Active | Manual or after failed CI | L1 report-only | Summarizes CI/local check failures; no fixes. |
+| `eval-regression-check` | Active | Manual before eval changes | L1 report-only | Summarizes dataset audit or drift signals; provider-backed evals require approval. |
+| `ingestion-promotion-review` | Active | Manual before promotion | L1 report-only | Summarizes baseline/shadow checks; no promotion. |
 | `post-merge-cleanup` | Candidate | Manual after merge review | L1 report-only | Report-only in L1; any cleanup fix needs later L2 approval. |
 
 ## Current Findings
@@ -41,7 +41,7 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 
 ## Watch List
 
-- Loop scaffold created for report-only daily triage, CI sweeps, eval drift checks, ingestion promotion reviews, and post-merge cleanup review.
+- Loop scaffold active for report-only daily triage, CI sweeps, eval drift checks, and ingestion promotion reviews; post-merge cleanup remains candidate.
 - Baseline verifier gate: `./scripts/check.sh`.
 - Operator CLI cadence for `daily-triage` is pinned to manual or exactly `1d`; do not use the upstream default `1d-2h` window for Imperial.
 - Before any manual run, capture `git status --short`; on 2026-07-02 the baseline already included modified `STATE.md` and `loop-run-log.md`, plus unrelated local dirt, so preserve in-flight changes and compare the post-run diff against allowed writes.
@@ -61,6 +61,7 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 - 2026-06-30: Start Imperial loop engineering in L1 report-only mode.
 - No auto-fix, auto-push, or auto-merge is allowed.
 - 2026-07-02: Pin `daily-triage` to manual or once daily; keep high-frequency CI sweeps disabled.
+- 2026-07-02: Promote `ci-sweeper-manual`, `eval-regression-check`, and `ingestion-promotion-review` to active manual L1 report-only loops on explicit human request.
 
 ## Pause State
 

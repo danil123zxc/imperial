@@ -12,16 +12,18 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 | Loop ID | Cadence / trigger | Status | Command / prompt |
 | --- | --- | --- | --- |
 | `daily-triage` | Manual or exactly once daily (`1d`) | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$loop-triage`. Update `STATE.md` and `loop-run-log.md`; do not edit source. |
-| `ci-sweeper-manual` | Manual or after failed CI only | Planned L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ci-sweeper-manual`. Read CI/local-check failures, map them to local verifiers, and write findings only. |
-| `eval-regression-check` | Manual before eval changes | Planned L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$eval-regression-check`. Audit eval dataset drift without provider-backed runs or dataset edits. |
-| `ingestion-promotion-review` | Manual before promotion | Planned L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ingestion-promotion-review`. Compare approved baseline/shadow context; never promote artifacts. |
+| `ci-sweeper-manual` | Manual or after failed CI only | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ci-sweeper-manual`. Read CI/local-check failures, map them to local verifiers, and write findings only. |
+| `eval-regression-check` | Manual before eval changes | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$eval-regression-check`. Audit eval dataset drift without provider-backed runs or dataset edits. |
+| `ingestion-promotion-review` | Manual before promotion | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ingestion-promotion-review`. Compare approved baseline/shadow context; never promote artifacts. |
 | `post-merge-cleanup` | Manual after merge review | Candidate L1 report-only | Summarize follow-up cleanup only; any source edit requires later L2 approval. |
 
 ## Enablement Terms
 
-- `daily-triage` is the only active loop. All other configured loops remain planned or candidate until a human explicitly promotes them.
+- The active L1 loop set is `daily-triage`, `ci-sweeper-manual`, `eval-regression-check`, and `ingestion-promotion-review`.
+- Event-gated active loops still require their trigger evidence or an explicit human request before running.
 - "Enable" means allowing a manual L1 report-only run after trigger, pause, cadence, budget, write-scope, and privacy gates pass.
 - "Enable" does not mean scheduling, promotion to active, connector access, source edits, dependency changes, provider-backed evals, ingestion promotion, or PR/GitHub writes.
+- `post-merge-cleanup` remains candidate until a human explicitly promotes it.
 - Future loop ideas such as `dependency-sweeper`, `issue-triage`, `changelog-drafter`, and `pr-babysitter` are not configured loops until they have registry entries, budgets, connector policy, allowed writes, and human gates.
 
 ## Current Findings
@@ -93,7 +95,7 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 ## Human Decisions
 
 - 2026-06-30: Start Imperial loop engineering in L1 report-only mode.
-- 2026-07-02: Keep `daily-triage` manual or once daily; keep `ci-sweeper-manual` event-driven/manual only.
+- 2026-07-02: Keep `daily-triage` manual or once daily; promote `ci-sweeper-manual`, `eval-regression-check`, and `ingestion-promotion-review` to active manual L1 report-only loops.
 
 ## Pause State
 

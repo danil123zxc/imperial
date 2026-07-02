@@ -42,7 +42,7 @@ patterns:
 
   - id: ci-sweeper-manual
     name: CI Sweeper Manual
-    status: planned
+    status: active
     level: L1
     cadence: manual
     skill_path: .codex/skills/ci-sweeper-manual/SKILL.md
@@ -70,7 +70,7 @@ patterns:
 
   - id: eval-regression-check
     name: Eval Regression Check
-    status: planned
+    status: active
     level: L1
     cadence: manual
     skill_path: .codex/skills/eval-regression-check/SKILL.md
@@ -82,6 +82,11 @@ patterns:
     connector_policy: none.
     provider_backed: false
     max_subagents_per_run: 0
+    budget:
+      suggested_daily_cap_tokens: 100000
+      expected_tokens_per_run: 12000
+      expected_runs_per_day: 1
+      early_exit: exit when no eval-related diff, planned eval change, or explicit request is present.
     verifier:
       report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       optional_gate: uv run python scripts/audit_eval_rows.py --strict --output-path <tmp>
@@ -92,7 +97,7 @@ patterns:
 
   - id: ingestion-promotion-review
     name: Ingestion Promotion Review
-    status: planned
+    status: active
     level: L1
     cadence: manual
     skill_path: .codex/skills/ingestion-promotion-review/SKILL.md
@@ -104,6 +109,11 @@ patterns:
     connector_policy: none.
     provider_backed: false
     max_subagents_per_run: 0
+    budget:
+      suggested_daily_cap_tokens: 100000
+      expected_tokens_per_run: 14000
+      expected_runs_per_day: 1
+      early_exit: exit when baseline/shadow roots or explicit promotion-review context are absent.
     verifier:
       report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
       optional_gate: uv run python scripts/check_ingestion_promotion.py --baseline-root <path> --shadow-root <path>
