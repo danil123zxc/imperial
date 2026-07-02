@@ -338,6 +338,38 @@ def phoenix_id_retrieval_relevance(
     return id_retrieval_metrics(input or {}, output or {}, expected)
 
 
+def phoenix_retrieval_relevance_for_k(k: int) -> Any:
+    retrieval_k = positive_int(k)
+    if retrieval_k == DEFAULT_RETRIEVAL_METRIC_K:
+        return phoenix_retrieval_relevance
+
+    def evaluator(
+        output: dict[str, Any],
+        expected: dict[str, Any] | None = None,
+        input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return retrieval_relevance_metrics(input or {}, output or {}, expected, k=retrieval_k)
+
+    evaluator.__name__ = f"phoenix_retrieval_relevance_at_{retrieval_k}"
+    return evaluator
+
+
+def phoenix_id_retrieval_relevance_for_k(k: int) -> Any:
+    retrieval_k = positive_int(k)
+    if retrieval_k == DEFAULT_RETRIEVAL_METRIC_K:
+        return phoenix_id_retrieval_relevance
+
+    def evaluator(
+        output: dict[str, Any],
+        expected: dict[str, Any] | None = None,
+        input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return id_retrieval_metrics(input or {}, output or {}, expected, k=retrieval_k)
+
+    evaluator.__name__ = f"phoenix_id_retrieval_relevance_at_{retrieval_k}"
+    return evaluator
+
+
 def phoenix_ragas_faithfulness(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
@@ -430,7 +462,13 @@ async def phoenix_id_context_recall_async(
     )
 
 
-def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -> list[dict[str, Any]]:
+def run_local_eval(
+    examples: list[dict[str, Any]],
+    runtime: Any | None = None,
+    *,
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
+) -> list[dict[str, Any]]:
+    retrieval_k = positive_int(retrieval_k)
     resolved_runtime = runtime or build_runtime()
     rows: list[dict[str, Any]] = []
     for example in examples:
@@ -441,9 +479,9 @@ def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -
             "reference_context_ids": example.get("reference_context_ids", []),
         }
         outputs = run_target(inputs, runtime=resolved_runtime)
-        retrieval_metrics = retrieval_relevance_metrics(inputs, outputs, reference_outputs)
+        retrieval_metrics = retrieval_relevance_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
         retrieval_metadata = retrieval_metrics.get("metadata", {})
-        id_metrics = id_retrieval_metrics(inputs, outputs, reference_outputs)
+        id_metrics = id_retrieval_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
         id_metadata = id_metrics.get("metadata", {})
         citation_grounding = citation_grounding_behavior(inputs, outputs, reference_outputs)
         conflict = conflict_behavior(inputs, outputs, reference_outputs)
@@ -454,30 +492,7 @@ def run_local_eval(examples: list[dict[str, Any]], runtime: Any | None = None) -
                 "source_hint_behavior": source_hint_behavior(inputs, outputs, reference_outputs)["score"],
                 "citation_grounding_behavior": citation_grounding["score"],
                 "conflict_behavior": conflict["score"],
-                f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
-                    f"hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"retrieval_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
-                    f"precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"retrieval_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
-                    f"ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
-                    f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
-                    f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
-                    f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
-                    f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
-                f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
-                    f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-                ),
+                **_deterministic_retrieval_values(retrieval_metadata, id_metadata, retrieval_k=retrieval_k),
             }
         )
     return rows
@@ -503,6 +518,12 @@ def main(argv: list[str] | None = None) -> None:
         default=DEFAULT_PHOENIX_CONCURRENCY,
         help="Maximum concurrent Phoenix experiment tasks.",
     )
+    parser.add_argument(
+        "--retrieval-k",
+        type=positive_int,
+        default=DEFAULT_RETRIEVAL_METRIC_K,
+        help="Top-k cutoff for deterministic retrieval relevance metrics.",
+    )
     args = parser.parse_args(argv)
 
     _load_project_env(args.workspace_root)
@@ -523,6 +544,7 @@ def main(argv: list[str] | None = None) -> None:
                 experiment_name=args.experiment_name,
                 ragas_metric_names=metric_names,
                 concurrency=args.concurrency,
+                retrieval_k=args.retrieval_k,
             )
             _log_eval_completion(
                 started_at,
@@ -531,10 +553,15 @@ def main(argv: list[str] | None = None) -> None:
                 example_count=len(examples),
                 phoenix_mode=True,
                 ragas_metrics=",".join(metric_names),
+                retrieval_k=args.retrieval_k,
             )
             return
 
-        rows = run_local_eval(examples, runtime=build_runtime(settings=settings))
+        rows = run_local_eval(
+            examples,
+            runtime=build_runtime(settings=settings),
+            retrieval_k=args.retrieval_k,
+        )
         passed = sum(1 for row in rows if row["citation_behavior"] and row["source_hint_behavior"])
         print(f"local_eval_examples={len(rows)}")
         print(f"local_eval_passed={passed}")
@@ -546,6 +573,7 @@ def main(argv: list[str] | None = None) -> None:
             passed_count=passed,
             phoenix_mode=False,
             ragas_metrics=",".join(metric_names),
+            retrieval_k=args.retrieval_k,
         )
     except (Exception, SystemExit) as exc:
         _log_failure(
@@ -554,6 +582,7 @@ def main(argv: list[str] | None = None) -> None:
             started_at,
             phoenix_mode=args.use_phoenix,
             ragas_metrics=args.ragas_metrics,
+            retrieval_k=args.retrieval_k,
         )
         raise
 
@@ -566,6 +595,7 @@ def run_phoenix_experiment(
     ragas_metric_names: list[str] | None = None,
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
 ) -> None:
     return _run_async(
         run_phoenix_experiment_async(
@@ -575,6 +605,7 @@ def run_phoenix_experiment(
             experiment_name=experiment_name,
             ragas_metric_names=ragas_metric_names,
             concurrency=concurrency,
+            retrieval_k=retrieval_k,
         )
     )
 
@@ -587,8 +618,10 @@ async def run_phoenix_experiment_async(
     ragas_metric_names: list[str] | None = None,
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
 ) -> None:
     concurrency = positive_int(concurrency)
+    retrieval_k = positive_int(retrieval_k)
     if ragas_metric_names is None:
         from imperial_rag.evals.ragas import DEFAULT_RAGAS_METRICS
 
@@ -596,7 +629,7 @@ async def run_phoenix_experiment_async(
     else:
         resolved_ragas_metric_names = list(ragas_metric_names)
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
-    evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True)
+    evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True, retrieval_k=retrieval_k)
 
     try:
         from phoenix.client import AsyncClient
@@ -645,6 +678,7 @@ def _run_phoenix_experiment(
     ragas_metric_names: list[str] | None = None,
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
 ) -> None:
     return run_phoenix_experiment(
         examples=examples,
@@ -653,6 +687,7 @@ def _run_phoenix_experiment(
         experiment_name=experiment_name,
         ragas_metric_names=ragas_metric_names,
         concurrency=concurrency,
+        retrieval_k=retrieval_k,
     )
 
 
@@ -705,7 +740,13 @@ def _validate_phoenix_ragas_metric_requirements(
     )
 
 
-def _phoenix_evaluators(metric_names: Sequence[str], *, async_mode: bool = False) -> dict[str, Any]:
+def _phoenix_evaluators(
+    metric_names: Sequence[str],
+    *,
+    async_mode: bool = False,
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
+) -> dict[str, Any]:
+    retrieval_k = positive_int(retrieval_k)
     unsupported = sorted(set(metric_names) - {"faithfulness", "answer_relevancy", "id_context_recall"})
     if unsupported:
         raise SystemExit(
@@ -717,8 +758,8 @@ def _phoenix_evaluators(metric_names: Sequence[str], *, async_mode: bool = False
         "source_hint_behavior": phoenix_source_hint_behavior,
         "citation_grounding_behavior": phoenix_citation_grounding_behavior,
         "conflict_behavior": phoenix_conflict_behavior,
-        "retrieval_relevance": phoenix_retrieval_relevance,
-        "id_retrieval_relevance": phoenix_id_retrieval_relevance,
+        "retrieval_relevance": phoenix_retrieval_relevance_for_k(retrieval_k),
+        "id_retrieval_relevance": phoenix_id_retrieval_relevance_for_k(retrieval_k),
     }
     if "faithfulness" in metric_names:
         evaluators["ragas_faithfulness"] = (
@@ -895,6 +936,24 @@ def id_retrieval_metrics(
     }
 
 
+def _deterministic_retrieval_values(
+    retrieval_metadata: Mapping[str, Any],
+    id_metadata: Mapping[str, Any],
+    *,
+    retrieval_k: int,
+) -> dict[str, Any]:
+    return {
+        f"retrieval_hit_at_{retrieval_k}": retrieval_metadata.get(f"hit_at_{retrieval_k}"),
+        f"retrieval_precision_at_{retrieval_k}": retrieval_metadata.get(f"precision_at_{retrieval_k}"),
+        f"retrieval_ndcg_at_{retrieval_k}": retrieval_metadata.get(f"ndcg_at_{retrieval_k}"),
+        f"id_hit_at_{retrieval_k}": id_metadata.get(f"id_hit_at_{retrieval_k}"),
+        f"id_precision_at_{retrieval_k}": id_metadata.get(f"id_precision_at_{retrieval_k}"),
+        f"id_recall_at_{retrieval_k}": id_metadata.get(f"id_recall_at_{retrieval_k}"),
+        f"id_mrr_at_{retrieval_k}": id_metadata.get(f"id_mrr_at_{retrieval_k}"),
+        f"id_ndcg_at_{retrieval_k}": id_metadata.get(f"id_ndcg_at_{retrieval_k}"),
+    }
+
+
 def log_phoenix_eval_annotations(
     client: Any,
     *,
@@ -959,9 +1018,11 @@ def build_eval_artifact_row(
     output: Mapping[str, Any],
     ragas_results: Mapping[str, Mapping[str, Any]] | None = None,
     phoenix_experiment: str | None = None,
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
 ) -> dict[str, Any]:
     from imperial_rag.evals.ragas import retrieved_context_ids_from_output
 
+    retrieval_k = positive_int(retrieval_k)
     inputs = {"question": example["question"]}
     reference_outputs = {
         "expected_behavior": example["expected_behavior"],
@@ -972,31 +1033,16 @@ def build_eval_artifact_row(
     source_hint_verdict = source_hint_behavior(inputs, dict(output), reference_outputs)["score"]
     citation_grounding = citation_grounding_behavior(inputs, dict(output), reference_outputs)
     conflict_verdict = conflict_behavior(inputs, dict(output), reference_outputs)
-    retrieval_metrics = retrieval_relevance_metrics(inputs, dict(output), reference_outputs)
+    retrieval_metrics = retrieval_relevance_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
     retrieval_metadata = retrieval_metrics.get("metadata", {})
-    id_metrics = id_retrieval_metrics(inputs, dict(output), reference_outputs)
+    id_metrics = id_retrieval_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
     id_metadata = id_metrics.get("metadata", {})
     deterministic = {
         "citation_behavior": citation_verdict,
         "source_hint_behavior": source_hint_verdict,
         "citation_grounding_behavior": citation_grounding.get("score"),
         "conflict_behavior": conflict_verdict.get("score"),
-        f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
-            f"hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-        ),
-        f"retrieval_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
-            f"precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-        ),
-        f"retrieval_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": retrieval_metadata.get(
-            f"ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-        ),
-        f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
-        f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(
-            f"id_precision_at_{DEFAULT_RETRIEVAL_METRIC_K}"
-        ),
-        f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_recall_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
-        f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_mrr_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
-        f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}": id_metadata.get(f"id_ndcg_at_{DEFAULT_RETRIEVAL_METRIC_K}"),
+        **_deterministic_retrieval_values(retrieval_metadata, id_metadata, retrieval_k=retrieval_k),
     }
     resolved_ragas_results = ragas_results or {}
     ragas_scores = {name: result.get("score") for name, result in resolved_ragas_results.items()}
@@ -1021,6 +1067,7 @@ def build_eval_artifact_row(
             expected_behavior=str(example.get("expected_behavior") or ""),
             deterministic=deterministic,
             ragas_scores=ragas_scores,
+            retrieval_k=retrieval_k,
         ),
     }
 
@@ -1057,7 +1104,9 @@ def classify_eval_failure(
     expected_behavior: str,
     deterministic: Mapping[str, Any],
     ragas_scores: Mapping[str, Any],
+    retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
 ) -> str | None:
+    retrieval_k = positive_int(retrieval_k)
     if expected_behavior == "refuse_if_not_found" and deterministic.get("citation_behavior") is not True:
         return "bad_refusal"
     if expected_behavior == "surface_conflict" and deterministic.get("citation_behavior") is not True:
@@ -1066,9 +1115,9 @@ def classify_eval_failure(
         return "missing_citation"
     if expected_behavior == "surface_conflict" and deterministic.get("conflict_behavior") is False:
         return "bad_conflict_handling"
-    if deterministic.get(f"id_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}") is False:
+    if deterministic.get(f"id_hit_at_{retrieval_k}") is False:
         return "retrieval_miss"
-    if deterministic.get(f"retrieval_hit_at_{DEFAULT_RETRIEVAL_METRIC_K}") is False:
+    if deterministic.get(f"retrieval_hit_at_{retrieval_k}") is False:
         return "retrieval_miss"
     if deterministic.get("citation_grounding_behavior") is False:
         return "ungrounded_citation"

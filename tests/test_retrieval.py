@@ -1102,7 +1102,7 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     vector_docs = [
         Document(
             page_content=f"vector {index}",
-            metadata={"citation_id": f"v{index}", "file_id": "vf", "source_type": "body", "chunk_index": index},
+            metadata={"citation_id": f"v{index}", "file_id": f"vf-{index}", "source_type": "body", "chunk_index": index},
         )
         for index in range(70)
     ]
@@ -1111,7 +1111,7 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
             page_content=f"keyword {index}",
             metadata={
                 "citation_id": f"k{index}",
-                "file_id": "kf",
+                "file_id": f"kf-{index}",
                 "source_type": "body",
                 "chunk_index": index,
                 "_keyword_rank": index,
@@ -1158,6 +1158,9 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     assert result.diagnostics["reranked_candidates"] == 10
     assert result.diagnostics["final_evidence"] == 10
     assert len(result.evidence) == 10
+    from imperial_rag.evals.ragas import retrieved_context_ids_from_output
+
+    assert len(retrieved_context_ids_from_output({"documents": result.evidence})) == 10
     assert [record["name"] for record in records] == [
         "retrieval",
         "retrieval.vector_search",

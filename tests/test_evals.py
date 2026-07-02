@@ -555,6 +555,43 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
     ]
 
 
+def test_run_local_eval_uses_configurable_retrieval_k():
+    module = _load_eval_runner()
+
+    class FakeRuntime:
+        def query(self, question: str) -> dict[str, object]:
+            return {
+                "answer": "Возврат брака оформляется по регламенту.",
+                "citations": ["documents/reglament.docx"],
+                "sources": ["documents/reglament.docx"],
+                "evidence": [
+                    {
+                        "page_content": "Регламент описывает возврат брака.",
+                        "metadata": {"file_id": "file-a", "relative_path": "documents/reglament.docx"},
+                    }
+                ],
+            }
+
+    rows = module.run_local_eval(
+        [
+            {
+                "question": "Как оформить возврат брака?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["возврат брака"],
+                "reference_context_ids": ["file-a"],
+            }
+        ],
+        runtime=FakeRuntime(),
+        retrieval_k=10,
+    )
+
+    assert rows[0]["retrieval_hit_at_10"] is True
+    assert rows[0]["retrieval_precision_at_10"] == 0.1
+    assert rows[0]["id_recall_at_10"] == 1.0
+    assert "retrieval_hit_at_5" not in rows[0]
+    assert "id_recall_at_5" not in rows[0]
+
+
 def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_class():
     module = _load_eval_runner()
     example = {
@@ -621,6 +658,41 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "phoenix_experiment": "experiment-1",
         "failure_class": "missing_citation",
     }
+
+
+def test_build_eval_artifact_row_uses_configurable_retrieval_k():
+    module = _load_eval_runner()
+
+    artifact = module.build_eval_artifact_row(
+        example={
+            "id": "imperial-cite-001",
+            "suite": "core",
+            "tags": ["returns"],
+            "lane": "indexed_answerability",
+            "question": "Как оформить возврат брака?",
+            "expected_behavior": "cite_answer",
+            "expected_source_hints": ["возврат брака"],
+            "reference_answer": "Возврат брака оформляется по регламенту.",
+            "reference_context_ids": ["file-a"],
+        },
+        output={
+            "answer": "Возврат брака оформляется по регламенту.",
+            "citations": ["documents/reglament.docx"],
+            "documents": [
+                {
+                    "page_content": "Возврат брака оформляется по регламенту.",
+                    "metadata": {"file_id": "file-a", "relative_path": "documents/reglament.docx"},
+                }
+            ],
+        },
+        retrieval_k=10,
+    )
+
+    assert artifact["deterministic"]["retrieval_hit_at_10"] is True
+    assert artifact["deterministic"]["retrieval_precision_at_10"] == 0.1
+    assert artifact["deterministic"]["id_recall_at_10"] == 1.0
+    assert "retrieval_hit_at_5" not in artifact["deterministic"]
+    assert "id_recall_at_5" not in artifact["deterministic"]
 
 
 def test_summarize_eval_artifact_rows_reports_pass_rates_by_lane_tag_and_source_family():
@@ -699,6 +771,12 @@ def test_eval_failure_class_prioritizes_behavior_failures():
         expected_behavior="cite_answer",
         deterministic={"citation_behavior": True, "id_hit_at_5": False, "retrieval_hit_at_5": True},
         ragas_scores={},
+    ) == "retrieval_miss"
+    assert module.classify_eval_failure(
+        expected_behavior="cite_answer",
+        deterministic={"citation_behavior": True, "id_hit_at_10": False, "retrieval_hit_at_10": True},
+        ragas_scores={},
+        retrieval_k=10,
     ) == "retrieval_miss"
 
 
@@ -814,6 +892,28 @@ def test_phoenix_eval_rejects_non_positive_cli_concurrency_before_running():
     assert exc_info.value.code == 2
 
 
+def test_phoenix_eval_cli_forwards_retrieval_k_to_phoenix_experiment(monkeypatch):
+    module = _load_eval_runner()
+    settings = SimpleNamespace(
+        phoenix_client_endpoint="http://localhost:6006",
+        phoenix_project_name="imperial-rag",
+    )
+    examples = [{"question": "Что делать?", "expected_behavior": "cite_answer"}]
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(module, "_load_project_env", lambda workspace_root: None)
+    monkeypatch.setattr(module, "_build_settings", lambda workspace_root: settings)
+    monkeypatch.setattr(module, "_configure_observability", lambda settings: None)
+    monkeypatch.setattr(module, "_configure_tracing", lambda settings, enabled: None)
+    monkeypatch.setattr(module, "load_questions", lambda path: examples)
+    monkeypatch.setattr(module, "run_phoenix_experiment", lambda **kwargs: captured.update(kwargs))
+
+    module.main(["--use-phoenix", "--ragas-metrics", "none", "--retrieval-k", "10"])
+
+    assert captured["examples"] == examples
+    assert captured["retrieval_k"] == 10
+
+
 def test_phoenix_experiment_rejects_non_positive_concurrency_before_client_import(monkeypatch):
     module = _load_eval_runner()
 
@@ -869,6 +969,26 @@ def test_phoenix_evaluators_use_stable_mapping_names():
     assert evaluators["ragas_faithfulness"] is module.phoenix_ragas_faithfulness_async
     assert evaluators["ragas_answer_relevancy"] is module.phoenix_ragas_answer_relevancy_async
     assert evaluators["ragas_id_context_recall"] is module.phoenix_id_context_recall_async
+
+
+def test_phoenix_retrieval_evaluators_use_configurable_retrieval_k():
+    module = _load_eval_runner()
+
+    evaluators = module._phoenix_evaluators([], retrieval_k=10)
+    result = evaluators["id_retrieval_relevance"](
+        input={"question": "q"},
+        output={
+            "documents": [
+                {"page_content": f"doc {index}", "metadata": {"file_id": f"file-{index}"}}
+                for index in range(10)
+            ]
+        },
+        expected={"reference_context_ids": ["file-9"]},
+    )
+
+    assert result["metadata"]["id_recall_at_10"] == 1.0
+    assert result["metadata"]["id_precision_at_10"] == 0.1
+    assert "id_recall_at_5" not in result["metadata"]
 
 
 def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch):
