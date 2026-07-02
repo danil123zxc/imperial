@@ -115,6 +115,32 @@ def test_chat_history_store_closes_short_lived_connections(monkeypatch, tmp_path
     assert all(connection.closed for connection in opened)
 
 
+def test_chat_history_store_lists_messages_with_one_read_connection(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.sqlite3"
+    setup_store = ChatHistoryStore(db_path)
+    conversation = setup_store.create_conversation("user@example.com", "Question")
+    setup_store.add_message("user@example.com", conversation.id, "user", "Hello")
+
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(chat_history_module.sqlite3, "connect", tracking_connect)
+    store = ChatHistoryStore(db_path)
+    store.initialize()
+    opened.clear()
+
+    messages = store.list_messages("user@example.com", conversation.id)
+
+    assert [message.content for message in messages] == ["Hello"]
+    assert len(opened) == 1
+    assert all(connection.closed for connection in opened)
+
+
 def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):
     store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
     older = store.create_conversation("user@example.com", "Older chat", phoenix_session_id="trace-old")

@@ -41,8 +41,11 @@ class MessageRecord:
 class ChatHistoryStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
+        self._initialized = False
 
     def initialize(self) -> None:
+        if self._initialized:
+            return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connection() as conn:
             conn.execute(
@@ -83,6 +86,7 @@ class ChatHistoryStore:
                 ON messages(conversation_id, sequence ASC, id ASC)
                 """
             )
+        self._initialized = True
 
     def create_conversation(
         self,
@@ -136,10 +140,7 @@ class ChatHistoryStore:
         normalized_email = normalize_user_email(user_email)
         self.initialize()
         with self._connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
-                (conversation_id, normalized_email),
-            ).fetchone()
+            row = self._find_conversation(conn, normalized_email, conversation_id)
         return _row_to_conversation(row) if row is not None else None
 
     def add_message(
@@ -156,10 +157,7 @@ class ChatHistoryStore:
         now = time.time_ns()
         payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
         with self._connection() as conn:
-            conversation = conn.execute(
-                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
-                (conversation_id, normalized_email),
-            ).fetchone()
+            conversation = self._find_conversation(conn, normalized_email, conversation_id)
             if conversation is None:
                 exists = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
                 if exists is not None:
@@ -189,16 +187,16 @@ class ChatHistoryStore:
 
     def list_messages(self, user_email: str, conversation_id: str) -> list[MessageRecord]:
         normalized_email = normalize_user_email(user_email)
-        if self.get_conversation(normalized_email, conversation_id) is None:
-            return []
+        self.initialize()
         with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM messages
-                WHERE conversation_id = ?
-                ORDER BY sequence ASC, id ASC
+                SELECT messages.* FROM messages
+                INNER JOIN conversations ON conversations.id = messages.conversation_id
+                WHERE messages.conversation_id = ? AND conversations.user_email = ?
+                ORDER BY messages.sequence ASC, messages.id ASC
                 """,
-                (conversation_id,),
+                (conversation_id, normalized_email),
             ).fetchall()
         return [_row_to_message(row) for row in rows]
 
@@ -208,6 +206,17 @@ class ChatHistoryStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def _find_conversation(
+        self,
+        conn: sqlite3.Connection,
+        user_email: str,
+        conversation_id: str,
+    ) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
+            (conversation_id, user_email),
+        ).fetchone()
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

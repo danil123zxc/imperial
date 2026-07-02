@@ -1307,10 +1307,12 @@ def _document_ids_matching_citation(citation: str, documents: Sequence[Any]) -> 
         metadata = payload.get("metadata", {}) or {}
         identity_values = _document_identity_values(payload, metadata if isinstance(metadata, Mapping) else {})
         if any(_identity_matches_citation(value, normalized_citation) for value in identity_values):
-            file_id = str((metadata if isinstance(metadata, Mapping) else {}).get("file_id") or "").strip()
-            if file_id:
-                matched_ids.append(file_id)
+            matched_ids.extend(_document_context_ids(metadata if isinstance(metadata, Mapping) else {}))
     return _unique_nonempty(matched_ids)
+
+
+def _document_context_ids(metadata: Mapping[str, Any]) -> list[str]:
+    return _unique_nonempty(str(metadata.get(field) or "").strip() for field in ("file_id", "chunk_id", "citation_id"))
 
 
 def _document_identity_values(payload: Mapping[str, Any], metadata: Mapping[str, Any]) -> list[str]:
