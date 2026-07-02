@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 from collections import Counter
-import importlib.util
+import importlib
 import json
 import os
 import sys
@@ -781,7 +781,7 @@ def test_eval_failure_class_prioritizes_behavior_failures():
 
 
 def test_eval_runner_uses_phoenix_dataset_and_experiment_api_shape():
-    source = Path("scripts/run_phoenix_eval.py").read_text(encoding="utf-8")
+    source = Path("src/imperial_rag/evals/phoenix_experiment.py").read_text(encoding="utf-8")
     legacy_name = "".join(("lang", "smith"))
     legacy_runner = Path("scripts") / f"run_{legacy_name}_eval.py"
 
@@ -1275,9 +1275,4 @@ def _contains_cyrillic(value: str) -> bool:
 
 
 def _load_eval_runner():
-    spec = importlib.util.spec_from_file_location("run_phoenix_eval_for_test", Path("scripts/run_phoenix_eval.py"))
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("imperial_rag.evals.phoenix_experiment")

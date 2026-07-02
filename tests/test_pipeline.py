@@ -110,6 +110,7 @@ def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatc
     assert summary.total_files == 1
     assert summary.indexed_files == 1
     assert summary.chunk_count == 1
+    assert summary.counts() == {"files": 1, "chunks": 1}
     assert rows[0]["metadata"]["relative_path"] == "policy.txt"
     assert rows[0]["metadata"]["chunk_id"] == "file1:body:0"
     assert FakeKeywordSearchIndex.last_docs is not None

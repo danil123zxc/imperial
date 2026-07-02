@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -21,7 +20,7 @@ from imperial_rag.retrieval.elasticsearch import (
     reason="live Elasticsearch test is opt-in",
 )
 def test_live_elasticsearch_keyword_index_roundtrip() -> None:
-    settings = replace(Settings(), elasticsearch_index=f"imperial_keyword_chunks_test_{uuid4().hex}")
+    settings = Settings().model_copy(update={"elasticsearch_index": f"imperial_keyword_chunks_test_{uuid4().hex}"})
     index = ElasticsearchKeywordIndex(settings)
 
     parsed_url = urlparse(settings.elasticsearch_url)

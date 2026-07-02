@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from imperial_rag.config import env_bool, env_str
+
 
 EVENT_SCHEMA_VERSION = "1"
 DEFAULT_EVENT_DATA_STREAM = "imperial-rag-events-v1"
 DEFAULT_EVAL_DATA_STREAM = "imperial-rag-eval-summaries-v1"
 
-TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 BASE_ALLOWED_FIELDS = {
     "app_version",
     "component",
@@ -148,7 +149,7 @@ class ElasticsearchEventSink:
 
     @classmethod
     def from_settings(cls, settings: Any | None = None) -> "ElasticsearchEventSink":
-        enabled = _env_bool("IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_ENABLED", False)
+        enabled = env_bool("IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_ENABLED", False)
         elasticsearch_url = str(
             getattr(settings, "elasticsearch_url", None)
             or os.environ.get("ELASTICSEARCH_URL")
@@ -157,8 +158,8 @@ class ElasticsearchEventSink:
         return cls(
             enabled=enabled,
             elasticsearch_url=elasticsearch_url,
-            event_data_stream=_env_str("IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_DATA_STREAM", DEFAULT_EVENT_DATA_STREAM),
-            eval_data_stream=_env_str("IMPERIAL_RAG_EVENTLOG_EVAL_DATA_STREAM", DEFAULT_EVAL_DATA_STREAM),
+            event_data_stream=env_str("IMPERIAL_RAG_EVENTLOG_ELASTICSEARCH_DATA_STREAM", DEFAULT_EVENT_DATA_STREAM),
+            eval_data_stream=env_str("IMPERIAL_RAG_EVENTLOG_EVAL_DATA_STREAM", DEFAULT_EVAL_DATA_STREAM),
         )
 
     def emit(self, document: Mapping[str, Any]) -> None:
@@ -295,17 +296,3 @@ def _safe_int(value: Any) -> int:
 def _is_forbidden_field(key: Any) -> bool:
     normalized = str(key).strip().casefold()
     return normalized in FORBIDDEN_FIELDS or any(part in normalized for part in FORBIDDEN_FIELD_PARTS)
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip().casefold() in TRUE_ENV_VALUES
-
-
-def _env_str(name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return raw.strip()

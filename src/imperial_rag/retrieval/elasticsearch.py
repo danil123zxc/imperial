@@ -106,11 +106,7 @@ class ElasticsearchKeywordRetriever(BaseRetriever):
     def _documents_from_hits(self, hits: list[ElasticsearchRetrieverHit]) -> list[Document]:
         documents: list[Document] = []
         for rank, hit in enumerate(hits):
-            metadata = dict(hit.document.metadata or {})
-            metadata["_keyword_rank"] = rank
-            metadata["_keyword_score"] = hit.score
-            metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
-            documents.append(Document(page_content=hit.document.page_content, metadata=metadata))
+            documents.append(_annotated_keyword_document(hit, rank))
         return documents
 
     def search(self, query: str, limit: int = 5) -> list[ElasticsearchRetrieverHit]:
@@ -243,13 +239,8 @@ class ElasticsearchKeywordIndex:
         return ordered_hits
 
     def _keyword_hit(self, hit: ElasticsearchRetrieverHit, rank: int, *, match_mode: str) -> KeywordHit:
-        metadata = dict(hit.document.metadata or {})
-        metadata["_keyword_rank"] = rank
-        metadata["_keyword_score"] = hit.score
-        metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
-        metadata["_keyword_match_mode"] = match_mode
         return KeywordHit(
-            document=Document(page_content=hit.document.page_content, metadata=metadata),
+            document=_annotated_keyword_document(hit, rank, match_mode=match_mode),
             score=hit.score,
         )
 
@@ -265,6 +256,21 @@ def _structured_search_fields(document: Document) -> dict[str, str]:
     if page_number is not None:
         fields["page_number_text"] = str(page_number)
     return fields
+
+
+def _annotated_keyword_document(
+    hit: ElasticsearchRetrieverHit,
+    rank: int,
+    *,
+    match_mode: str | None = None,
+) -> Document:
+    metadata = dict(hit.document.metadata or {})
+    metadata["_keyword_rank"] = rank
+    metadata["_keyword_score"] = hit.score
+    metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
+    if match_mode is not None:
+        metadata["_keyword_match_mode"] = match_mode
+    return Document(page_content=hit.document.page_content, metadata=metadata)
 
 
 def _retrieval_id(document: Document, *, hit_id: str | None = None) -> str:

@@ -1,13 +1,32 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
-import uuid
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+
+
+def _ensure_src_on_path() -> None:
+    root = Path(__file__).resolve().parents[1]
+    src = root / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+
+
+_ensure_src_on_path()
+
+from imperial_rag.cli import (  # noqa: E402
+    build_settings as _build_settings,
+    configure_observability as _configure_observability,
+    configure_tracing as _configure_tracing,
+    duration_ms as _duration_ms,
+    load_project_environment as _load_project_env,
+    log_failure as _log_failure,
+    trace_context as _trace_context,
+    trace_session_id as _trace_session_id,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -55,7 +74,7 @@ def main(argv: list[str] | None = None) -> None:
         args.recreate_qdrant_collection,
     )
     _configure_observability(settings)
-    _configure_tracing(settings, args.trace_phoenix)
+    _configure_tracing(settings, trace_phoenix=args.trace_phoenix)
     trace_session_id = _trace_session_id(args.trace_session_id)
     started_at = perf_counter()
     try:
@@ -99,33 +118,6 @@ def print_summary(summary: Any) -> None:
         print(f"{label}={_summary_value(summary, attr, default=0)}")
 
 
-def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
-    from imperial_rag.cli import configure_tracing
-
-    configure_tracing(settings, trace_phoenix=trace_phoenix)
-
-
-def _trace_context(session_id: str):
-    from imperial_rag.cli import trace_context
-
-    return trace_context(session_id)
-
-
-def _trace_session_id(explicit: str | None) -> str:
-    if explicit is not None and explicit.strip():
-        return explicit.strip()
-    env_value = os.environ.get("IMPERIAL_RAG_TRACE_SESSION_ID", "").strip()
-    if env_value:
-        return env_value
-    return f"cli_{uuid.uuid4()}"
-
-
-def _configure_observability(settings: Any) -> None:
-    from imperial_rag.cli import configure_observability
-
-    configure_observability(settings)
-
-
 def _log_ingest_completion(
     summary: Any,
     started_at: float,
@@ -150,12 +142,6 @@ def _log_ingest_completion(
         **extra_fields,
         **fields,
     )
-
-
-def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
-    from imperial_rag.cli import log_failure
-
-    log_failure(operation, exc, started_at, **fields)
 
 
 def _run(settings: Any, enable_ocr: bool, index_vectors: bool) -> Any:
@@ -183,7 +169,7 @@ def _run(settings: Any, enable_ocr: bool, index_vectors: bool) -> Any:
 
 def _build_ingestion_workflow() -> Any | None:
     try:
-        from imperial_rag.answering.workflow import build_ingestion_workflow
+        from imperial_rag.ingestion.workflow import build_ingestion_workflow
     except (ImportError, AttributeError):
         return None
     return build_ingestion_workflow()
@@ -223,12 +209,6 @@ def _ocr_appears_configured() -> bool:
     return dashscope_configured()
 
 
-def _build_settings(workspace_root: Path | None) -> Any:
-    from imperial_rag.cli import build_settings
-
-    return build_settings(workspace_root)
-
-
 def _settings_with_shadow_targets(
     settings: Any,
     suffix: str | None,
@@ -255,6 +235,8 @@ def _settings_with_shadow_targets(
         updates["recreate_qdrant_collection"] = True
     if not updates:
         return settings
+    if hasattr(settings, "model_copy"):
+        return settings.model_copy(update=updates)
     return replace(settings, **updates)
 
 
@@ -262,12 +244,6 @@ def _resolve_workspace_path(settings: Any, path: Path) -> Path:
     if path.is_absolute():
         return path
     return Path(settings.workspace_root) / path
-
-
-def _load_project_env(workspace_root: Path | None) -> None:
-    from imperial_rag.cli import load_project_environment
-
-    load_project_environment(workspace_root)
 
 
 def _summary_value(summary: Any, attr: str, default: Any = "") -> Any:
@@ -287,25 +263,11 @@ def _summary_log_fields(summary: Any) -> dict[str, Any]:
     }
 
 
-def _duration_ms(started_at: float) -> int:
-    from imperial_rag.cli import duration_ms
-
-    return duration_ms(started_at)
-
-
 def _int_value(value: Any) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-
 
 if __name__ == "__main__":
     main()

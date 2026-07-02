@@ -31,6 +31,9 @@ class IngestionSummary:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def counts(self) -> dict[str, int]:
+        return {"files": self.total_files, "chunks": self.chunk_count}
+
 
 def _new_ingest_run_id() -> str:
     explicit = os.environ.get("IMPERIAL_RAG_INGEST_RUN_ID", "").strip()

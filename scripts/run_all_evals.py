@@ -10,8 +10,16 @@ from urllib import request
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+SRC_DIR = SCRIPT_DIR.parent / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 import run_phoenix_eval as phoenix_eval
+from imperial_rag.cli import (  # noqa: E402
+    configure_observability as _configure_observability,
+    duration_ms as _duration_ms,
+    log_failure as _log_failure,
+)
 
 
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-all-evals"
@@ -75,12 +83,6 @@ def _assert_phoenix_reachable(endpoint: str, timeout: float = 2.0) -> None:
         ) from exc
 
 
-def _configure_observability(settings) -> None:
-    from imperial_rag.cli import configure_observability
-
-    configure_observability(settings)
-
-
 def _log_completion(started_at: float, *, example_count: int, ragas_metrics: str) -> None:
     from imperial_rag.observability import log_event
 
@@ -94,18 +96,6 @@ def _log_completion(started_at: float, *, example_count: int, ragas_metrics: str
         phoenix_mode=True,
         ragas_metrics=ragas_metrics,
     )
-
-
-def _log_failure(operation: str, exc: BaseException, started_at: float, **fields) -> None:
-    from imperial_rag.cli import log_failure
-
-    log_failure(operation, exc, started_at, **fields)
-
-
-def _duration_ms(started_at: float) -> int:
-    from imperial_rag.cli import duration_ms
-
-    return duration_ms(started_at)
 
 
 if __name__ == "__main__":

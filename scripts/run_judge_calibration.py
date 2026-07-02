@@ -17,7 +17,12 @@ SRC_DIR = SCRIPT_DIR.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from run_ragas_eval import _load_project_env, build_evaluator_llm, evaluate_ragas_rows, result_records  # noqa: E402
+from imperial_rag.cli import load_project_environment as _load_project_env  # noqa: E402
+from imperial_rag.evals.ragas_runner import (  # noqa: E402
+    build_evaluator_llm,
+    evaluate_ragas_rows,
+    result_records,
+)
 
 
 DEFAULT_CALIBRATION_PATH = Path("evals/russian_judge_calibration.jsonl")

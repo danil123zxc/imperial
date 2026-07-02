@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
 import warnings
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -946,9 +945,4 @@ def test_map_rows_bounded_asserts_all_result_slots_are_filled():
 
 
 def _load_ragas_runner():
-    spec = importlib.util.spec_from_file_location("run_ragas_eval_for_test", Path("scripts/run_ragas_eval.py"))
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module("imperial_rag.evals.ragas_runner")
