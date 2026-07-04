@@ -87,6 +87,7 @@ class RetrievalService:
                             candidates.vector_docs,
                             candidates.keyword_docs,
                             merged,
+                            self.merger.duplicate_groups(candidates.vector_docs, candidates.keyword_docs),
                         )
                     )
                 with trace_retrieval_step(

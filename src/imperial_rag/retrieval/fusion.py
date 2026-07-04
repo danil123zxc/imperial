@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import chain
 from typing import Any
 
@@ -12,39 +13,113 @@ from imperial_rag.observability.phoenix import suppress_internal_tracing
 from imperial_rag.retrieval.identity import _retrieval_id
 
 
+@dataclass(frozen=True)
+class _CandidateKeys:
+    document: str
+    content: str | None
+
+
+class _CandidateIdentityIndex:
+    def __init__(self) -> None:
+        self._index_by_document: dict[str, int] = {}
+        self._index_by_content: dict[str, int] = {}
+
+    def keys(self, document: Document) -> _CandidateKeys:
+        return _CandidateKeys(document_key(document), self._content_lookup_key(document))
+
+    def existing_index(self, keys: _CandidateKeys) -> int | None:
+        existing_index = self._index_by_document.get(keys.document)
+        if existing_index is None and keys.content is not None:
+            existing_index = self._index_by_content.get(keys.content)
+        return existing_index
+
+    def remember(self, keys: _CandidateKeys, index: int) -> None:
+        self._index_by_document.setdefault(keys.document, index)
+        if keys.content is not None:
+            self._index_by_content.setdefault(keys.content, index)
+
+    def _content_lookup_key(self, document: Document) -> str | None:
+        key = content_key(document)
+        return key or None
+
+
+@dataclass
+class _RetainedCandidate:
+    candidate_id: str
+    sources: set[str]
+    group: _DuplicateGroup | None = None
+
+
+@dataclass
+class _DuplicateGroup:
+    retained_id: str
+    dropped_ids: list[str]
+    sources: set[str]
+
+
 class CandidateMerger:
     def merge(self, vector_docs: list[Document], keyword_docs: list[Document]) -> list[Document]:
         merged: list[Document] = []
-        index_by_key: dict[str, int] = {}
-        index_by_content: dict[str, int] = {}
+        identity_index = _CandidateIdentityIndex()
         for document in chain(vector_docs, keyword_docs):
-            candidate_document_key = document_key(document)
-            candidate_content_key = self._content_lookup_key(document)
-
-            existing_index = index_by_key.get(candidate_document_key)
-            if existing_index is None and candidate_content_key is not None:
-                existing_index = index_by_content.get(candidate_content_key)
+            keys = identity_index.keys(document)
+            existing_index = identity_index.existing_index(keys)
             if existing_index is not None:
                 kept = merged[existing_index]
                 merged[existing_index] = Document(
                     page_content=kept.page_content,
                     metadata=self._merge_metadata(kept.metadata, document.metadata),
                 )
-                index_by_key.setdefault(candidate_document_key, existing_index)
-                if candidate_content_key is not None:
-                    index_by_content.setdefault(candidate_content_key, existing_index)
+                identity_index.remember(keys, existing_index)
                 continue
 
             index = len(merged)
-            index_by_key[candidate_document_key] = index
-            if candidate_content_key is not None:
-                index_by_content[candidate_content_key] = index
+            identity_index.remember(keys, index)
             merged.append(Document(page_content=document.page_content, metadata=dict(document.metadata or {})))
         return merged
 
-    def _content_lookup_key(self, document: Document) -> str | None:
-        key = content_key(document)
-        return key or None
+    def duplicate_groups(
+        self,
+        vector_docs: list[Document],
+        keyword_docs: list[Document],
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        identity_index = _CandidateIdentityIndex()
+        retained: list[_RetainedCandidate] = []
+        groups: list[_DuplicateGroup] = []
+        for source, documents in (("vector", vector_docs), ("keyword", keyword_docs)):
+            for document in documents:
+                keys = identity_index.keys(document)
+                existing_index = identity_index.existing_index(keys)
+                if existing_index is not None:
+                    retained_candidate = retained[existing_index]
+                    group = retained_candidate.group
+                    if group is None:
+                        group = _DuplicateGroup(
+                            retained_id=retained_candidate.candidate_id,
+                            dropped_ids=[],
+                            sources=set(retained_candidate.sources),
+                        )
+                        retained_candidate.group = group
+                        groups.append(group)
+                    group.dropped_ids.append(_retrieval_id(document))
+                    group.sources.add(source)
+                    identity_index.remember(keys, existing_index)
+                    continue
+
+                index = len(retained)
+                identity_index.remember(keys, index)
+                retained.append(_RetainedCandidate(_retrieval_id(document), {source}))
+
+        return [
+            {
+                "retained_id": group.retained_id,
+                "dropped_ids": group.dropped_ids[:limit],
+                "sources": sorted(group.sources),
+            }
+            for group in groups[:limit]
+        ]
 
     def _merge_metadata(self, kept_metadata: dict[str, Any], duplicate_metadata: dict[str, Any]) -> dict[str, Any]:
         merged = dict(kept_metadata or {})

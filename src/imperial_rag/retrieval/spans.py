@@ -4,7 +4,6 @@ from typing import Any
 
 from langchain_core.documents import Document
 
-from imperial_rag.document_ids import content_key, document_key
 from imperial_rag.observability.phoenix import retrieval_documents_preview, trace_candidate_documents_enabled
 from imperial_rag.retrieval.identity import _retrieval_id
 
@@ -76,6 +75,7 @@ def _merge_candidates_span_output(
     vector_docs: list[Document],
     keyword_docs: list[Document],
     merged: list[Document],
+    duplicate_groups: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "vector_candidates": len(vector_docs),
@@ -84,7 +84,7 @@ def _merge_candidates_span_output(
         "deduped_candidates": _deduped_candidate_count(vector_docs, keyword_docs, merged),
         "source_mix": _source_mix(merged),
         "merged_top_ids": _top_trace_ids(merged),
-        "duplicate_groups": _duplicate_groups(vector_docs, keyword_docs),
+        "duplicate_groups": duplicate_groups,
     }
 
 
@@ -121,50 +121,6 @@ def _source_mix(documents: list[Document]) -> dict[str, int]:
 
 def _top_trace_ids(documents: list[Document], *, limit: int = 10) -> list[str]:
     return [_retrieval_id(document) for document in documents[:limit]]
-
-
-def _duplicate_groups(vector_docs: list[Document], keyword_docs: list[Document], *, limit: int = 10) -> list[dict[str, Any]]:
-    index_by_key: dict[str, int] = {}
-    index_by_content: dict[str, int] = {}
-    retained: list[dict[str, Any]] = []
-    groups: list[dict[str, Any]] = []
-    for source, documents in (("vector", vector_docs), ("keyword", keyword_docs)):
-        for document in documents:
-            candidate_document_key = document_key(document)
-            candidate_content_key = content_key(document)
-            existing_index = index_by_key.get(candidate_document_key)
-            if existing_index is None:
-                existing_index = index_by_content.get(candidate_content_key)
-            if existing_index is not None:
-                retained_entry = retained[existing_index]
-                group = retained_entry.get("group")
-                if group is None:
-                    group = {
-                        "retained_id": retained_entry["id"],
-                        "dropped_ids": [],
-                        "sources": set(retained_entry["sources"]),
-                    }
-                    retained_entry["group"] = group
-                    groups.append(group)
-                group["dropped_ids"].append(_retrieval_id(document))
-                group["sources"].add(source)
-                index_by_key.setdefault(candidate_document_key, existing_index)
-                index_by_content.setdefault(candidate_content_key, existing_index)
-                continue
-
-            index = len(retained)
-            index_by_key[candidate_document_key] = index
-            index_by_content[candidate_content_key] = index
-            retained.append({"id": _retrieval_id(document), "sources": {source}, "group": None})
-
-    return [
-        {
-            "retained_id": str(group["retained_id"]),
-            "dropped_ids": [str(document_id) for document_id in group["dropped_ids"][:limit]],
-            "sources": sorted(str(source) for source in group["sources"]),
-        }
-        for group in groups[:limit]
-    ]
 
 
 def _rank_movements(documents: list[Document], *, limit: int = 10) -> list[dict[str, Any]]:

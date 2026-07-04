@@ -938,6 +938,21 @@ def test_candidate_merger_does_not_dedupe_distinct_blank_content_documents():
     assert [doc.metadata["citation_id"] for doc in merged] == ["blank-vector", "blank-keyword"]
 
 
+def test_candidate_merger_duplicate_groups_follow_merge_identity_rules():
+    same_vector = Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "same"})
+    same_keyword = Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "same"})
+    content_duplicate = Document(page_content=" Возврат брака оформляется актом. ", metadata={"citation_id": "different"})
+    blank_vector = Document(page_content="   ", metadata={"citation_id": "blank-vector"})
+    blank_keyword = Document(page_content="", metadata={"citation_id": "blank-keyword"})
+
+    groups = CandidateMerger().duplicate_groups(
+        [same_vector, content_duplicate, blank_vector],
+        [same_keyword, blank_keyword],
+    )
+
+    assert groups == [{"retained_id": "same", "dropped_ids": ["different", "same"], "sources": ["keyword", "vector"]}]
+
+
 def test_candidate_merger_reconciles_duplicate_vector_keyword_metadata():
     same_vector = Document(
         page_content="Возврат брака оформляется актом.",
