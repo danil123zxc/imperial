@@ -14,6 +14,7 @@ from langchain_elasticsearch import ElasticsearchRetriever as LangChainElasticse
 
 from imperial_rag.config import Settings
 from imperial_rag.document_ids import metadata_or_content_id
+from imperial_rag.retrieval.identity import _retrieval_id
 from imperial_rag.retrieval.lexical import (
     KeywordHit,
     build_elasticsearch_token_query,
@@ -68,12 +69,12 @@ def _keyword_document_mapper(hit: Mapping[Any, Any]) -> Document:
     metadata = dict(source.get("metadata") or {})
     content = str(source.get("text", ""))
     score = float(hit.get("_score") or 0.0)
-    hit_id = str(
-        hit.get("_id")
-        or source.get("chunk_id")
-        or metadata.get("chunk_id")
-        or metadata.get("citation_id")
-        or content
+    hit_id = metadata_or_content_id(
+        hit.get("_id"),
+        source.get("chunk_id"),
+        metadata.get("chunk_id"),
+        metadata.get("citation_id"),
+        content=content,
     )
     return Document(page_content=content, metadata={**metadata, _HIT_SCORE_KEY: score, _HIT_ID_KEY: hit_id})
 
@@ -267,15 +268,10 @@ def _annotated_keyword_document(
     metadata = dict(hit.document.metadata or {})
     metadata["_keyword_rank"] = rank
     metadata["_keyword_score"] = hit.score
-    metadata["_retrieval_id"] = _retrieval_id(hit.document, hit_id=hit.hit_id)
+    metadata["_retrieval_id"] = _retrieval_id(hit.document, hit.hit_id)
     if match_mode is not None:
         metadata["_keyword_match_mode"] = match_mode
     return Document(page_content=hit.document.page_content, metadata=metadata)
-
-
-def _retrieval_id(document: Document, *, hit_id: str | None = None) -> str:
-    metadata = document.metadata or {}
-    return metadata_or_content_id(metadata.get("citation_id"), metadata.get("chunk_id"), hit_id, content=document.page_content)
 
 
 def elasticsearch_health(settings: Settings, *, client: Any | None = None) -> bool:

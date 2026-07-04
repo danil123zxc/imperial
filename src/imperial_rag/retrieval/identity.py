@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from typing import Any
+
 from langchain_core.documents import Document
 
 from imperial_rag.document_ids import metadata_or_content_id
 
 
-def _retrieval_id(document: Document) -> str:
+def _retrieval_id(document: Document, *fallback_values: Any) -> str:
     metadata = document.metadata or {}
     return metadata_or_content_id(
         metadata.get("_retrieval_id"),
         metadata.get("citation_id"),
         metadata.get("chunk_id"),
+        *fallback_values,
         content=document.page_content,
     )
 
@@ -20,15 +23,7 @@ def _annotate_retrieval_documents(documents: list[Document], *, rank_key: str) -
     for rank, document in enumerate(documents):
         metadata = dict(document.metadata or {})
         metadata.setdefault(rank_key, rank)
-        metadata.setdefault(
-            "_retrieval_id",
-            metadata_or_content_id(
-                metadata.get("_retrieval_id"),
-                metadata.get("citation_id"),
-                metadata.get("chunk_id"),
-                content=document.page_content,
-            ),
-        )
+        metadata.setdefault("_retrieval_id", _retrieval_id(document))
         annotated.append(Document(page_content=document.page_content, metadata=metadata))
     return annotated
 
