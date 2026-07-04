@@ -8,15 +8,14 @@ from langchain_core.documents import Document
 from imperial_rag.observability.phoenix import (
     imperial_trace_attributes,
     suppress_internal_tracing,
-    trace_candidate_documents_enabled,
     trace_retrieval_step,
 )
 from imperial_rag.retrieval.identity import _annotate_retrieval_documents
 from imperial_rag.retrieval.settings import RetrievalSettings
 from imperial_rag.retrieval.spans import (
     _keyword_match_mode,
-    _set_candidate_documents_omitted,
     _set_documents_span_output,
+    _record_candidate_documents,
     _vector_error_diagnostics,
 )
 
@@ -75,10 +74,7 @@ class HybridRetriever:
                 status=vector_status,
                 fallbacks=fallbacks,
             )
-            if trace_candidate_documents_enabled():
-                span.set_retrieval_documents(vector_docs)
-            elif vector_docs:
-                _set_candidate_documents_omitted(span)
+            _record_candidate_documents(span, vector_docs)
 
         with trace_retrieval_step(
             "retrieval.keyword_search",
@@ -113,10 +109,7 @@ class HybridRetriever:
                 keyword_scores_available=keyword_scores_available,
                 keyword_match_mode=keyword_match_mode,
             )
-            if trace_candidate_documents_enabled():
-                span.set_retrieval_documents(keyword_docs)
-            elif keyword_docs:
-                _set_candidate_documents_omitted(span)
+            _record_candidate_documents(span, keyword_docs)
 
         return RetrievalCandidateResult(
             vector_docs=vector_docs,

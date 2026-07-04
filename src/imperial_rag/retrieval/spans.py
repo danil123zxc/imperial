@@ -5,7 +5,7 @@ from typing import Any
 from langchain_core.documents import Document
 
 from imperial_rag.document_ids import content_key, document_key
-from imperial_rag.observability.phoenix import retrieval_documents_preview
+from imperial_rag.observability.phoenix import retrieval_documents_preview, trace_candidate_documents_enabled
 from imperial_rag.retrieval.identity import _retrieval_id
 
 
@@ -24,6 +24,13 @@ def _set_documents_span_output(span: Any, documents: list[Document], **metadata:
 def _set_candidate_documents_omitted(span: Any) -> None:
     span.set_attribute("retrieval.documents.omitted", True)
     span.set_attribute("retrieval.documents.omitted_reason", "candidate_tracing_disabled")
+
+
+def _record_candidate_documents(span: Any, documents: list[Document]) -> None:
+    if trace_candidate_documents_enabled():
+        span.set_retrieval_documents(documents)
+    elif documents:
+        _set_candidate_documents_omitted(span)
 
 
 def _keyword_match_mode(documents: list[Document]) -> str | None:
@@ -100,7 +107,7 @@ def _deduped_candidate_count(vector_docs: list[Document], keyword_docs: list[Doc
 def _source_mix(documents: list[Document]) -> dict[str, int]:
     counts = {"hybrid": 0, "keyword_only": 0, "vector_only": 0}
     for document in documents:
-        metadata = dict(document.metadata or {})
+        metadata = document.metadata or {}
         has_vector = _rank_value(metadata.get("_vector_rank")) is not None
         has_keyword = _rank_value(metadata.get("_keyword_rank")) is not None
         if has_vector and has_keyword:
@@ -163,7 +170,7 @@ def _duplicate_groups(vector_docs: list[Document], keyword_docs: list[Document],
 def _rank_movements(documents: list[Document], *, limit: int = 10) -> list[dict[str, Any]]:
     movements: list[dict[str, Any]] = []
     for fusion_rank, document in enumerate(documents[:limit]):
-        metadata = dict(document.metadata or {})
+        metadata = document.metadata or {}
         vector_rank = _rank_value(metadata.get("_vector_rank"))
         keyword_rank = _rank_value(metadata.get("_keyword_rank"))
         original_ranks = [rank for rank in (vector_rank, keyword_rank) if rank is not None]
@@ -200,7 +207,7 @@ def _document_summary_output(documents: list[Document], *, limit: int = 5) -> di
     top_scores: list[float] = []
     seen_files: set[str] = set()
     for document in documents[:limit]:
-        metadata = dict(document.metadata or {})
+        metadata = document.metadata or {}
         document_id = _first_metadata_value(metadata, ("citation_id", "chunk_id", "_retrieval_id"))
         if document_id is not None:
             top_ids.append(document_id)
@@ -231,7 +238,7 @@ def _final_evidence_span_output(documents: list[Document]) -> dict[str, Any]:
     seen_files: set[str] = set()
     context_chars = 0
     for document in documents:
-        metadata = dict(document.metadata or {})
+        metadata = document.metadata or {}
         context_chars += len(str(document.page_content))
         citation_id = metadata.get("citation_id")
         if citation_id is not None:
