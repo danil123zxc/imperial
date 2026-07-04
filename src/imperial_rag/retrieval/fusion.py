@@ -10,7 +10,7 @@ from langchain_classic.retrievers import EnsembleRetriever
 
 from imperial_rag.document_ids import content_key, document_key
 from imperial_rag.observability.phoenix import suppress_internal_tracing
-from imperial_rag.retrieval.identity import _retrieval_id
+from imperial_rag.retrieval.identity import _document_rank, _retrieval_id
 
 
 @dataclass(frozen=True)
@@ -146,14 +146,7 @@ class RrfCandidateFusion:
 
     def fuse(self, documents: list[Document], rrf_k: int) -> list[Document]:
         normalized = [self._with_retrieval_id(document) for document in documents]
-        vector_docs = [doc for doc in normalized if self._rank_value(doc, "_vector_rank") is not None]
-        keyword_docs = [doc for doc in normalized if self._rank_value(doc, "_keyword_rank") is not None]
-        unranked_docs = [
-            doc
-            for doc in normalized
-            if self._rank_value(doc, "_vector_rank") is None
-            and self._rank_value(doc, "_keyword_rank") is None
-        ]
+        vector_docs, keyword_docs, unranked_docs = self._split_ranked_documents(normalized)
 
         merger = CandidateMerger()
         ranked = merger.merge(vector_docs, keyword_docs)
@@ -182,6 +175,21 @@ class RrfCandidateFusion:
         metadata.setdefault("_retrieval_id", _retrieval_id(document))
         return Document(page_content=document.page_content, metadata=metadata)
 
+    def _split_ranked_documents(self, documents: list[Document]) -> tuple[list[Document], list[Document], list[Document]]:
+        vector_docs: list[Document] = []
+        keyword_docs: list[Document] = []
+        unranked_docs: list[Document] = []
+        for document in documents:
+            vector_rank = _document_rank(document, "_vector_rank")
+            keyword_rank = _document_rank(document, "_keyword_rank")
+            if vector_rank is not None:
+                vector_docs.append(document)
+            if keyword_rank is not None:
+                keyword_docs.append(document)
+            if vector_rank is None and keyword_rank is None:
+                unranked_docs.append(document)
+        return vector_docs, keyword_docs, unranked_docs
+
     def _rrf_order(self, vector_list: list[Document], keyword_list: list[Document], rrf_k: int) -> list[Document]:
         if not vector_list and not keyword_list:
             return []
@@ -201,7 +209,7 @@ class RrfCandidateFusion:
         ranked = [
             (rank, index, document)
             for index, document in enumerate(documents)
-            if (rank := self._rank_value(document, rank_key)) is not None
+            if (rank := _document_rank(document, rank_key)) is not None
         ]
         return [document for _rank, _index, document in sorted(ranked, key=lambda item: (item[0], item[1]))]
 
@@ -211,12 +219,6 @@ class RrfCandidateFusion:
             for index, document in enumerate(ranked, start=1):
                 positions.setdefault(_retrieval_id(document), []).append(index)
         return positions
-
-    def _rank_value(self, document: Document, rank_key: str) -> int | None:
-        value = (document.metadata or {}).get(rank_key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            return None
-        return int(value)
 
     def _score(self, positions: dict[str, list[int]], retrieval_id: str, rrf_k: int) -> float:
         return sum(1.0 / (rrf_k + position) for position in positions.get(retrieval_id, []))

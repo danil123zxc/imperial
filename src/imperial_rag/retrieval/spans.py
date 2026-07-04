@@ -5,7 +5,7 @@ from typing import Any
 from langchain_core.documents import Document
 
 from imperial_rag.observability.phoenix import retrieval_documents_preview, trace_candidate_documents_enabled
-from imperial_rag.retrieval.identity import _retrieval_id
+from imperial_rag.retrieval.identity import _metadata_rank_value, _retrieval_id
 
 
 def _set_documents_span_output(span: Any, documents: list[Document], **metadata: Any) -> None:
@@ -108,8 +108,8 @@ def _source_mix(documents: list[Document]) -> dict[str, int]:
     counts = {"hybrid": 0, "keyword_only": 0, "vector_only": 0}
     for document in documents:
         metadata = document.metadata or {}
-        has_vector = _rank_value(metadata.get("_vector_rank")) is not None
-        has_keyword = _rank_value(metadata.get("_keyword_rank")) is not None
+        has_vector = _metadata_rank_value(metadata.get("_vector_rank")) is not None
+        has_keyword = _metadata_rank_value(metadata.get("_keyword_rank")) is not None
         if has_vector and has_keyword:
             counts["hybrid"] += 1
         elif has_keyword:
@@ -127,8 +127,8 @@ def _rank_movements(documents: list[Document], *, limit: int = 10) -> list[dict[
     movements: list[dict[str, Any]] = []
     for fusion_rank, document in enumerate(documents[:limit]):
         metadata = document.metadata or {}
-        vector_rank = _rank_value(metadata.get("_vector_rank"))
-        keyword_rank = _rank_value(metadata.get("_keyword_rank"))
+        vector_rank = _metadata_rank_value(metadata.get("_vector_rank"))
+        keyword_rank = _metadata_rank_value(metadata.get("_keyword_rank"))
         original_ranks = [rank for rank in (vector_rank, keyword_rank) if rank is not None]
         best_original_rank = min(original_ranks) if original_ranks else None
         rrf_score = _numeric_value(metadata.get("_rrf_score"))
@@ -143,12 +143,6 @@ def _rank_movements(documents: list[Document], *, limit: int = 10) -> list[dict[
             }
         )
     return movements
-
-
-def _rank_value(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-        return None
-    return int(value)
 
 
 def _numeric_value(value: Any) -> float | None:

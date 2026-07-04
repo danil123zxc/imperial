@@ -1070,6 +1070,25 @@ def test_rrf_candidate_fusion_places_unranked_documents_last():
     assert fused[-1].metadata["_rrf_score"] == 0.0
 
 
+def test_rrf_candidate_fusion_uses_shared_rank_metadata_rules():
+    docs = [
+        Document(page_content="truthy bool rank is not a rank", metadata={"citation_id": "bool", "_vector_rank": True}),
+        Document(page_content="negative rank is not a rank", metadata={"citation_id": "negative", "_keyword_rank": -1}),
+        Document(page_content="float rank follows existing int coercion", metadata={"citation_id": "float", "_vector_rank": 1.9}),
+        Document(page_content="keyword rank", metadata={"citation_id": "keyword", "_keyword_rank": 0}),
+    ]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [doc.metadata["citation_id"] for doc in fused] == ["float", "keyword", "bool", "negative"]
+    assert [doc.metadata["_rrf_score"] for doc in fused] == [
+        1 / 61,
+        1 / 61,
+        0.0,
+        0.0,
+    ]
+
+
 def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)

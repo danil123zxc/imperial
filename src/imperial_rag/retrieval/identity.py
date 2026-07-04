@@ -28,6 +28,16 @@ def _annotate_retrieval_documents(documents: list[Document], *, rank_key: str) -
     return annotated
 
 
+def _metadata_rank_value(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
+def _document_rank(document: Document, rank_key: str) -> int | None:
+    return _metadata_rank_value((document.metadata or {}).get(rank_key))
+
+
 def _query_tokens(query: str) -> list[str]:
     return [token for token in query.casefold().replace("-", " ").split() if token]
 
