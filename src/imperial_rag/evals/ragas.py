@@ -305,11 +305,14 @@ async def score_faithfulness_row_async(row: Mapping[str, Any], scorer: Any | Non
         return _skipped_result("missing_response_or_contexts")
 
     resolved_scorer = scorer or build_faithfulness_scorer()
-    raw_result = await _score_with_ragas_async(
+    raw_result = await _score_text_metric_with_ragas_async(
         resolved_scorer,
-        user_input=user_input,
-        response=response,
-        retrieved_contexts=retrieved_contexts,
+        metric_name="Faithfulness",
+        score_kwargs={
+            "user_input": user_input,
+            "response": response,
+            "retrieved_contexts": retrieved_contexts,
+        },
     )
     score = _coerce_score_value(raw_result)
     return {
@@ -334,10 +337,13 @@ async def score_answer_relevancy_row_async(row: Mapping[str, Any], scorer: Any |
         return _answer_relevancy_skipped_result("missing_user_input_or_response")
 
     resolved_scorer = scorer or build_answer_relevancy_scorer()
-    raw_result = await _score_answer_relevancy_with_ragas_async(
+    raw_result = await _score_text_metric_with_ragas_async(
         resolved_scorer,
-        user_input=user_input,
-        response=response,
+        metric_name="AnswerRelevancy",
+        score_kwargs={
+            "user_input": user_input,
+            "response": response,
+        },
     )
     score = _coerce_score_value(raw_result)
     return {
@@ -484,95 +490,21 @@ async def evaluate_id_context_recall_rows_async(
     return await _map_rows_bounded(rows, evaluate, concurrency=concurrency)
 
 
-def _score_with_ragas(
+async def _score_text_metric_with_ragas_async(
     scorer: Any,
     *,
-    user_input: str,
-    response: str,
-    retrieved_contexts: list[str],
+    metric_name: str,
+    score_kwargs: dict[str, Any],
 ) -> Any:
-    return _run_coroutine(
-        _score_with_ragas_async(
-            scorer,
-            user_input=user_input,
-            response=response,
-            retrieved_contexts=retrieved_contexts,
-        )
-    )
-
-
-async def _score_with_ragas_async(
-    scorer: Any,
-    *,
-    user_input: str,
-    response: str,
-    retrieved_contexts: list[str],
-) -> Any:
-    kwargs = {
-        "user_input": user_input,
-        "response": response,
-        "retrieved_contexts": retrieved_contexts,
-    }
     if hasattr(scorer, "ascore"):
-        return await _resolve_awaitable_async(scorer.ascore(**kwargs))
+        return await _resolve_awaitable_async(scorer.ascore(**score_kwargs))
     if hasattr(scorer, "single_turn_ascore"):
-        sample = _import_single_turn_sample()(**kwargs)
+        sample = _import_single_turn_sample()(**score_kwargs)
         return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
-        result = await run_sync_in_worker_thread(lambda: scorer.score(**kwargs))
+        result = await run_sync_in_worker_thread(lambda: scorer.score(**score_kwargs))
         return await _resolve_awaitable_async(result)
-    raise TypeError("Ragas Faithfulness scorer does not expose score/ascore methods.")
-
-
-def _score_answer_relevancy_with_ragas(
-    scorer: Any,
-    *,
-    user_input: str,
-    response: str,
-) -> Any:
-    return _run_coroutine(
-        _score_answer_relevancy_with_ragas_async(
-            scorer,
-            user_input=user_input,
-            response=response,
-        )
-    )
-
-
-async def _score_answer_relevancy_with_ragas_async(
-    scorer: Any,
-    *,
-    user_input: str,
-    response: str,
-) -> Any:
-    kwargs = {
-        "user_input": user_input,
-        "response": response,
-    }
-    if hasattr(scorer, "ascore"):
-        return await _resolve_awaitable_async(scorer.ascore(**kwargs))
-    if hasattr(scorer, "single_turn_ascore"):
-        sample = _import_single_turn_sample()(**kwargs)
-        return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
-    if hasattr(scorer, "score"):
-        result = await run_sync_in_worker_thread(lambda: scorer.score(**kwargs))
-        return await _resolve_awaitable_async(result)
-    raise TypeError("Ragas AnswerRelevancy scorer does not expose score/ascore methods.")
-
-
-def _score_id_context_recall_with_ragas(
-    scorer: Any,
-    *,
-    retrieved_context_ids: list[str],
-    reference_context_ids: list[str],
-) -> Any:
-    return _run_coroutine(
-        _score_id_context_recall_with_ragas_async(
-            scorer,
-            retrieved_context_ids=retrieved_context_ids,
-            reference_context_ids=reference_context_ids,
-        )
-    )
+    raise TypeError(f"Ragas {metric_name} scorer does not expose score/ascore methods.")
 
 
 async def _score_id_context_recall_with_ragas_async(

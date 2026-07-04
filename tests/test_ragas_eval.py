@@ -226,6 +226,36 @@ def test_score_answer_relevancy_for_phoenix_uses_question_and_response_without_c
     }
 
 
+def test_score_answer_relevancy_row_uses_single_turn_sample(monkeypatch):
+    from imperial_rag.evals import ragas as ragas_eval
+
+    captured: dict[str, Any] = {}
+
+    class FakeSingleTurnSample:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeScorer:
+        def single_turn_ascore(self, sample):
+            captured.update(sample.kwargs)
+            return SimpleNamespace(value=0.6, reason="sample scored")
+
+    monkeypatch.setattr(ragas_eval, "_import_single_turn_sample", lambda: FakeSingleTurnSample)
+
+    result = ragas_eval.score_answer_relevancy_row(
+        {"user_input": "q", "response": "a"},
+        scorer=FakeScorer(),
+    )
+
+    assert captured == {"user_input": "q", "response": "a"}
+    assert result == {
+        "score": 0.6,
+        "label": "answer_relevancy",
+        "explanation": "sample scored",
+        "metadata": {"metric": "ragas_answer_relevancy"},
+    }
+
+
 def test_score_answer_relevancy_for_phoenix_skips_empty_question_or_response():
     from imperial_rag.evals import ragas as ragas_eval
 
