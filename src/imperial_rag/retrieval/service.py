@@ -62,7 +62,14 @@ class RetrievalService:
         ) as parent_span:
             candidates = self.hybrid.retrieve(query)
             diagnostics = dict(candidates.diagnostics)
-            merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
+            debug_trace = trace_mode() == "retrieval_debug"
+            if debug_trace:
+                merge_result = self.merger.merge_with_duplicate_groups(candidates.vector_docs, candidates.keyword_docs)
+                merged = merge_result.documents
+                duplicate_groups = merge_result.duplicate_groups
+            else:
+                merged = self.merger.merge(candidates.vector_docs, candidates.keyword_docs)
+                duplicate_groups = []
             diagnostics["merged_candidates"] = len(merged)
             diagnostics["deduped_candidates"] = _deduped_candidate_count(candidates.vector_docs, candidates.keyword_docs, merged)
             fused = self.fusion.fuse(merged, rrf_k=self.settings.rrf_k)
@@ -71,7 +78,7 @@ class RetrievalService:
             diagnostics["fusion_rrf_k"] = self.settings.rrf_k
             diagnostics["fused_candidates"] = len(fused)
             diagnostics["rerank_input_candidates"] = len(rerank_input)
-            if trace_mode() == "retrieval_debug":
+            if debug_trace:
                 with trace_retrieval_step(
                     "retrieval.merge_candidates",
                     query,
@@ -87,7 +94,7 @@ class RetrievalService:
                             candidates.vector_docs,
                             candidates.keyword_docs,
                             merged,
-                            self.merger.duplicate_groups(candidates.vector_docs, candidates.keyword_docs),
+                            duplicate_groups,
                         )
                     )
                 with trace_retrieval_step(

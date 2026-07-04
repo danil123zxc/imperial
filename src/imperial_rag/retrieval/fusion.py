@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import chain
 from typing import Any
@@ -45,7 +46,8 @@ class _CandidateIdentityIndex:
 
 @dataclass
 class _RetainedCandidate:
-    candidate_id: str
+    document: Document
+    candidate_id: str | None
     sources: set[str]
     group: _DuplicateGroup | None = None
 
@@ -57,26 +59,29 @@ class _DuplicateGroup:
     sources: set[str]
 
 
+@dataclass
+class _CandidateMergeResult:
+    documents: list[Document]
+    duplicate_groups: list[dict[str, Any]]
+
+
 class CandidateMerger:
     def merge(self, vector_docs: list[Document], keyword_docs: list[Document]) -> list[Document]:
-        merged: list[Document] = []
-        identity_index = _CandidateIdentityIndex()
-        for document in chain(vector_docs, keyword_docs):
-            keys = identity_index.keys(document)
-            existing_index = identity_index.existing_index(keys)
-            if existing_index is not None:
-                kept = merged[existing_index]
-                merged[existing_index] = Document(
-                    page_content=kept.page_content,
-                    metadata=self._merge_metadata(kept.metadata, document.metadata),
-                )
-                identity_index.remember(keys, existing_index)
-                continue
+        return self._merge(vector_docs, keyword_docs, collect_duplicate_groups=False).documents
 
-            index = len(merged)
-            identity_index.remember(keys, index)
-            merged.append(Document(page_content=document.page_content, metadata=dict(document.metadata or {})))
-        return merged
+    def merge_with_duplicate_groups(
+        self,
+        vector_docs: list[Document],
+        keyword_docs: list[Document],
+        *,
+        limit: int = 10,
+    ) -> _CandidateMergeResult:
+        return self._merge(
+            vector_docs,
+            keyword_docs,
+            collect_duplicate_groups=True,
+            duplicate_group_limit=limit,
+        )
 
     def duplicate_groups(
         self,
@@ -85,41 +90,72 @@ class CandidateMerger:
         *,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
+        return self.merge_with_duplicate_groups(vector_docs, keyword_docs, limit=limit).duplicate_groups
+
+    def _merge(
+        self,
+        vector_docs: list[Document],
+        keyword_docs: list[Document],
+        *,
+        collect_duplicate_groups: bool,
+        duplicate_group_limit: int = 10,
+    ) -> _CandidateMergeResult:
         identity_index = _CandidateIdentityIndex()
         retained: list[_RetainedCandidate] = []
         groups: list[_DuplicateGroup] = []
-        for source, documents in (("vector", vector_docs), ("keyword", keyword_docs)):
-            for document in documents:
-                keys = identity_index.keys(document)
-                existing_index = identity_index.existing_index(keys)
-                if existing_index is not None:
-                    retained_candidate = retained[existing_index]
-                    group = retained_candidate.group
-                    if group is None:
-                        group = _DuplicateGroup(
-                            retained_id=retained_candidate.candidate_id,
-                            dropped_ids=[],
-                            sources=set(retained_candidate.sources),
-                        )
-                        retained_candidate.group = group
-                        groups.append(group)
-                    group.dropped_ids.append(_retrieval_id(document))
-                    group.sources.add(source)
-                    identity_index.remember(keys, existing_index)
-                    continue
+        for source, document in _source_documents(vector_docs, keyword_docs):
+            keys = identity_index.keys(document)
+            existing_index = identity_index.existing_index(keys)
+            if existing_index is not None:
+                kept = retained[existing_index].document
+                retained[existing_index].document = Document(
+                    page_content=kept.page_content,
+                    metadata=self._merge_metadata(kept.metadata, document.metadata),
+                )
+                if collect_duplicate_groups:
+                    self._record_duplicate_group(retained[existing_index], source, document, groups)
+                identity_index.remember(keys, existing_index)
+                continue
 
-                index = len(retained)
-                identity_index.remember(keys, index)
-                retained.append(_RetainedCandidate(_retrieval_id(document), {source}))
+            index = len(retained)
+            identity_index.remember(keys, index)
+            retained.append(
+                _RetainedCandidate(
+                    document=Document(page_content=document.page_content, metadata=dict(document.metadata or {})),
+                    candidate_id=_retrieval_id(document) if collect_duplicate_groups else None,
+                    sources={source} if collect_duplicate_groups else set(),
+                )
+            )
+        return _CandidateMergeResult(
+            documents=[candidate.document for candidate in retained],
+            duplicate_groups=[
+                {
+                    "retained_id": group.retained_id,
+                    "dropped_ids": group.dropped_ids[:duplicate_group_limit],
+                    "sources": sorted(group.sources),
+                }
+                for group in groups[:duplicate_group_limit]
+            ],
+        )
 
-        return [
-            {
-                "retained_id": group.retained_id,
-                "dropped_ids": group.dropped_ids[:limit],
-                "sources": sorted(group.sources),
-            }
-            for group in groups[:limit]
-        ]
+    def _record_duplicate_group(
+        self,
+        retained_candidate: _RetainedCandidate,
+        source: str,
+        duplicate: Document,
+        groups: list[_DuplicateGroup],
+    ) -> None:
+        group = retained_candidate.group
+        if group is None:
+            group = _DuplicateGroup(
+                retained_id=retained_candidate.candidate_id or _retrieval_id(retained_candidate.document),
+                dropped_ids=[],
+                sources=set(retained_candidate.sources),
+            )
+            retained_candidate.group = group
+            groups.append(group)
+        group.dropped_ids.append(_retrieval_id(duplicate))
+        group.sources.add(source)
 
     def _merge_metadata(self, kept_metadata: dict[str, Any], duplicate_metadata: dict[str, Any]) -> dict[str, Any]:
         merged = dict(kept_metadata or {})
@@ -127,6 +163,13 @@ class CandidateMerger:
             if key not in merged or merged[key] in (None, ""):
                 merged[key] = value
         return merged
+
+
+def _source_documents(vector_docs: list[Document], keyword_docs: list[Document]) -> Iterator[tuple[str, Document]]:
+    for document in vector_docs:
+        yield "vector", document
+    for document in keyword_docs:
+        yield "keyword", document
 
 
 class _StaticDocumentRetriever(BaseRetriever):
