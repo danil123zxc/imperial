@@ -1,61 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from imperial_rag.evals.corpus import ChunkCorpus as EvidenceCorpus
+from imperial_rag.evals.corpus import load_chunk_corpus as load_evidence_corpus
 
-@dataclass(frozen=True)
-class EvidenceChunk:
-    file_id: str
-    chunk_id: str
-    citation_id: str
-    relative_path: str
-    file_name: str
-    chunk_index: int
-    text: str
-
-    def to_packet(self) -> dict[str, Any]:
-        return {
-            "file_id": self.file_id,
-            "chunk_id": self.chunk_id,
-            "citation_id": self.citation_id,
-            "relative_path": self.relative_path,
-            "file_name": self.file_name,
-            "chunk_index": self.chunk_index,
-            "text": self.text,
-        }
-
-
-@dataclass(frozen=True)
-class EvidenceCorpus:
-    chunks_by_file_id: dict[str, list[EvidenceChunk]]
-
-    def chunks_for(self, file_id: str) -> list[EvidenceChunk]:
-        return list(self.chunks_by_file_id.get(file_id, []))
-
-    def resolves(self, file_id: str) -> bool:
-        return bool(self.chunks_by_file_id.get(file_id))
-
-
-def load_evidence_corpus(path: Path) -> EvidenceCorpus:
-    chunks_by_file_id: dict[str, list[EvidenceChunk]] = {}
-    if not path.exists():
-        return EvidenceCorpus(chunks_by_file_id={})
-
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        payload = json.loads(line)
-        chunk = _evidence_chunk_from_payload(payload)
-        if chunk is None:
-            continue
-        chunks_by_file_id.setdefault(chunk.file_id, []).append(chunk)
-
-    for chunks in chunks_by_file_id.values():
-        chunks.sort(key=lambda chunk: (chunk.chunk_index, chunk.chunk_id, chunk.citation_id))
-    return EvidenceCorpus(chunks_by_file_id=chunks_by_file_id)
+__all__ = ["EvidenceCorpus", "build_evidence_packets", "load_evidence_corpus", "write_jsonl"]
 
 
 def build_evidence_packets(
@@ -81,13 +33,16 @@ def _evidence_packet(
     audit: dict[str, Any] | None,
 ) -> dict[str, Any]:
     context_ids = _clean_list(row.get("reference_context_ids"))
-    resolved_ids = [context_id for context_id in context_ids if corpus.resolves(context_id)]
-    unresolved_ids = [context_id for context_id in context_ids if context_id not in resolved_ids]
-    evidence = [
-        chunk.to_packet()
-        for context_id in context_ids
-        for chunk in corpus.chunks_for(context_id)
-    ]
+    resolved_ids: list[str] = []
+    unresolved_ids: list[str] = []
+    evidence: list[dict[str, Any]] = []
+    for context_id in context_ids:
+        chunk = corpus.resolve(context_id)
+        if chunk is None:
+            unresolved_ids.append(context_id)
+        else:
+            resolved_ids.append(context_id)
+            evidence.append(chunk.to_packet())
     status = _gold_status(row, audit=audit, resolved_ids=resolved_ids, unresolved_ids=unresolved_ids)
 
     return {
@@ -108,24 +63,6 @@ def _evidence_packet(
         "audit": audit or {},
         "review_notes": _review_notes(row, status=status, unresolved_ids=unresolved_ids),
     }
-
-
-def _evidence_chunk_from_payload(payload: Mapping[str, Any]) -> EvidenceChunk | None:
-    metadata = dict(payload.get("metadata") or {})
-    file_id = str(metadata.get("file_id") or payload.get("file_id") or "").strip()
-    if not file_id:
-        return None
-    text = str(payload.get("page_content") or payload.get("text") or "").strip()
-    chunk_index = _int_value(metadata.get("chunk_index") or payload.get("chunk_index"))
-    return EvidenceChunk(
-        file_id=file_id,
-        chunk_id=str(metadata.get("chunk_id") or payload.get("chunk_id") or "").strip(),
-        citation_id=str(metadata.get("citation_id") or payload.get("citation_id") or "").strip(),
-        relative_path=str(metadata.get("relative_path") or "").strip(),
-        file_name=str(metadata.get("file_name") or "").strip(),
-        chunk_index=chunk_index,
-        text=text,
-    )
 
 
 def _gold_status(
@@ -183,10 +120,3 @@ def _clean_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _int_value(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0

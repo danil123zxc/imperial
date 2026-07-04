@@ -1,6 +1,6 @@
 # Loop State - Imperial RAG
 
-Last run: 2026-07-02T00:52:49+0900 `daily-triage` manual L1.
+Last run: 2026-07-02T16:40:20+0900 `ingestion-promotion-review` manual L1.
 Mode: L1 report-only.
 Config: `LOOP.md`.
 Registry: `patterns/registry.yaml`.
@@ -37,12 +37,16 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 
 ## Current Findings
 
-- None. Manual L1 triage found no high-priority loop issue after scaffold sync.
+- `daily-triage`: Pre-run dirty baseline included human-gated source/dependency/eval paths, but post-run status narrowed to `.DS_Store`, `STATE.md`, `evals/questions.jsonl`, `loop-run-log.md`, `tests/fixtures/eval_corpus_chunks.jsonl`, and untracked docs/plans. `./scripts/check.sh` passed; remaining eval-file changes are outside L1 loop ownership and need an explicit review/implementation workflow before commit/push.
+- `ci-sweeper-manual`: Local check gate passed (`./scripts/check.sh`: 477 passed, 2 skipped), so there is no failing CI/local-check item to map to a fix loop.
+- `eval-regression-check`: Strict eval audit passed with 21 rows kept and 0 warnings/errors; no provider-backed eval, judge calibration, or dataset edit was performed.
+- `ingestion-promotion-review`: Full promotion review skipped because no baseline/shadow roots were provided; no `.env`, `.imperial_rag/`, or `documents/` changes appeared in the scoped status check.
 
 ## Watch List
 
 - Loop scaffold active for report-only daily triage, CI sweeps, eval drift checks, and ingestion promotion reviews; post-merge cleanup remains candidate.
 - Baseline verifier gate: `./scripts/check.sh`.
+- `./scripts/check.sh` is green but emitted resource/deprecation warnings; monitor if they become blocking or point to a concrete leak.
 - Operator CLI cadence for `daily-triage` is pinned to manual or exactly `1d`; do not use the upstream default `1d-2h` window for Imperial.
 - Before any manual run, capture `git status --short`; on 2026-07-02 the baseline already included modified `STATE.md` and `loop-run-log.md`, plus unrelated local dirt, so preserve in-flight changes and compare the post-run diff against allowed writes.
 - Pre-existing unrelated local dirt remains outside loop ownership: `.DS_Store` is modified, and local council/planning docs are untracked.
@@ -54,7 +58,10 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 ## Noise / Ignore
 
 - Generated local runtime state is private and should be summarized by path and status only, not copied into state.
-- No connectors, provider-backed evals, live ingestion, Docker restarts, or Phoenix queries were used for the first manual L1 run.
+- No connectors, provider-backed evals, live ingestion, Docker restarts, or Phoenix queries were used for this L1 run.
+- `./scripts/check.sh` was run for this loop batch and passed; use it again as the verifier gate for approved source edits.
+- `loop-audit` stayed green at 100/100 readiness; treat that as scaffold readiness, not permission for unattended mutation.
+- Ingestion promotion checker was not run because baseline/shadow roots were absent.
 
 ## Human Decisions
 
@@ -73,4 +80,9 @@ If `loop-pause-all` appears here or in `loop-budget.md`, every loop must exit af
 
 | Run ID | Loop ID | Level | Outcome | Notes |
 | --- | --- | --- | --- | --- |
+| 2026-07-02T16:40:20+0900 | `ingestion-promotion-review` | L1 | Skipped | `CONSTRAINTS_REPORT_ONLY`; `BUDGET_OK` early-exit estimate ~93k/100k daily, 0 subagents; no baseline/shadow roots provided; no generated corpus or document state touched. |
+| 2026-07-02T16:40:12+0900 | `eval-regression-check` | L1 | Success | `CONSTRAINTS_REPORT_ONLY`; `BUDGET_OK` ~90.5k/100k daily estimate, 0 subagents; strict audit checked 21 rows, keep 21, 0 warnings/errors. |
+| 2026-07-02T16:40:01+0900 | `ci-sweeper-manual` | L1 | Success | `CONSTRAINTS_REPORT_ONLY`; `BUDGET_OK` ~78.5k/100k daily estimate, 0 subagents; `./scripts/check.sh` passed, so no failing local check item to map. |
+| 2026-07-02T16:39:49+0900 | `daily-triage` | L1 | Success | `CONSTRAINTS_REPORT_ONLY`; `BUDGET_OK` ~69k/100k daily estimate, 0 subagents; pre-run dirty baseline noted; post-run status narrowed; local check and loop audit passed. |
+| 2026-07-02T01:19:03+0900 | `daily-triage` | L1 | Success | `CONSTRAINTS_REPORT_ONLY`; `BUDGET_OK` at ~46k/100k daily estimate, 0 subagents; `loop-sync` 100/100 healthy; `loop-audit` 100/100 readiness; privacy/scope diff passed. |
 | 2026-07-02T00:52:49+0900 | `daily-triage` | L1 | Success | `CONSTRAINTS_REPORT_ONLY`; `BUDGET_OK` at 23k/100k tokens; `loop-sync` clean; state/log privacy diff passed. |

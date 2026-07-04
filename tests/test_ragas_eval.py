@@ -255,6 +255,33 @@ def test_retrieved_context_ids_from_output_extracts_unique_file_ids():
     assert ragas_eval.retrieved_context_ids_from_output(output) == ["file-a", "file-b"]
 
 
+def test_retrieved_chunk_ids_from_output_prefers_chunks_and_never_file_ids():
+    from imperial_rag.evals import ragas as ragas_eval
+
+    output = {
+        "documents": [
+            {"page_content": "one", "metadata": {"file_id": "file-a", "chunk_id": "chunk-1"}},
+            {"page_content": "duplicate", "metadata": {"file_id": "file-b", "chunk_id": "chunk-1"}},
+            {"page_content": "legacy", "metadata": {"file_id": "file-c", "citation_id": "citation-2"}},
+            {"page_content": "wrong level", "metadata": {"file_id": "file-d"}},
+            {"page_content": "later", "metadata": {"chunk_id": "chunk-3", "citation_id": "citation-3"}},
+        ]
+    }
+
+    assert ragas_eval.retrieved_chunk_ids_from_output(output) == ["chunk-1", "citation-2", "chunk-3"]
+
+
+def test_retrieved_chunk_ids_from_output_uses_direct_ids_when_present():
+    from imperial_rag.evals import ragas as ragas_eval
+
+    assert ragas_eval.retrieved_chunk_ids_from_output(
+        {
+            "retrieved_chunk_ids": [" chunk-a ", "chunk-a", "", "chunk-b"],
+            "documents": [{"metadata": {"chunk_id": "ignored"}}],
+        }
+    ) == ["chunk-a", "chunk-b"]
+
+
 def test_score_id_context_recall_row_uses_ragas_single_turn_sample():
     from imperial_rag.evals import ragas as ragas_eval
 
@@ -548,7 +575,7 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
             "expected_behavior": "cite_answer",
             "expected_source_hints": ["брак"],
             "reference_answer": "Возврат брака оформляется по регламенту.",
-            "reference_context_ids": ["file-a"],
+            "reference_context_ids": ["chunk-a"],
         },
         {
             "question": "Какова столица Австралии?",
@@ -573,7 +600,11 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
                 "evidence": [
                     {
                         "page_content": "Возврат брака оформляется по регламенту.",
-                        "metadata": {"relative_path": "documents/reglament.docx", "file_id": "file-a"},
+                        "metadata": {
+                            "relative_path": "documents/reglament.docx",
+                            "file_id": "file-a",
+                            "chunk_id": "chunk-a",
+                        },
                     },
                     {"page_content": "   ", "metadata": {}},
                 ],
@@ -587,11 +618,11 @@ def test_build_ragas_rows_uses_runtime_outputs_and_skips_refusals():
             "user_input": "Как оформить возврат брака?",
             "response": "Возврат брака оформляется по регламенту. [doc#1]",
             "retrieved_contexts": ["Возврат брака оформляется по регламенту."],
-            "retrieved_context_ids": ["file-a"],
+            "retrieved_context_ids": ["chunk-a"],
             "expected_behavior": "cite_answer",
             "expected_source_hints": ["брак"],
             "reference": "Возврат брака оформляется по регламенту.",
-            "reference_context_ids": ["file-a"],
+            "reference_context_ids": ["chunk-a"],
         }
     ]
 

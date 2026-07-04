@@ -34,7 +34,7 @@ from imperial_rag.evals.ragas import (
     evaluate_id_context_recall_rows_async,
     evaluate_faithfulness_rows_async,
     parse_ragas_metric_names,
-    retrieved_context_ids_from_output,
+    preferred_retrieved_context_ids,
     retrieved_contexts_from_output,
     validate_ragas_metric_requirements,
 )
@@ -77,7 +77,7 @@ def build_ragas_rows(examples: list[dict[str, Any]], runtime: Any | None = None)
             row["retrieved_contexts"] = retrieved_contexts
         row["expected_behavior"] = example.get("expected_behavior")
         row["expected_source_hints"] = example.get("expected_source_hints", [])
-        row["retrieved_context_ids"] = retrieved_context_ids_from_output(outputs)
+        row["retrieved_context_ids"] = preferred_retrieved_context_ids(outputs)
         if example.get("reference_answer"):
             row["reference"] = example["reference_answer"]
         if "reference_context_ids" in example:

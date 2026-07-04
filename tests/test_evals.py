@@ -445,6 +445,62 @@ def test_id_retrieval_metrics_skip_without_gold_context_ids():
     assert metrics["metadata"]["reason"] == "missing_reference_context_ids"
 
 
+def test_chunk_recall_metrics_use_chunk_ids_not_file_ids():
+    module = _load_eval_runner()
+
+    metrics = module.chunk_recall_metrics(
+        {"question": "Как оформить возврат брака?"},
+        {
+            "documents": [
+                {"page_content": "Same file, wrong level.", "metadata": {"file_id": "file-a"}},
+                {"page_content": "Wrong chunk.", "metadata": {"file_id": "file-a", "chunk_id": "chunk-x"}},
+                {"page_content": "Gold chunk.", "metadata": {"file_id": "file-b", "chunk_id": "chunk-b"}},
+            ]
+        },
+        {"reference_context_ids": ["chunk-a", "chunk-b"]},
+    )
+
+    assert metrics["score"] == 0.5
+    assert metrics["label"] == "hit"
+    assert metrics["metadata"]["k"] == 10
+    assert metrics["metadata"]["chunk_hit_at_10"] is True
+    assert metrics["metadata"]["chunk_recall_at_10"] == 0.5
+    assert metrics["metadata"]["chunk_precision_at_10"] == 0.1
+    assert metrics["metadata"]["retrieved_chunk_ids"] == ["chunk-x", "chunk-b"]
+    assert metrics["metadata"]["reference_context_ids"] == ["chunk-a", "chunk-b"]
+    assert metrics["metadata"]["matched_context_ids"] == ["chunk-b"]
+
+
+def test_chunk_recall_metrics_miss_when_only_file_id_matches():
+    module = _load_eval_runner()
+
+    metrics = module.chunk_recall_metrics(
+        {"question": "Как оформить возврат брака?"},
+        {"documents": [{"page_content": "Right file only.", "metadata": {"file_id": "gold-file"}}]},
+        {"reference_context_ids": ["gold-file"]},
+    )
+
+    assert metrics["score"] == 0.0
+    assert metrics["label"] == "miss"
+    assert metrics["metadata"]["chunk_hit_at_10"] is False
+    assert metrics["metadata"]["retrieved_chunk_ids"] == []
+    assert metrics["metadata"]["matched_context_ids"] == []
+
+
+def test_chunk_recall_metrics_skip_without_gold_context_ids():
+    module = _load_eval_runner()
+
+    metrics = module.chunk_recall_metrics(
+        {"question": "Как оформить возврат брака?"},
+        {"documents": [{"metadata": {"chunk_id": "chunk-a"}}]},
+        {"expected_behavior": "cite_answer"},
+    )
+
+    assert metrics["score"] is None
+    assert metrics["label"] == "skipped"
+    assert metrics["metadata"]["reason"] == "missing_reference_context_ids"
+
+
 def test_citation_grounding_requires_citations_to_resolve_to_retrieved_evidence():
     module = _load_eval_runner()
 
@@ -519,7 +575,11 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
                 "evidence": [
                     {
                         "page_content": "Регламент описывает возврат брака.",
-                        "metadata": {"file_id": "file-a", "relative_path": "documents/reglament.docx"},
+                        "metadata": {
+                            "file_id": "file-a",
+                            "chunk_id": "chunk-a",
+                            "relative_path": "documents/reglament.docx",
+                        },
                     }
                 ],
             }
@@ -530,7 +590,7 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
                 "question": "Как оформить возврат брака?",
                 "expected_behavior": "cite_answer",
                 "expected_source_hints": ["возврат брака"],
-                "reference_context_ids": ["file-a"],
+                "reference_context_ids": ["chunk-a"],
             }
         ],
         runtime=FakeRuntime(),
@@ -546,11 +606,16 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
             "retrieval_hit_at_5": True,
             "retrieval_precision_at_5": 0.2,
             "retrieval_ndcg_at_5": 1.0,
-            "id_hit_at_5": True,
-            "id_precision_at_5": 0.2,
-            "id_recall_at_5": 1.0,
-            "id_mrr_at_5": 1.0,
-            "id_ndcg_at_5": 1.0,
+            "id_hit_at_5": False,
+            "id_precision_at_5": 0.0,
+            "id_recall_at_5": 0.0,
+            "id_mrr_at_5": 0.0,
+            "id_ndcg_at_5": 0.0,
+            "chunk_hit_at_10": True,
+            "chunk_recall_at_10": 1.0,
+            "chunk_precision_at_10": 0.1,
+            "retrieved_chunk_ids": ["chunk-a"],
+            "matched_context_ids": ["chunk-a"],
         }
     ]
 
@@ -567,7 +632,11 @@ def test_run_local_eval_uses_configurable_retrieval_k():
                 "evidence": [
                     {
                         "page_content": "Регламент описывает возврат брака.",
-                        "metadata": {"file_id": "file-a", "relative_path": "documents/reglament.docx"},
+                        "metadata": {
+                            "file_id": "file-a",
+                            "chunk_id": "chunk-a",
+                            "relative_path": "documents/reglament.docx",
+                        },
                     }
                 ],
             }
@@ -578,7 +647,7 @@ def test_run_local_eval_uses_configurable_retrieval_k():
                 "question": "Как оформить возврат брака?",
                 "expected_behavior": "cite_answer",
                 "expected_source_hints": ["возврат брака"],
-                "reference_context_ids": ["file-a"],
+                "reference_context_ids": ["chunk-a"],
             }
         ],
         runtime=FakeRuntime(),
@@ -587,7 +656,8 @@ def test_run_local_eval_uses_configurable_retrieval_k():
 
     assert rows[0]["retrieval_hit_at_10"] is True
     assert rows[0]["retrieval_precision_at_10"] == 0.1
-    assert rows[0]["id_recall_at_10"] == 1.0
+    assert rows[0]["id_recall_at_10"] == 0.0
+    assert rows[0]["chunk_recall_at_10"] == 1.0
     assert "retrieval_hit_at_5" not in rows[0]
     assert "id_recall_at_5" not in rows[0]
 
@@ -603,7 +673,7 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "expected_behavior": "cite_answer",
         "expected_source_hints": ["возврат брака"],
         "reference_answer": "Возврат брака оформляется по регламенту.",
-        "reference_context_ids": ["file-a"],
+        "reference_context_ids": ["chunk-a"],
     }
     output = {
         "answer": "Возврат брака оформляется по регламенту.",
@@ -612,7 +682,11 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "documents": [
             {
                 "page_content": "Возврат брака оформляется по регламенту.",
-                "metadata": {"file_id": "file-a", "relative_path": "11. РЕГЛАМЕНТЫ/returns.docx"},
+                "metadata": {
+                    "file_id": "file-a",
+                    "chunk_id": "chunk-a",
+                    "relative_path": "11. РЕГЛАМЕНТЫ/returns.docx",
+                },
             }
         ],
     }
@@ -637,7 +711,8 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
         "answer": "Возврат брака оформляется по регламенту.",
         "citations": [],
         "retrieved_context_ids": ["file-a"],
-        "reference_context_ids": ["file-a"],
+        "retrieved_chunk_ids": ["chunk-a"],
+        "reference_context_ids": ["chunk-a"],
         "source_families": ["11. РЕГЛАМЕНТЫ"],
         "deterministic": {
             "citation_behavior": False,
@@ -647,11 +722,16 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
             "retrieval_hit_at_5": True,
             "retrieval_precision_at_5": 0.2,
             "retrieval_ndcg_at_5": 1.0,
-            "id_hit_at_5": True,
-            "id_precision_at_5": 0.2,
-            "id_recall_at_5": 1.0,
-            "id_mrr_at_5": 1.0,
-            "id_ndcg_at_5": 1.0,
+            "id_hit_at_5": False,
+            "id_precision_at_5": 0.0,
+            "id_recall_at_5": 0.0,
+            "id_mrr_at_5": 0.0,
+            "id_ndcg_at_5": 0.0,
+            "chunk_hit_at_10": True,
+            "chunk_recall_at_10": 1.0,
+            "chunk_precision_at_10": 0.1,
+            "retrieved_chunk_ids": ["chunk-a"],
+            "matched_context_ids": ["chunk-a"],
         },
         "ragas_scores": {"faithfulness": 0.9, "id_context_recall": 1.0},
         "ragas_explanations": {"faithfulness": "grounded", "id_context_recall": None},
@@ -673,7 +753,7 @@ def test_build_eval_artifact_row_uses_configurable_retrieval_k():
             "expected_behavior": "cite_answer",
             "expected_source_hints": ["возврат брака"],
             "reference_answer": "Возврат брака оформляется по регламенту.",
-            "reference_context_ids": ["file-a"],
+            "reference_context_ids": ["chunk-a"],
         },
         output={
             "answer": "Возврат брака оформляется по регламенту.",
@@ -681,7 +761,11 @@ def test_build_eval_artifact_row_uses_configurable_retrieval_k():
             "documents": [
                 {
                     "page_content": "Возврат брака оформляется по регламенту.",
-                    "metadata": {"file_id": "file-a", "relative_path": "documents/reglament.docx"},
+                    "metadata": {
+                        "file_id": "file-a",
+                        "chunk_id": "chunk-a",
+                        "relative_path": "documents/reglament.docx",
+                    },
                 }
             ],
         },
@@ -690,7 +774,8 @@ def test_build_eval_artifact_row_uses_configurable_retrieval_k():
 
     assert artifact["deterministic"]["retrieval_hit_at_10"] is True
     assert artifact["deterministic"]["retrieval_precision_at_10"] == 0.1
-    assert artifact["deterministic"]["id_recall_at_10"] == 1.0
+    assert artifact["deterministic"]["id_recall_at_10"] == 0.0
+    assert artifact["deterministic"]["chunk_recall_at_10"] == 1.0
     assert "retrieval_hit_at_5" not in artifact["deterministic"]
     assert "id_recall_at_5" not in artifact["deterministic"]
 
@@ -705,6 +790,11 @@ def test_summarize_eval_artifact_rows_reports_pass_rates_by_lane_tag_and_source_
                 "lane": "indexed_answerability",
                 "tags": ["returns", "gold_context"],
                 "source_families": ["logistics"],
+                "deterministic": {
+                    "chunk_hit_at_10": True,
+                    "chunk_recall_at_10": 1.0,
+                    "chunk_precision_at_10": 0.1,
+                },
                 "failure_class": None,
             },
             {
@@ -712,6 +802,11 @@ def test_summarize_eval_artifact_rows_reports_pass_rates_by_lane_tag_and_source_
                 "lane": "indexed_answerability",
                 "tags": ["returns"],
                 "source_families": ["logistics"],
+                "deterministic": {
+                    "chunk_hit_at_10": False,
+                    "chunk_recall_at_10": 0.0,
+                    "chunk_precision_at_10": 0.0,
+                },
                 "failure_class": "retrieval_miss",
             },
             {
@@ -742,6 +837,13 @@ def test_summarize_eval_artifact_rows_reports_pass_rates_by_lane_tag_and_source_
     assert summary["by_tag"]["out_of_corpus"]["pass_rate"] == 1.0
     assert summary["by_source_family"]["logistics"]["pass_rate"] == 0.5
     assert summary["by_source_family"]["unknown"]["pass_rate"] == 1.0
+    assert summary["chunk_recall_at_10"] == {
+        "applicable_rows": 2,
+        "hit_rows": 1,
+        "hit_rate": 0.5,
+        "mean_recall": 0.5,
+        "mean_precision": 0.05,
+    }
 
 
 def test_eval_failure_class_prioritizes_behavior_failures():
@@ -956,6 +1058,7 @@ def test_phoenix_evaluators_use_stable_mapping_names():
         "conflict_behavior",
         "retrieval_relevance",
         "id_retrieval_relevance",
+        "chunk_recall",
         "ragas_faithfulness",
         "ragas_answer_relevancy",
         "ragas_id_context_recall",
@@ -966,6 +1069,7 @@ def test_phoenix_evaluators_use_stable_mapping_names():
     assert evaluators["conflict_behavior"] is module.phoenix_conflict_behavior
     assert evaluators["retrieval_relevance"] is module.phoenix_retrieval_relevance
     assert evaluators["id_retrieval_relevance"] is module.phoenix_id_retrieval_relevance
+    assert evaluators["chunk_recall"] is module.phoenix_chunk_recall
     assert evaluators["ragas_faithfulness"] is module.phoenix_ragas_faithfulness_async
     assert evaluators["ragas_answer_relevancy"] is module.phoenix_ragas_answer_relevancy_async
     assert evaluators["ragas_id_context_recall"] is module.phoenix_id_context_recall_async
@@ -1056,6 +1160,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         "conflict_behavior": module.phoenix_conflict_behavior,
         "retrieval_relevance": module.phoenix_retrieval_relevance,
         "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
+        "chunk_recall": module.phoenix_chunk_recall,
         "ragas_faithfulness": module.phoenix_ragas_faithfulness_async,
         "ragas_answer_relevancy": module.phoenix_ragas_answer_relevancy_async,
     }
@@ -1115,6 +1220,7 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
         "conflict_behavior": module.phoenix_conflict_behavior,
         "retrieval_relevance": module.phoenix_retrieval_relevance,
         "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
+        "chunk_recall": module.phoenix_chunk_recall,
         "ragas_id_context_recall": module.phoenix_id_context_recall_async,
     }
 
@@ -1142,6 +1248,8 @@ def test_phoenix_annotation_hook_logs_span_and_document_metrics():
                 "document_scores": [1.0, 0.0],
                 "precision_at_2": 0.5,
                 "ndcg_at_2": 1.0,
+                "chunk_recall_at_10": 0.5,
+                "chunk_precision_at_10": 0.1,
             }
         },
         sync=True,
@@ -1169,6 +1277,18 @@ def test_phoenix_annotation_hook_logs_span_and_document_metrics():
             "span_id": "retrieval-span",
             "annotator_kind": "CODE",
             "result": {"score": 1.0},
+        },
+        {
+            "name": "chunk_recall@10",
+            "span_id": "retrieval-span",
+            "annotator_kind": "CODE",
+            "result": {"score": 0.5},
+        },
+        {
+            "name": "chunk_precision@10",
+            "span_id": "retrieval-span",
+            "annotator_kind": "CODE",
+            "result": {"score": 0.1},
         },
     ]
     assert document_annotations == [
@@ -1242,6 +1362,7 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
         "conflict_behavior": module.phoenix_conflict_behavior,
         "retrieval_relevance": module.phoenix_retrieval_relevance,
         "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
+        "chunk_recall": module.phoenix_chunk_recall,
     }
 
 

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import json
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from imperial_rag.evals.corpus import (
+    ChunkCorpus,
+    CorpusChunk,
+    iter_corpus_chunks,
+    normalize_text,
+    unique_nonempty,
+)
 
 
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
@@ -19,13 +26,21 @@ LANES_BY_BEHAVIOR = {
     "cite_answer": "indexed_answerability",
     "surface_conflict": "conflict_version_behavior",
 }
-REQUIRED_AUDIT_KEYS = {
+# Single source of truth for the audit-row schema: _audit_row must emit exactly
+# these keys, validate_eval_contract requires them, and the markdown table
+# renders them minus the wide review-only fields.
+AUDIT_ROW_COLUMNS = (
     "id",
     "expected_behavior",
     "lane",
     "current_reference_context_ids",
+    "resolved_chunk_ids",
+    "file_only_reference_context_ids",
+    "unresolved_reference_context_ids",
     "resolved_indexed_file_ids",
+    "candidate_chunk_ids",
     "candidate_file_ids",
+    "candidate_locators",
     "source_path",
     "indexed_status",
     "reference_answer_quality",
@@ -34,7 +49,9 @@ REQUIRED_AUDIT_KEYS = {
     "quarantine_reason",
     "backlog_category",
     "notes",
-}
+)
+MARKDOWN_EXCLUDED_COLUMNS = {"candidate_locators", "notes"}
+REQUIRED_AUDIT_KEYS = set(AUDIT_ROW_COLUMNS)
 
 
 @dataclass
@@ -45,66 +62,47 @@ class CorpusDocument:
     file_path: str = ""
     parent_folder: str = ""
     chunk_count: int = 0
-    search_parts: list[str] = field(default_factory=list)
-
-    @property
-    def search_text(self) -> str:
-        return "\n".join(
-            part
-            for part in [
-                self.relative_path,
-                self.file_name,
-                self.file_path,
-                self.parent_folder,
-                *self.search_parts,
-            ]
-            if part
-        )
 
 
 @dataclass
 class CorpusIndex:
     documents: dict[str, CorpusDocument]
+    chunks: ChunkCorpus = field(default_factory=ChunkCorpus)
 
     def resolve(self, file_id: str) -> CorpusDocument | None:
         return self.documents.get(file_id)
 
-    def candidate_file_ids(self, hints: Iterable[str], *, limit: int = 8) -> list[str]:
+    def resolve_chunk(self, context_id: str) -> CorpusChunk | None:
+        return self.chunks.resolve(context_id)
+
+    def candidate_chunks(self, hints: Iterable[str], *, limit: int = 8) -> list[CorpusChunk]:
         normalized_hints = _normalized_hints(hints)
         if not normalized_hints:
             return []
-        scored: list[tuple[int, str, str]] = []
-        for document in self.documents.values():
-            score = _match_score(document.search_text, normalized_hints)
-            if score > 0:
-                scored.append((score, document.relative_path or document.file_name, document.file_id))
-        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
-        return [file_id for _, _, file_id in scored[:limit]]
+        matched = [
+            chunk
+            for chunk in self.chunks.chunks_by_reference_id.values()
+            if _normalized_match_score(chunk.normalized_search_text, normalized_hints) > 0
+        ]
+        return _ranked_by_hint_score(matched, normalized_hints)[:limit]
+
+    def chunks_for_files(self, file_ids: Iterable[str], hints: Iterable[str], *, limit: int = 8) -> list[CorpusChunk]:
+        wanted = {str(file_id or "").strip() for file_id in file_ids}
+        chunks = [chunk for chunk in self.chunks.chunks_by_reference_id.values() if chunk.file_id in wanted]
+        return _ranked_by_hint_score(chunks, _normalized_hints(hints))[:limit]
 
 
 def load_corpus_index(chunks_path: Path) -> CorpusIndex:
-    documents: dict[str, CorpusDocument] = {}
-    if not chunks_path.exists():
-        return CorpusIndex(documents={})
-
-    for line in chunks_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        payload = json.loads(line)
-        metadata = dict(payload.get("metadata") or {})
-        file_id = str(metadata.get("file_id") or payload.get("file_id") or "").strip()
-        if not file_id:
-            continue
-        document = documents.setdefault(file_id, CorpusDocument(file_id=file_id))
+    index = CorpusIndex(documents={})
+    for chunk in iter_corpus_chunks(chunks_path):
+        document = index.documents.setdefault(chunk.file_id, CorpusDocument(file_id=chunk.file_id))
         document.chunk_count += 1
         for field_name in ("relative_path", "file_name", "file_path", "parent_folder"):
-            value = str(metadata.get(field_name) or "").strip()
+            value = getattr(chunk, field_name)
             if value and not getattr(document, field_name):
                 setattr(document, field_name, value)
-        page_content = str(payload.get("page_content") or payload.get("text") or "").strip()
-        if page_content:
-            document.search_parts.append(page_content)
-    return CorpusIndex(documents=documents)
+        index.chunks.chunks_by_reference_id.setdefault(chunk.reference_id, chunk)
+    return index
 
 
 def load_question_rows(path: Path) -> list[dict[str, Any]]:
@@ -181,8 +179,19 @@ def validate_eval_contract(
             )
 
         current_ids = _clean_list(row.get("current_reference_context_ids"))
-        resolved_ids = _clean_list(row.get("resolved_indexed_file_ids"))
-        if len(resolved_ids) != len(current_ids):
+        resolved_ids = _clean_list(row.get("resolved_chunk_ids"))
+        file_only_ids = _clean_list(row.get("file_only_reference_context_ids"))
+        unresolved_ids = _clean_list(row.get("unresolved_reference_context_ids"))
+        if file_only_ids:
+            findings.append(
+                {
+                    "severity": "error",
+                    "row_id": row_id,
+                    "code": "file_only_reference_context_ids",
+                    "message": "reference_context_ids must identify chunks, not files",
+                }
+            )
+        if unresolved_ids:
             findings.append(
                 {
                     "severity": "error",
@@ -279,21 +288,7 @@ def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
 
 
 def write_markdown_table(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    columns = [
-        "id",
-        "expected_behavior",
-        "lane",
-        "current_reference_context_ids",
-        "resolved_indexed_file_ids",
-        "candidate_file_ids",
-        "source_path",
-        "indexed_status",
-        "reference_answer_quality",
-        "expected_source_hints_quality",
-        "action",
-        "quarantine_reason",
-        "backlog_category",
-    ]
+    columns = [column for column in AUDIT_ROW_COLUMNS if column not in MARKDOWN_EXCLUDED_COLUMNS]
     lines = [
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join("---" for _ in columns) + " |",
@@ -314,27 +309,37 @@ def _audit_row(
     behavior = str(row.get("expected_behavior") or "").strip()
     hints = [str(hint).strip() for hint in row.get("expected_source_hints") or [] if str(hint).strip()]
     current_ids = _clean_list(row.get("reference_context_ids"))
-    resolved_ids = [file_id for file_id in current_ids if corpus_index.resolve(file_id) is not None]
-    candidate_ids = corpus_index.candidate_file_ids(hints)
+    resolved_chunks: list[CorpusChunk] = []
+    file_only_ids: list[str] = []
+    unresolved_ids: list[str] = []
+    for context_id in current_ids:
+        chunk = corpus_index.resolve_chunk(context_id)
+        if chunk is not None:
+            resolved_chunks.append(chunk)
+        elif corpus_index.resolve(context_id) is not None:
+            file_only_ids.append(context_id)
+        else:
+            unresolved_ids.append(context_id)
+    resolved_chunk_ids = unique_nonempty(chunk.reference_id for chunk in resolved_chunks)
+    if file_only_ids:
+        candidate_chunks = corpus_index.chunks_for_files(file_only_ids, hints)
+    else:
+        candidate_chunks = corpus_index.candidate_chunks(hints)
     source_path = _best_source_path(hints, source_paths)
-    candidate_ids = _filter_candidates_for_better_source_path(
-        candidate_ids,
-        hints=hints,
-        corpus_index=corpus_index,
-        source_path=source_path,
-    )
+    candidate_ids = _candidate_file_ids(candidate_chunks, hints=hints, source_path=source_path)
     lane = _lane_for(row)
     answer_quality = _reference_answer_quality(str(row.get("reference_answer") or ""))
     hints_quality = _expected_source_hints_quality(
         hints,
-        resolved_documents=[corpus_index.resolve(file_id) for file_id in resolved_ids],
+        resolved_chunks=resolved_chunks,
         candidate_ids=candidate_ids,
         source_path=source_path,
     )
     indexed_status = _indexed_status(
         lane=lane,
         current_ids=current_ids,
-        resolved_ids=resolved_ids,
+        file_only_ids=file_only_ids,
+        unresolved_ids=unresolved_ids,
         candidate_ids=candidate_ids,
         hints_quality=hints_quality,
         source_path=source_path,
@@ -343,7 +348,9 @@ def _audit_row(
     action, quarantine_reason, backlog_category, notes = _row_action(
         lane=lane,
         current_ids=current_ids,
-        resolved_ids=resolved_ids,
+        resolved_ids=resolved_chunk_ids,
+        file_only_ids=file_only_ids,
+        unresolved_ids=unresolved_ids,
         candidate_ids=candidate_ids,
         source_path=source_path,
         answer_quality=answer_quality,
@@ -356,8 +363,13 @@ def _audit_row(
         "expected_behavior": behavior,
         "lane": lane,
         "current_reference_context_ids": current_ids,
-        "resolved_indexed_file_ids": resolved_ids,
+        "resolved_chunk_ids": resolved_chunk_ids,
+        "file_only_reference_context_ids": file_only_ids,
+        "unresolved_reference_context_ids": unresolved_ids,
+        "resolved_indexed_file_ids": unique_nonempty(chunk.file_id for chunk in resolved_chunks),
+        "candidate_chunk_ids": unique_nonempty(chunk.reference_id for chunk in candidate_chunks),
         "candidate_file_ids": candidate_ids,
+        "candidate_locators": [_chunk_locator(chunk) for chunk in candidate_chunks],
         "source_path": _relative_source_path(source_path),
         "indexed_status": indexed_status,
         "reference_answer_quality": answer_quality,
@@ -386,14 +398,17 @@ def _indexed_status(
     *,
     lane: str,
     current_ids: list[str],
-    resolved_ids: list[str],
+    file_only_ids: list[str],
+    unresolved_ids: list[str],
     candidate_ids: list[str],
     hints_quality: str,
     source_path: Path | None,
 ) -> str:
     if lane == "refusal_out_of_corpus_behavior":
         return "out_of_corpus"
-    if current_ids and len(resolved_ids) != len(current_ids):
+    if file_only_ids:
+        return "file_only_gold_ids"
+    if unresolved_ids:
         return "unresolved_gold_ids"
     if current_ids and hints_quality == "hit":
         return "indexed"
@@ -411,6 +426,8 @@ def _row_action(
     lane: str,
     current_ids: list[str],
     resolved_ids: list[str],
+    file_only_ids: list[str],
+    unresolved_ids: list[str],
     candidate_ids: list[str],
     source_path: Path | None,
     answer_quality: str,
@@ -424,7 +441,11 @@ def _row_action(
     if lane == "refusal_out_of_corpus_behavior" and not current_ids:
         return "keep", "", "none", notes
 
-    if current_ids and len(resolved_ids) != len(current_ids):
+    if file_only_ids:
+        notes.append("reference_context_ids resolve only as file IDs; migrate them to chunk IDs")
+        return "rewrite", "file_only_reference_context_ids", "chunk_id_migration", notes
+
+    if unresolved_ids:
         notes.append("one or more reference_context_ids do not resolve against the extracted corpus")
         return "needs_ingestion", "unresolved_reference_context_ids", "missing_indexed_source", notes
 
@@ -462,16 +483,18 @@ def _row_action(
 def _expected_source_hints_quality(
     hints: list[str],
     *,
-    resolved_documents: list[CorpusDocument | None],
+    resolved_chunks: list[CorpusChunk],
     candidate_ids: list[str],
     source_path: Path | None,
 ) -> str:
     normalized_hints = _normalized_hints(hints)
     if not normalized_hints:
         return "not_required"
-    resolved_text = "\n".join(document.search_text for document in resolved_documents if document is not None)
-    resolved_score = _match_score(resolved_text, normalized_hints) if resolved_text else 0
-    source_score = _match_score(str(source_path), normalized_hints) if source_path is not None else 0
+    resolved_text = " ".join(chunk.normalized_search_text for chunk in resolved_chunks)
+    resolved_score = _normalized_match_score(resolved_text, normalized_hints) if resolved_text else 0
+    source_score = (
+        _normalized_match_score(normalize_text(str(source_path)), normalized_hints) if source_path is not None else 0
+    )
     if source_score > resolved_score:
         return "source_path_only"
     if resolved_score > 0:
@@ -484,7 +507,7 @@ def _expected_source_hints_quality(
 
 
 def _reference_answer_quality(answer: str) -> str:
-    normalized = _normalize(answer)
+    normalized = normalize_text(answer)
     if not normalized:
         return "missing"
     generic_markers = (
@@ -517,7 +540,7 @@ def _best_source_path(hints: list[str], source_paths: list[Path]) -> Path | None
         return None
     scored: list[tuple[int, str, Path]] = []
     for path in source_paths:
-        score = _match_score(str(path), normalized_hints)
+        score = _normalized_match_score(normalize_text(str(path)), normalized_hints)
         if score > 0:
             scored.append((score, str(path), path))
     if not scored:
@@ -526,21 +549,19 @@ def _best_source_path(hints: list[str], source_paths: list[Path]) -> Path | None
     return scored[0][2]
 
 
-def _filter_candidates_for_better_source_path(
-    candidate_ids: list[str],
+def _candidate_file_ids(
+    candidate_chunks: list[CorpusChunk],
     *,
     hints: list[str],
-    corpus_index: CorpusIndex,
     source_path: Path | None,
 ) -> list[str]:
+    candidate_ids = unique_nonempty(chunk.file_id for chunk in candidate_chunks)
     normalized_hints = _normalized_hints(hints)
     if not candidate_ids or source_path is None or not normalized_hints:
         return candidate_ids
-    source_score = _match_score(str(source_path), normalized_hints)
+    source_score = _normalized_match_score(normalize_text(str(source_path)), normalized_hints)
     candidate_score = max(
-        _match_score(corpus_index.documents[file_id].search_text, normalized_hints)
-        for file_id in candidate_ids
-        if file_id in corpus_index.documents
+        _normalized_match_score(chunk.normalized_search_text, normalized_hints) for chunk in candidate_chunks
     )
     if source_score > candidate_score:
         return []
@@ -557,6 +578,21 @@ def _relative_source_path(path: Path | None) -> str:
     return str(path)
 
 
+def _chunk_locator(chunk: CorpusChunk) -> dict[str, Any]:
+    return {
+        "chunk_id": chunk.reference_id,
+        "citation_id": chunk.citation_id,
+        "file_id": chunk.file_id,
+        "relative_path": chunk.relative_path,
+        "file_name": chunk.file_name,
+        "chunk_index": chunk.chunk_index,
+        "page_number": chunk.page_number,
+        "section_heading": chunk.section_heading,
+        "source_locator": chunk.source_locator,
+        "evidence_quote": " ".join(chunk.text.split())[:300],
+    }
+
+
 def _clean_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -566,17 +602,22 @@ def _clean_list(value: Any) -> list[str]:
 
 
 def _normalized_hints(hints: Iterable[str]) -> list[str]:
-    return [_normalize(hint) for hint in hints if _normalize(hint)]
+    return [normalize_text(hint) for hint in hints if normalize_text(hint)]
 
 
-def _match_score(value: str, normalized_hints: list[str]) -> int:
-    normalized = _normalize(value)
-    return sum(1 for hint in normalized_hints if hint in normalized)
+def _normalized_match_score(normalized_value: str, normalized_hints: list[str]) -> int:
+    return sum(1 for hint in normalized_hints if hint in normalized_value)
 
 
-def _normalize(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value)).casefold()
-    return " ".join(normalized.split())
+def _ranked_by_hint_score(chunks: list[CorpusChunk], normalized_hints: list[str]) -> list[CorpusChunk]:
+    return sorted(
+        chunks,
+        key=lambda chunk: (
+            -_normalized_match_score(chunk.normalized_search_text, normalized_hints),
+            chunk.relative_path or chunk.file_name,
+            chunk.reference_id,
+        ),
+    )
 
 
 def _markdown_value(value: Any) -> str:

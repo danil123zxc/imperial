@@ -13,6 +13,7 @@ from typing import Any
 import anyio
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 
+from imperial_rag.evals.corpus import CHUNK_ID_METADATA_FIELDS, unique_nonempty
 from imperial_rag.integrations.dashscope import MissingDashScopeKeyError, QwenProviderSettings
 
 
@@ -140,20 +141,38 @@ def retrieved_contexts_from_output(output: Mapping[str, Any]) -> list[str]:
 
 
 def retrieved_context_ids_from_output(output: Mapping[str, Any]) -> list[str]:
-    direct_ids = output.get("retrieved_context_ids")
+    return _ids_from_output(output, direct_key="retrieved_context_ids", metadata_fields=("file_id",))
+
+
+def retrieved_chunk_ids_from_output(output: Mapping[str, Any]) -> list[str]:
+    return _ids_from_output(output, direct_key="retrieved_chunk_ids", metadata_fields=CHUNK_ID_METADATA_FIELDS)
+
+
+def preferred_retrieved_context_ids(output: Mapping[str, Any]) -> list[str]:
+    """Chunk-level retrieved IDs when available, else legacy file-level IDs."""
+    return retrieved_chunk_ids_from_output(output) or retrieved_context_ids_from_output(output)
+
+
+def _ids_from_output(
+    output: Mapping[str, Any],
+    *,
+    direct_key: str,
+    metadata_fields: tuple[str, ...],
+) -> list[str]:
+    direct_ids = output.get(direct_key)
     if direct_ids:
         return _clean_context_ids(direct_ids)
 
     documents = output.get("documents") or output.get("evidence") or []
     ids: list[str] = []
-    seen: set[str] = set()
     for document in documents:
         metadata = _document_metadata(document)
-        file_id = str(metadata.get("file_id") or "").strip()
-        if file_id and file_id not in seen:
-            seen.add(file_id)
-            ids.append(file_id)
-    return ids
+        for field in metadata_fields:
+            value = str(metadata.get(field) or "").strip()
+            if value:
+                ids.append(value)
+                break
+    return _clean_context_ids(ids)
 
 
 def build_faithfulness_scorer(provider_settings: QwenProviderSettings | None = None) -> Any:
@@ -259,15 +278,16 @@ async def score_id_context_recall_for_phoenix_async(
     resolved_output = output or {}
     resolved_expected = expected or resolved_input
     reference_context_ids = _clean_context_ids(resolved_expected.get("reference_context_ids") or [])
+    retrieved_context_ids = preferred_retrieved_context_ids(resolved_output)
     if not reference_context_ids:
         return _id_context_recall_not_applicable_result(
             "missing_reference_context_ids",
-            retrieved_context_count=len(retrieved_context_ids_from_output(resolved_output)),
+            retrieved_context_count=len(retrieved_context_ids),
             reference_context_count=0,
         )
     row = {
         "user_input": str(resolved_input.get("question") or resolved_input.get("user_input") or ""),
-        "retrieved_context_ids": retrieved_context_ids_from_output(resolved_output),
+        "retrieved_context_ids": retrieved_context_ids,
         "reference_context_ids": reference_context_ids,
     }
     return await score_id_context_recall_row_async(row, scorer=scorer)
@@ -757,14 +777,7 @@ def _clean_context_ids(values: Any) -> list[str]:
         raw_values = [values]
     else:
         raw_values = list(values)
-    ids: list[str] = []
-    seen: set[str] = set()
-    for value in raw_values:
-        context_id = str(value).strip()
-        if context_id and context_id not in seen:
-            seen.add(context_id)
-            ids.append(context_id)
-    return ids
+    return unique_nonempty(raw_values)
 
 
 def _has_scoreable_fields(row: Mapping[str, Any]) -> bool:
