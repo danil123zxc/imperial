@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
+
+from imperial_rag.jsonl import read_jsonl, write_jsonl
 
 
 DEFAULT_CHUNKS_PATH = Path(".imperial_rag/extracted/chunks.jsonl")
@@ -13,11 +14,7 @@ GENERATOR_ID = "imperial_eval_question_drafts_v1"
 
 
 def load_chunks(path: Path) -> list[dict[str, Any]]:
-    chunks: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            chunks.append(json.loads(line))
-    return chunks
+    return read_jsonl(path)
 
 
 def build_question_drafts(chunks: Iterable[Mapping[str, Any]], *, limit: int = 25) -> list[dict[str, Any]]:
@@ -49,12 +46,6 @@ def build_question_drafts(chunks: Iterable[Mapping[str, Any]], *, limit: int = 2
         if len(drafts) >= limit:
             break
     return drafts
-
-
-def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "\n".join(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) for row in rows)
-    path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> None:

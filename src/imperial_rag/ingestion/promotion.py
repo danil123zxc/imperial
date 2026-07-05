@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from imperial_rag.jsonl import read_jsonl
+
 
 @dataclass(frozen=True)
 class PromotionGateResult:
@@ -139,16 +141,12 @@ def _check_shadow_lineage(
             )
 
 
-def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
 def _read_jsonl_required(path: Path, errors: list[str]) -> list[dict]:
     if not path.exists():
         errors.append(f"required artifact missing: {path}")
         return []
     try:
-        return _read_jsonl(path)
+        return read_jsonl(path)
     except json.JSONDecodeError as exc:
         errors.append(f"required artifact is not valid JSONL: {path}: {exc}")
         return []

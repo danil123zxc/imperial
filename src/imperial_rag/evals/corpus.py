@@ -8,13 +8,14 @@ differs because gold rows pin the stable chunk_id emitted by ingestion.
 
 from __future__ import annotations
 
-import json
 import unicodedata
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import Any
+
+from imperial_rag.jsonl import iter_jsonl
 
 
 # Metadata fields that identify a retrieved chunk, in precedence order.
@@ -91,10 +92,8 @@ def load_chunk_corpus(path: Path) -> ChunkCorpus:
 def iter_corpus_chunks(path: Path) -> Iterator[CorpusChunk]:
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        chunk = chunk_from_payload(json.loads(line))
+    for payload in iter_jsonl(path):
+        chunk = chunk_from_payload(payload)
         if chunk is not None:
             yield chunk
 
