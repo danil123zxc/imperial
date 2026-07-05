@@ -13,7 +13,7 @@ from typing import Any
 import anyio
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 
-from imperial_rag.evals.corpus import CHUNK_ID_METADATA_FIELDS, unique_nonempty
+from imperial_rag.evals.corpus import CHUNK_ID_METADATA_FIELDS, clean_context_ids as _clean_context_ids
 from imperial_rag.integrations.dashscope import MissingDashScopeKeyError, QwenProviderSettings
 
 
@@ -700,16 +700,6 @@ def _clean_texts(values: Any) -> list[str]:
         if text:
             texts.append(text)
     return texts
-
-
-def _clean_context_ids(values: Any) -> list[str]:
-    if values is None:
-        raw_values: list[Any] = []
-    elif isinstance(values, str) or not isinstance(values, Sequence):
-        raw_values = [values]
-    else:
-        raw_values = list(values)
-    return unique_nonempty(raw_values)
 
 
 def _has_scoreable_fields(row: Mapping[str, Any]) -> bool:

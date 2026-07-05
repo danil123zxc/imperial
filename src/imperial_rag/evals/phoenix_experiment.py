@@ -24,6 +24,7 @@ from imperial_rag.cli import (  # noqa: E402
     log_failure as _log_failure,
     positive_int,
 )
+from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
 
 
@@ -1408,16 +1409,6 @@ def _document_relevance_score(document: Any, hints: list[str]) -> float:
         haystack = _document_search_text(_document_payload(document))
     normalized = haystack.casefold()
     return 1.0 if any(hint in normalized for hint in hints) else 0.0
-
-
-def _clean_context_ids(values: Any) -> list[str]:
-    if values is None:
-        raw_values: list[Any] = []
-    elif isinstance(values, str) or not isinstance(values, Sequence):
-        raw_values = [values]
-    else:
-        raw_values = list(values)
-    return _unique_nonempty(str(value).strip() for value in raw_values)
 
 
 def _citation_values(outputs: Mapping[str, Any]) -> list[str]:

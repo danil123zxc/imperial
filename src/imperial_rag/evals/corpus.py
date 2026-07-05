@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import unicodedata
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any
 
 
 # Metadata fields that identify a retrieved chunk, in precedence order.
@@ -134,6 +135,16 @@ def unique_nonempty(values: Iterable[Any]) -> list[str]:
             seen.add(text)
             resolved.append(text)
     return resolved
+
+
+def clean_context_ids(values: Any) -> list[str]:
+    if values is None:
+        raw_values: Iterable[Any] = ()
+    elif isinstance(values, (str, bytes)) or isinstance(values, Mapping) or not isinstance(values, Iterable):
+        raw_values = (values,)
+    else:
+        raw_values = values
+    return unique_nonempty(raw_values)
 
 
 def _int_value(value: Any) -> int:
