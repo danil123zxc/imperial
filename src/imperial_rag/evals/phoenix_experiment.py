@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Sequence, cast
+from typing import Any, NamedTuple, Sequence, cast
 
 import anyio
 
@@ -57,6 +57,20 @@ REFUSAL_FALLBACKS = (
 )
 _RAGAS_FAITHFULNESS_SCORER: Any | None = None
 _RAGAS_ANSWER_RELEVANCY_SCORER: Any | None = None
+
+
+class _RankedIdOverlap(NamedTuple):
+    reference_set: set[str]
+    ranked_scores: list[float]
+    matched_ids: list[str]
+    recall: float
+
+    @property
+    def hit(self) -> bool:
+        return bool(self.matched_ids)
+
+    def precision_at(self, k: int) -> float:
+        return sum(self.ranked_scores) / k if k > 0 else 0.0
 
 
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
@@ -892,42 +906,35 @@ def id_retrieval_metrics(
 ) -> dict[str, Any]:
     from imperial_rag.evals.ragas import retrieved_context_ids_from_output
 
-    reference_ids = _clean_context_ids((reference_outputs or inputs).get("reference_context_ids") or [])
-    if not reference_ids:
-        return {
-            "score": None,
-            "label": "skipped",
-            "explanation": "ID retrieval relevance requires reference_context_ids.",
-            "metadata": {
-                "k": k,
-                "reason": "missing_reference_context_ids",
-                "retrieved_context_ids": retrieved_context_ids_from_output(outputs),
-                "reference_context_ids": [],
-                "id_document_scores": [],
-            },
-        }
-
+    reference_ids = _reference_context_ids(inputs, reference_outputs)
     retrieved_ids = retrieved_context_ids_from_output(outputs)
-    reference_set, ranked_scores, matched_ids, recall = _ranked_id_overlap(reference_ids, retrieved_ids, k)
-    hit = bool(matched_ids)
-    precision = sum(ranked_scores) / k if k > 0 else 0.0
-    mrr = _mrr(ranked_scores)
-    ndcg = _ndcg_with_ideal(ranked_scores, relevant_count=len(reference_set), k=k)
+    if not reference_ids:
+        return _missing_reference_context_id_metric(
+            "ID retrieval relevance requires reference_context_ids.",
+            k=k,
+            retrieved_key="retrieved_context_ids",
+            retrieved_ids=retrieved_ids,
+            empty_fields={"id_document_scores": []},
+        )
+
+    overlap = _ranked_id_overlap(reference_ids, retrieved_ids, k)
+    mrr = _mrr(overlap.ranked_scores)
+    ndcg = _ndcg_with_ideal(overlap.ranked_scores, relevant_count=len(overlap.reference_set), k=k)
     return {
-        "score": recall,
-        "label": "hit" if hit else "miss",
-        "explanation": f"{len(matched_ids)} of {len(reference_set)} gold context IDs appeared in the top {k}.",
+        "score": overlap.recall,
+        "label": "hit" if overlap.hit else "miss",
+        "explanation": f"{len(overlap.matched_ids)} of {len(overlap.reference_set)} gold context IDs appeared in the top {k}.",
         "metadata": {
             "k": k,
-            f"id_hit_at_{k}": hit,
-            f"id_precision_at_{k}": precision,
-            f"id_recall_at_{k}": recall,
+            f"id_hit_at_{k}": overlap.hit,
+            f"id_precision_at_{k}": overlap.precision_at(k),
+            f"id_recall_at_{k}": overlap.recall,
             f"id_mrr_at_{k}": mrr,
             f"id_ndcg_at_{k}": ndcg,
-            "id_document_scores": ranked_scores,
+            "id_document_scores": overlap.ranked_scores,
             "retrieved_context_ids": retrieved_ids,
             "reference_context_ids": reference_ids,
-            "matched_context_ids": matched_ids,
+            "matched_context_ids": overlap.matched_ids,
         },
     }
 
@@ -940,37 +947,60 @@ def chunk_recall_metrics(
     from imperial_rag.evals.ragas import retrieved_chunk_ids_from_output
 
     chunk_k = CHUNK_RECALL_METRIC_K
-    reference_ids = _clean_context_ids((reference_outputs or inputs).get("reference_context_ids") or [])
+    reference_ids = _reference_context_ids(inputs, reference_outputs)
     retrieved_ids = retrieved_chunk_ids_from_output(outputs)
     if not reference_ids:
-        return {
-            "score": None,
-            "label": "skipped",
-            "explanation": "Chunk recall requires chunk-level reference_context_ids.",
-            "metadata": {
-                "k": chunk_k,
-                "reason": "missing_reference_context_ids",
-                "retrieved_chunk_ids": retrieved_ids,
-                "reference_context_ids": [],
-                "matched_context_ids": [],
-            },
-        }
+        return _missing_reference_context_id_metric(
+            "Chunk recall requires chunk-level reference_context_ids.",
+            k=chunk_k,
+            retrieved_key="retrieved_chunk_ids",
+            retrieved_ids=retrieved_ids,
+            empty_fields={"matched_context_ids": []},
+        )
 
-    reference_set, _, matched_ids, recall = _ranked_id_overlap(reference_ids, retrieved_ids, chunk_k)
-    hit = bool(matched_ids)
-    precision = len(matched_ids) / chunk_k if chunk_k > 0 else 0.0
+    overlap = _ranked_id_overlap(reference_ids, retrieved_ids, chunk_k)
+    precision = len(overlap.matched_ids) / chunk_k if chunk_k > 0 else 0.0
     return {
-        "score": recall,
-        "label": "hit" if hit else "miss",
-        "explanation": f"{len(matched_ids)} of {len(reference_set)} gold chunk IDs appeared in the top {chunk_k}.",
+        "score": overlap.recall,
+        "label": "hit" if overlap.hit else "miss",
+        "explanation": f"{len(overlap.matched_ids)} of {len(overlap.reference_set)} gold chunk IDs appeared in the top {chunk_k}.",
         "metadata": {
             "k": chunk_k,
-            f"chunk_hit_at_{chunk_k}": hit,
-            f"chunk_recall_at_{chunk_k}": recall,
+            f"chunk_hit_at_{chunk_k}": overlap.hit,
+            f"chunk_recall_at_{chunk_k}": overlap.recall,
             f"chunk_precision_at_{chunk_k}": precision,
             "retrieved_chunk_ids": retrieved_ids,
             "reference_context_ids": reference_ids,
-            "matched_context_ids": matched_ids,
+            "matched_context_ids": overlap.matched_ids,
+        },
+    }
+
+
+def _reference_context_ids(
+    inputs: Mapping[str, Any],
+    reference_outputs: Mapping[str, Any] | None,
+) -> list[str]:
+    return _clean_context_ids((reference_outputs or inputs).get("reference_context_ids") or [])
+
+
+def _missing_reference_context_id_metric(
+    explanation: str,
+    *,
+    k: int,
+    retrieved_key: str,
+    retrieved_ids: list[str],
+    empty_fields: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "score": None,
+        "label": "skipped",
+        "explanation": explanation,
+        "metadata": {
+            "k": k,
+            "reason": "missing_reference_context_ids",
+            retrieved_key: retrieved_ids,
+            "reference_context_ids": [],
+            **empty_fields,
         },
     }
 
@@ -979,13 +1009,18 @@ def _ranked_id_overlap(
     reference_ids: list[str],
     retrieved_ids: list[str],
     k: int,
-) -> tuple[set[str], list[float], list[str], float]:
+) -> _RankedIdOverlap:
     reference_set = set(reference_ids)
     ranked_ids = retrieved_ids[:k]
     ranked_scores = [1.0 if context_id in reference_set else 0.0 for context_id in ranked_ids]
     matched_ids = _unique_nonempty(context_id for context_id in ranked_ids if context_id in reference_set)
     recall = len(matched_ids) / len(reference_set) if reference_set else 0.0
-    return reference_set, ranked_scores, matched_ids, recall
+    return _RankedIdOverlap(
+        reference_set=reference_set,
+        ranked_scores=ranked_scores,
+        matched_ids=matched_ids,
+        recall=recall,
+    )
 
 
 def _deterministic_retrieval_values(
