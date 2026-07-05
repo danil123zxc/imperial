@@ -241,16 +241,21 @@ def test_runtime_query_uses_retrieval_service(monkeypatch, tmp_path):
 
     fake_vector_search = object()
     fake_keyword_search = object()
-    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalSettings", FakeRetrievalSettings)
-    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalService", FakeRetrievalService)
-    monkeypatch.setattr(
-        "imperial_rag.answering.runtime.build_query_dependencies",
-        lambda settings: type(
+
+    def fake_build_query_dependencies(settings):
+        return type(
             "Deps",
             (),
-            {"vector_search": fake_vector_search, "keyword_search": fake_keyword_search},
-        )(),
-    )
+            {
+                "vector_search": fake_vector_search,
+                "keyword_search": fake_keyword_search,
+                "retrieval_settings": FakeRetrievalSettings.from_env(),
+            },
+        )()
+
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalSettings", FakeRetrievalSettings)
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalService", FakeRetrievalService)
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_dependencies", fake_build_query_dependencies)
     monkeypatch.setattr("imperial_rag.answering.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
 
     runtime = create_runtime(Settings(workspace_root=tmp_path))
@@ -267,6 +272,52 @@ def test_runtime_query_uses_retrieval_service(monkeypatch, tmp_path):
     assert calls["service_args"]["keyword_search"] is fake_keyword_search
     assert calls["service_args"]["settings"] == "retrieval-settings"
     assert calls["settings_from_env"] is True
+
+
+def test_create_runtime_reuses_dependency_retrieval_settings(monkeypatch, tmp_path):
+    settings_snapshots = []
+    service_settings = []
+
+    class FakeRetrievalSettings:
+        @classmethod
+        def from_env(cls):
+            value = f"retrieval-settings-{len(settings_snapshots) + 1}"
+            settings_snapshots.append(value)
+            return value
+
+    class FakeRetrievalResult:
+        evidence = []
+        vector_docs = []
+        keyword_docs = []
+        diagnostics = {}
+
+    class FakeRetrievalService:
+        def __init__(self, vector_search, keyword_search, settings):
+            service_settings.append(settings)
+
+        def retrieve(self, question):
+            return FakeRetrievalResult()
+
+    class FakeWorkflow:
+        def __init__(self, retrieve, generate):
+            self.retrieve = retrieve
+            self.generate = generate
+
+        def invoke(self, state):
+            self.retrieve(state["question"])
+            return {"answer": "ok"}
+
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalSettings", FakeRetrievalSettings)
+    monkeypatch.setattr("imperial_rag.answering.runtime.RetrievalService", FakeRetrievalService)
+    monkeypatch.setattr("imperial_rag.answering.runtime._semantic_search_enabled", lambda: False)
+    monkeypatch.setattr("imperial_rag.answering.runtime.ElasticsearchKeywordIndex", lambda settings: object())
+    monkeypatch.setattr("imperial_rag.answering.runtime.build_query_workflow", lambda **kwargs: FakeWorkflow(**kwargs))
+
+    runtime = create_runtime(Settings(workspace_root=tmp_path))
+
+    assert runtime.query("Что делать?") == {"answer": "ok"}
+    assert settings_snapshots == ["retrieval-settings-1"]
+    assert service_settings == ["retrieval-settings-1"]
 
 
 def test_semantic_search_enabled_uses_dashscope_key(monkeypatch):
@@ -505,6 +556,7 @@ def test_create_runtime_lazy_caches_initialize_once_under_concurrent_retrieval(m
                 "vector_search": fake_vector_search,
                 "keyword_search": fake_keyword_search,
                 "chat_model": object(),
+                "retrieval_settings": "retrieval-settings",
             },
         )()
 
