@@ -32,9 +32,9 @@ def check_promotion_gates(
     baseline_rows = _read_jsonl_required(baseline_root / "corpus-ledger.jsonl", errors)
     shadow_rows = _read_jsonl_required(shadow_root / "corpus-ledger.jsonl", errors)
     baseline_chunks = _read_jsonl_required(baseline_root / "chunks.jsonl", errors)
-    id_map = _read_json_required(shadow_root / "old-to-new-id-map.json", errors)
-    shadow_lineage = _read_json_required(shadow_root / "index-lineage.json", errors)
-    reviewed_drops = _read_optional_json(shadow_root / "reviewed-drops.json", default={"rows": []})
+    id_map = _read_json_artifact(shadow_root / "old-to-new-id-map.json", errors, default={"rows": []}, required=True)
+    shadow_lineage = _read_json_artifact(shadow_root / "index-lineage.json", errors, default={"rows": []}, required=True)
+    reviewed_drops = _read_json_artifact(shadow_root / "reviewed-drops.json", errors, default={"rows": []}, required=False)
     questions = _read_jsonl_required(questions_path, errors)
     _check_shadow_lineage(
         shadow_lineage,
@@ -152,25 +152,17 @@ def _read_jsonl_required(path: Path, errors: list[str]) -> list[dict]:
         return []
 
 
-def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _read_json_required(path: Path, errors: list[str]) -> dict:
+def _read_json_artifact(path: Path, errors: list[str], *, default: dict[str, Any], required: bool) -> dict[str, Any]:
     if not path.exists():
-        errors.append(f"required artifact missing: {path}")
-        return {"rows": []}
+        if required:
+            errors.append(f"required artifact missing: {path}")
+        return dict(default)
     try:
-        return _read_json(path)
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        errors.append(f"required artifact is not valid JSON: {path}: {exc}")
-        return {"rows": []}
-
-
-def _read_optional_json(path: Path, *, default: dict) -> dict:
-    if not path.exists():
-        return default
-    return json.loads(path.read_text(encoding="utf-8"))
+        artifact_type = "required" if required else "optional"
+        errors.append(f"{artifact_type} artifact is not valid JSON: {path}: {exc}")
+        return dict(default)
 
 
 def _metadata_values(rows: list[dict], key: str) -> set[str]:
