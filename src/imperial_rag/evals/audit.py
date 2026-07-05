@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -13,7 +12,7 @@ from imperial_rag.evals.corpus import (
     normalize_text,
     unique_nonempty,
 )
-from imperial_rag.jsonl import write_jsonl as _write_jsonl
+from imperial_rag.jsonl import read_jsonl, write_jsonl as _write_jsonl
 
 
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
@@ -116,7 +115,7 @@ def load_corpus_index(chunks_path: Path) -> CorpusIndex:
 
 
 def load_question_rows(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return read_jsonl(path)
 
 
 def build_eval_audit_report(

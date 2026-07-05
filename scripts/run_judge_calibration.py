@@ -23,6 +23,7 @@ from imperial_rag.evals.ragas_runner import (  # noqa: E402
     evaluate_ragas_rows,
     result_records,
 )
+from imperial_rag.jsonl import read_jsonl  # noqa: E402
 
 
 DEFAULT_CALIBRATION_PATH = Path("evals/russian_judge_calibration.jsonl")
@@ -31,7 +32,7 @@ HUMAN_LABELS = {"correct", "incorrect"}
 
 
 def load_calibration_rows(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return read_jsonl(path)
 
 
 def prepare_calibration_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

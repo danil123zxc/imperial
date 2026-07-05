@@ -5,6 +5,24 @@ import importlib.util
 from pathlib import Path
 
 
+def test_load_question_rows_reuses_shared_jsonl_reader(tmp_path, monkeypatch):
+    from imperial_rag.evals import audit as audit_module
+
+    questions_path = tmp_path / "questions.jsonl"
+    _write_jsonl(questions_path, [{"id": "from-file"}])
+    expected_rows = [{"id": "from-shared-helper"}]
+    captured: dict[str, Path] = {}
+
+    def fake_read_jsonl(path: Path):
+        captured["path"] = path
+        return expected_rows
+
+    monkeypatch.setattr(audit_module, "read_jsonl", fake_read_jsonl, raising=False)
+
+    assert audit_module.load_question_rows(questions_path) == expected_rows
+    assert captured["path"] == questions_path
+
+
 def test_audit_detects_gold_id_that_points_away_from_existing_source(tmp_path):
     from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index
 
