@@ -14,6 +14,7 @@ from typing import Any
 from imperial_rag.ingestion.ledger import write_corpus_ledger
 from imperial_rag.jsonl import iter_jsonl, write_jsonl
 from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_lineage_attributes, trace_pipeline_step
+from imperial_rag.serialization import stable_json_dumps
 
 
 @dataclass(frozen=True)
@@ -567,7 +568,7 @@ def _index_version(
         "vector_indexed": vector_indexed,
         "embedding_model": embedding_model,
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    encoded = stable_json_dumps(payload)
     return f"index_sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
@@ -603,7 +604,7 @@ def _chunk_signature(chunk: Any) -> str:
         "page_content": str(getattr(chunk, "page_content", "")),
         "metadata": dict(getattr(chunk, "metadata", {}) or {}),
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return stable_json_dumps(payload)
 
 
 def _chunk_content_hash(chunk: Any) -> str:

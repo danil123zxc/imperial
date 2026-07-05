@@ -20,6 +20,7 @@ from openinference.semconv.trace import DocumentAttributes, RerankerAttributes
 from phoenix.otel import SpanAttributes
 
 from imperial_rag.config import Settings, env_bool, env_int
+from imperial_rag.serialization import stable_json_dumps
 
 
 _CONFIGURED_PROVIDER: object | None = None
@@ -96,7 +97,7 @@ class OpenInferenceTraceSpan:
     def set_output(self, value: Any) -> None:
         if _hide_outputs():
             return
-        self._span.set_attribute(_OUTPUT_VALUE, _json_value(value))
+        self._span.set_attribute(_OUTPUT_VALUE, stable_json_dumps(value))
         self._span.set_attribute(_OUTPUT_MIME_TYPE, _JSON_MIME_TYPE)
 
     def set_retrieval_documents(self, documents: Iterable[Any]) -> None:
@@ -398,7 +399,7 @@ def openinference_document_attributes(
             attributes[f"{prefix}.{_DOCUMENT_ID}"] = document_id
         trace_metadata = _trace_document_metadata(metadata)
         if trace_metadata:
-            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = _json_value(trace_metadata)
+            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = stable_json_dumps(trace_metadata)
         if score is not None:
             attributes[f"{prefix}.{_DOCUMENT_SCORE}"] = score
     return attributes
@@ -462,13 +463,9 @@ def _attribute_value(value: Any) -> str | bool | int | float | Sequence[str | bo
             if isinstance(item, (str, bool, int, float)):
                 values.append(item)
             else:
-                return _json_value(value)
+                return stable_json_dumps(value)
         return values
-    return _json_value(value)
-
-
-def _json_value(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return stable_json_dumps(value)
 
 
 @contextmanager
