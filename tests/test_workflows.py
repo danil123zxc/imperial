@@ -453,6 +453,25 @@ def test_query_workflow_preserves_custom_retrieval_candidate_aliases():
     assert result["retrieved_documents"] == keyword_docs
 
 
+def test_query_workflow_preserves_custom_retrieval_candidate_document_aliases():
+    vector_docs = [Document(page_content="Векторный кандидат.", metadata={"citation_id": "vector"})]
+    keyword_docs = [Document(page_content="Ключевой кандидат.", metadata={"citation_id": "keyword"})]
+
+    workflow = build_query_workflow(
+        retrieve=lambda question: {
+            "vector_documents": vector_docs,
+            "keyword_documents": keyword_docs,
+        },
+        generate=lambda question, retrieved_docs: "Ключевой кандидат. [S1]",
+    )
+
+    result = workflow.invoke({"question": "Ключевой кандидат"})
+
+    assert result["vector_candidates"] == vector_docs
+    assert result["keyword_candidates"] == keyword_docs
+    assert result["retrieved_documents"] == keyword_docs + vector_docs
+
+
 def test_query_workflow_preserves_explicit_empty_vector_candidates():
     docs = [Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "return"})]
 

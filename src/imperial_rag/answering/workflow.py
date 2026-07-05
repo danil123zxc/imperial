@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
 from langchain_core.documents import Document
@@ -70,6 +71,19 @@ class QueryState(TypedDict, total=False):
     error: dict[str, Any]
 
 
+_RETRIEVED_DOCUMENT_KEYS = ("retrieved_documents", "documents", "docs", "evidence")
+_VECTOR_CANDIDATE_KEYS = ("vector_docs", "vector_documents", "vector_candidates")
+_KEYWORD_CANDIDATE_KEYS = ("keyword_docs", "keyword_documents", "keyword_candidates")
+
+
+@dataclass(frozen=True)
+class _CoercedRetrieval:
+    evidence: list[Document]
+    vector_candidates: list[Document]
+    keyword_candidates: list[Document]
+    retrieval: dict[str, Any] | None = None
+
+
 def _legacy_openai_chat_model():
     from imperial_rag.integrations.dashscope import QwenProviderSettings
 
@@ -115,36 +129,50 @@ def _documents_from_first_key(
     keys: Sequence[str],
     default: Sequence[Document],
 ) -> list[Document]:
+    found, value = _first_mapping_value(retrieved, keys)
+    return _documents_from_value(value) if found else list(default)
+
+
+def _first_mapping_value(retrieved: Mapping[str, Any], keys: Sequence[str]) -> tuple[bool, Any]:
     for key in keys:
         if key in retrieved:
-            value = retrieved[key]
-            return [] if value is None else list(value)
-    return list(default)
+            return True, retrieved[key]
+    return False, None
 
 
-def _coerce_retrieved_documents(retrieved: Any, query: str) -> list[Document]:
+def _documents_from_value(value: Any) -> list[Document]:
+    return [] if value is None else list(value)
+
+
+def _coerce_retrieval(retrieved: Any, query: str) -> _CoercedRetrieval:
     if retrieved is None:
-        return []
+        return _CoercedRetrieval(evidence=[], vector_candidates=[], keyword_candidates=[])
     if isinstance(retrieved, Mapping):
-        for key in ("retrieved_documents", "documents", "docs", "evidence"):
-            if key in retrieved:
-                direct_docs = retrieved[key]
-                return [] if direct_docs is None else list(direct_docs)
-        vector_docs = _documents_from_first_key(
-            retrieved,
-            ("vector_docs", "vector_documents", "vector_candidates"),
-            [],
-        )
-        keyword_docs = _documents_from_first_key(
-            retrieved,
-            ("keyword_docs", "keyword_documents", "keyword_candidates"),
-            [],
-        )
-        return rank_hybrid_candidates(query, vector_docs, keyword_docs)
+        return _coerce_mapping_retrieval(retrieved, query)
     if isinstance(retrieved, tuple) and len(retrieved) == 2:
-        return rank_hybrid_candidates(query, list(retrieved[0]), list(retrieved[1]))
-    return list(retrieved)
+        evidence = rank_hybrid_candidates(query, list(retrieved[0]), list(retrieved[1]))
+        return _CoercedRetrieval(evidence=evidence, vector_candidates=evidence, keyword_candidates=[])
+    evidence = list(retrieved)
+    return _CoercedRetrieval(evidence=evidence, vector_candidates=evidence, keyword_candidates=[])
 
+
+def _coerce_mapping_retrieval(retrieved: Mapping[str, Any], query: str) -> _CoercedRetrieval:
+    has_direct_evidence, direct_evidence = _first_mapping_value(retrieved, _RETRIEVED_DOCUMENT_KEYS)
+    if has_direct_evidence:
+        evidence = _documents_from_value(direct_evidence)
+        vector_candidates = _documents_from_first_key(retrieved, _VECTOR_CANDIDATE_KEYS, evidence)
+        keyword_candidates = _documents_from_first_key(retrieved, _KEYWORD_CANDIDATE_KEYS, [])
+    else:
+        vector_candidates = _documents_from_first_key(retrieved, _VECTOR_CANDIDATE_KEYS, [])
+        keyword_candidates = _documents_from_first_key(retrieved, _KEYWORD_CANDIDATE_KEYS, [])
+        evidence = rank_hybrid_candidates(query, vector_candidates, keyword_candidates)
+    retrieval = dict(retrieved["retrieval"]) if isinstance(retrieved.get("retrieval"), Mapping) else None
+    return _CoercedRetrieval(
+        evidence=evidence,
+        vector_candidates=vector_candidates,
+        keyword_candidates=keyword_candidates,
+        retrieval=retrieval,
+    )
 
 def _coerce_answer(answer: Any) -> str:
     if isinstance(answer, Mapping) and "answer" in answer:
@@ -187,23 +215,15 @@ def build_query_workflow(
         query = str(state.get("normalized_query") or state.get("question") or "")
         if retrieve is not None:
             retrieved = retrieve(query)
-            evidence = _coerce_retrieved_documents(retrieved, query)
+            coerced = _coerce_retrieval(retrieved, query)
             update: QueryState = {
-                "vector_candidates": (
-                    _documents_from_first_key(retrieved, ("vector_docs", "vector_candidates"), evidence)
-                    if isinstance(retrieved, Mapping)
-                    else evidence
-                ),
-                "keyword_candidates": (
-                    _documents_from_first_key(retrieved, ("keyword_docs", "keyword_candidates"), [])
-                    if isinstance(retrieved, Mapping)
-                    else []
-                ),
-                "evidence": evidence,
-                "retrieved_documents": evidence,
+                "vector_candidates": coerced.vector_candidates,
+                "keyword_candidates": coerced.keyword_candidates,
+                "evidence": coerced.evidence,
+                "retrieved_documents": coerced.evidence,
             }
-            if isinstance(retrieved, Mapping) and isinstance(retrieved.get("retrieval"), Mapping):
-                update["retrieval"] = dict(retrieved["retrieval"])
+            if coerced.retrieval is not None:
+                update["retrieval"] = coerced.retrieval
             return update
         vector_docs = vector_search.similarity_search(query, k=8) if vector_search is not None else []
         keyword_docs = keyword_search.search(query, limit=8) if keyword_search is not None else []
