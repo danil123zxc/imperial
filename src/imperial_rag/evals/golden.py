@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from imperial_rag.evals.corpus import ChunkCorpus as EvidenceCorpus
+from imperial_rag.evals.corpus import clean_string_list
 from imperial_rag.evals.corpus import load_chunk_corpus as load_evidence_corpus
 from imperial_rag.jsonl import write_jsonl
 
@@ -25,7 +26,7 @@ def _evidence_packet(
     corpus: EvidenceCorpus,
     audit: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    context_ids = _clean_list(row.get("reference_context_ids"))
+    context_ids = clean_string_list(row.get("reference_context_ids"))
     resolved_ids: list[str] = []
     unresolved_ids: list[str] = []
     evidence: list[dict[str, Any]] = []
@@ -41,11 +42,11 @@ def _evidence_packet(
     return {
         "id": str(row.get("id") or ""),
         "suite": str(row.get("suite") or ""),
-        "tags": _clean_list(row.get("tags")),
+        "tags": clean_string_list(row.get("tags")),
         "lane": _packet_lane(row, audit),
         "expected_behavior": str(row.get("expected_behavior") or ""),
         "question": str(row.get("question") or ""),
-        "expected_source_hints": _clean_list(row.get("expected_source_hints")),
+        "expected_source_hints": clean_string_list(row.get("expected_source_hints")),
         "current_reference_answer": str(row.get("reference_answer") or ""),
         "candidate_reference_answer": "",
         "current_reference_context_ids": context_ids,
@@ -107,9 +108,3 @@ def _packet_lane(row: Mapping[str, Any], audit: Mapping[str, Any] | None) -> str
     if explicit_lane:
         return explicit_lane
     return str((audit or {}).get("lane") or "")
-
-
-def _clean_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]

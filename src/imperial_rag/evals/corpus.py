@@ -137,6 +137,15 @@ def unique_nonempty(values: Iterable[Any]) -> list[str]:
     return resolved
 
 
+def clean_string_list(value: Any, *, allow_scalar: bool = False) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not allow_scalar or value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def clean_context_ids(values: Any) -> list[str]:
     if values is None:
         raw_values: Iterable[Any] = ()

@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 from imperial_rag.evals.corpus import (
     ChunkCorpus,
     CorpusChunk,
+    clean_string_list,
     iter_corpus_chunks,
     normalize_text,
     unique_nonempty,
@@ -179,10 +180,10 @@ def validate_eval_contract(
                 }
             )
 
-        current_ids = _clean_list(row.get("current_reference_context_ids"))
-        resolved_ids = _clean_list(row.get("resolved_chunk_ids"))
-        file_only_ids = _clean_list(row.get("file_only_reference_context_ids"))
-        unresolved_ids = _clean_list(row.get("unresolved_reference_context_ids"))
+        current_ids = clean_string_list(row.get("current_reference_context_ids"), allow_scalar=True)
+        resolved_ids = clean_string_list(row.get("resolved_chunk_ids"), allow_scalar=True)
+        file_only_ids = clean_string_list(row.get("file_only_reference_context_ids"), allow_scalar=True)
+        unresolved_ids = clean_string_list(row.get("unresolved_reference_context_ids"), allow_scalar=True)
         if file_only_ids:
             findings.append(
                 {
@@ -307,7 +308,7 @@ def _audit_row(
     row_id = str(row.get("id") or "").strip()
     behavior = str(row.get("expected_behavior") or "").strip()
     hints = [str(hint).strip() for hint in row.get("expected_source_hints") or [] if str(hint).strip()]
-    current_ids = _clean_list(row.get("reference_context_ids"))
+    current_ids = clean_string_list(row.get("reference_context_ids"), allow_scalar=True)
     resolved_chunks: list[CorpusChunk] = []
     file_only_ids: list[str] = []
     unresolved_ids: list[str] = []
@@ -590,14 +591,6 @@ def _chunk_locator(chunk: CorpusChunk) -> dict[str, Any]:
         "source_locator": chunk.source_locator,
         "evidence_quote": " ".join(chunk.text.split())[:300],
     }
-
-
-def _clean_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [str(value).strip()] if str(value).strip() else []
 
 
 def _normalized_hints(hints: Iterable[str]) -> list[str]:
