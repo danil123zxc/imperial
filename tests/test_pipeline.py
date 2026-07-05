@@ -122,6 +122,41 @@ def test_run_ingestion_persists_chunks_and_updates_manifest(tmp_path, monkeypatc
     assert FakeManifestStore.last.closed is True
 
 
+def test_chunk_artifact_helpers_reuse_shared_jsonl_helpers(tmp_path, monkeypatch):
+    from imperial_rag.ingestion import pipeline as pipeline_module
+
+    written: dict[str, Any] = {}
+
+    def fake_write_jsonl(path: Path, rows: Any) -> None:
+        written["path"] = path
+        written["rows"] = list(rows)
+
+    monkeypatch.setattr(pipeline_module, "write_jsonl", fake_write_jsonl)
+
+    pipeline_module._write_chunks(
+        tmp_path,
+        [SimpleNamespace(page_content="Регламент возврата брака.", metadata={"file_id": "file1"})],
+    )
+
+    assert written == {
+        "path": tmp_path / "chunks.jsonl",
+        "rows": [{"page_content": "Регламент возврата брака.", "metadata": {"file_id": "file1"}}],
+    }
+
+    chunks_path = tmp_path / "chunks.jsonl"
+    chunks_path.write_text("ignored by fake reader\n", encoding="utf-8")
+
+    def fake_iter_jsonl(path: Path):
+        assert path == chunks_path
+        yield {"page_content": "old", "metadata": {"chunk_id": "old-1"}}
+
+    monkeypatch.setattr(pipeline_module, "iter_jsonl", fake_iter_jsonl)
+
+    assert pipeline_module._read_existing_chunks(chunks_path) == [
+        {"page_content": "old", "metadata": {"chunk_id": "old-1"}}
+    ]
+
+
 def test_run_ingestion_uses_retrieval_chunk_settings(tmp_path, monkeypatch):
     docs = tmp_path / "documents"
     docs.mkdir()

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from imperial_rag.ingestion.ledger import write_corpus_ledger
+from imperial_rag.jsonl import iter_jsonl, write_jsonl
 from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_lineage_attributes, trace_pipeline_step
 
 
@@ -700,28 +701,22 @@ def _write_extracted_artifact(extraction_root: Path, record: Any, result: Any) -
 
 def _write_chunks(extraction_root: Path, chunks: list[Any]) -> None:
     chunks_path = _safe_artifact_path(extraction_root, "chunks.jsonl")
-    with chunks_path.open("w", encoding="utf-8") as handle:
-        for chunk in chunks:
-            handle.write(
-                json.dumps(
-                    {
-                        "page_content": str(chunk.page_content),
-                        "metadata": dict(chunk.metadata),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+    write_jsonl(
+        chunks_path,
+        (
+            {
+                "page_content": str(chunk.page_content),
+                "metadata": dict(chunk.metadata),
+            }
+            for chunk in chunks
+        ),
+    )
 
 
 def _read_existing_chunks(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
+    return list(iter_jsonl(path))
 
 
 def _write_old_to_new_id_map(extraction_root: Path, old_rows: list[dict[str, Any]], chunks: list[Any]) -> None:
