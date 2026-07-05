@@ -175,6 +175,7 @@ def test_load_questions_validates_lane_expected_behavior_contract(tmp_path):
     path.write_text(
         "\n".join(
             [
+                "",
                 json.dumps(
                     {
                         "id": "imperial-cite-001",
@@ -210,7 +211,7 @@ def test_load_questions_validates_lane_expected_behavior_contract(tmp_path):
         module.load_questions(path)
 
     message = str(exc_info.value)
-    assert "missing lane" in message
+    assert "line 2: missing lane" in message
     assert "lane is not valid for expected_behavior" in message
 
 

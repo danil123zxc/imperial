@@ -26,6 +26,7 @@ from imperial_rag.cli import (  # noqa: E402
 )
 from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
+from imperial_rag.jsonl import iter_jsonl_with_line_numbers  # noqa: E402
 
 
 DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
@@ -78,10 +79,7 @@ def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
     seen_ids: set[str] = set()
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        payload = json.loads(line)
+    for line_number, payload in iter_jsonl_with_line_numbers(path):
         errors.extend(_validate_question_row(payload, line_number=line_number, seen_ids=seen_ids))
         rows.append(payload)
     if errors:

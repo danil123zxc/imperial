@@ -7,10 +7,15 @@ from typing import Any
 
 
 def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    for _, row in iter_jsonl_with_line_numbers(path):
+        yield row
+
+
+def iter_jsonl_with_line_numbers(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
     with path.open(encoding="utf-8") as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             if line.strip():
-                yield json.loads(line)
+                yield line_number, json.loads(line)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
