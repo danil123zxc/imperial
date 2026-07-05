@@ -6,6 +6,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from imperial_rag.jsonl import write_jsonl as _write_jsonl
+
 
 LEDGER_SCHEMA_VERSION = "corpus-ledger-v1"
 LEDGER_SUMMARY_SCHEMA_VERSION = "corpus-ledger-summary-v1"
@@ -177,13 +179,6 @@ def _vector_index_status(status: str, chunk_count: int, vector_indexed: bool) ->
     if status == "indexed" and chunk_count > 0:
         return "indexed" if vector_indexed else "skipped"
     return "skipped"
-
-
-def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

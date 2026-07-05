@@ -38,6 +38,7 @@ from imperial_rag.evals.ragas import (
     retrieved_contexts_from_output,
     validate_ragas_metric_requirements,
 )
+from imperial_rag.jsonl import write_jsonl
 
 
 DEFAULT_METRICS = DEFAULT_RAGAS_METRICS
@@ -257,12 +258,6 @@ def result_records(result: Any) -> list[dict[str, Any]]:
     if isinstance(result, dict) and "scores" in result:
         return list(result["scores"])
     return [{"result": str(result)}]
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows)
-    path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> None:

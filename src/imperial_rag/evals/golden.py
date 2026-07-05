@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from imperial_rag.evals.corpus import ChunkCorpus as EvidenceCorpus
 from imperial_rag.evals.corpus import load_chunk_corpus as load_evidence_corpus
+from imperial_rag.jsonl import write_jsonl
 
 __all__ = ["EvidenceCorpus", "build_evidence_packets", "load_evidence_corpus", "write_jsonl"]
 
@@ -18,12 +17,6 @@ def build_evidence_packets(
 ) -> list[dict[str, Any]]:
     audit_by_id = {str(row.get("id") or ""): dict(row) for row in audit_rows}
     return [_evidence_packet(row, corpus=corpus, audit=audit_by_id.get(str(row.get("id") or ""))) for row in rows]
-
-
-def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "\n".join(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) for row in rows)
-    path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
 
 
 def _evidence_packet(

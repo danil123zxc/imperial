@@ -12,6 +12,7 @@ from imperial_rag.evals.corpus import (
     normalize_text,
     unique_nonempty,
 )
+from imperial_rag.jsonl import write_jsonl as _write_jsonl
 
 
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
@@ -282,9 +283,7 @@ def validate_eval_contract(
 
 
 def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = "\n".join(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) for row in rows)
-    path.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
+    _write_jsonl(path, rows)
 
 
 def write_markdown_table(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
