@@ -92,6 +92,23 @@ def test_bootstrap_admin_refreshes_password(tmp_path):
     assert store.authenticate("admin@example.com", "new-password").status == AuthenticationStatus.AUTHENTICATED
 
 
+def test_auth_store_uses_shared_user_email_normalizer(monkeypatch, tmp_path):
+    calls: list[str] = []
+
+    def shared_normalizer(email: str) -> str:
+        calls.append(email)
+        return "shared@example.com"
+
+    monkeypatch.setattr(auth_module, "normalize_user_email", shared_normalizer, raising=False)
+    store = AuthStore(tmp_path / "auth.sqlite3")
+
+    user = store.bootstrap_admin("Admin@Example.com", "admin-password")
+
+    assert calls
+    assert calls[0] == "Admin@Example.com"
+    assert user.email == "shared@example.com"
+
+
 def test_auth_store_closes_short_lived_connections(monkeypatch, tmp_path):
     real_connect = sqlite3.connect
     opened: list[TrackingConnection] = []

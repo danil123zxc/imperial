@@ -10,6 +10,8 @@ import sqlite3
 import time
 import uuid
 
+from imperial_rag.app.users import normalize_user_email
+
 
 @dataclass(frozen=True)
 class ConversationRecord:
@@ -226,13 +228,6 @@ class ChatHistoryStore:
                 yield conn
         finally:
             conn.close()
-
-
-def normalize_user_email(email: str) -> str:
-    normalized = str(email or "").strip().casefold()
-    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise ValueError("valid email is required")
-    return normalized
 
 
 def _clean_title(title: str) -> str:

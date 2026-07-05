@@ -354,7 +354,7 @@ def _prepare_chat_history_store(settings: Any) -> Any:
 
 
 def _sync_chat_history_state(st: Any, chat_store: Any, user_email: str) -> None:
-    from imperial_rag.app.chat_history import normalize_user_email
+    from imperial_rag.app.users import normalize_user_email
 
     normalized_email = normalize_user_email(user_email)
     previous_email = st.session_state.get(CHAT_HISTORY_USER_KEY)
@@ -403,7 +403,7 @@ def _render_chat_history_sidebar(st: Any, chat_store: Any, user_email: str) -> N
 
 
 def _start_new_chat_state(st: Any, user_email: str) -> None:
-    from imperial_rag.app.chat_history import normalize_user_email
+    from imperial_rag.app.users import normalize_user_email
 
     st.session_state[CHAT_HISTORY_USER_KEY] = normalize_user_email(user_email)
     st.session_state[ACTIVE_CONVERSATION_ID_KEY] = None

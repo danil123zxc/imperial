@@ -11,6 +11,8 @@ import secrets
 import sqlite3
 import time
 
+from imperial_rag.app.users import normalize_user_email
+
 
 APPROVED = "approved"
 PENDING = "pending"
@@ -71,7 +73,7 @@ class AuthStore:
             conn.execute("CREATE INDEX IF NOT EXISTS users_status_idx ON users(status)")
 
     def bootstrap_admin(self, email: str, password: str) -> UserRecord:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         _validate_password(password)
         self.initialize()
         existing = self.get_user(normalized_email)
@@ -121,7 +123,7 @@ class AuthStore:
         return user
 
     def register_user(self, email: str, password: str, full_name: str = "", reason: str = "") -> UserRecord:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         _validate_password(password)
         self.initialize()
         existing = self.get_user(normalized_email)
@@ -157,7 +159,7 @@ class AuthStore:
         return user
 
     def authenticate(self, email: str, password: str) -> AuthenticationResult:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         self.initialize()
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM users WHERE email = ?", (normalized_email,)).fetchone()
@@ -174,8 +176,8 @@ class AuthStore:
         return AuthenticationResult(AuthenticationStatus.PENDING_APPROVAL, None)
 
     def approve_user(self, admin_email: str, target_email: str) -> UserRecord:
-        normalized_admin = _normalize_email(admin_email)
-        normalized_target = _normalize_email(target_email)
+        normalized_admin = normalize_user_email(admin_email)
+        normalized_target = normalize_user_email(target_email)
         self.initialize()
         admin = self.get_user(normalized_admin)
         if admin is None or not admin.is_admin or admin.status != APPROVED:
@@ -199,7 +201,7 @@ class AuthStore:
         return user
 
     def get_user(self, email: str) -> UserRecord | None:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         self.initialize()
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM users WHERE email = ?", (normalized_email,)).fetchone()
@@ -227,13 +229,6 @@ class AuthStore:
                 yield conn
         finally:
             conn.close()
-
-
-def _normalize_email(email: str) -> str:
-    normalized = str(email or "").strip().casefold()
-    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise ValueError("valid email is required")
-    return normalized
 
 
 def _validate_password(password: str) -> None:
