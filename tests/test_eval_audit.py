@@ -301,6 +301,53 @@ def test_eval_contract_validator_rejects_invalid_or_mismatched_lanes(tmp_path):
     } in findings
 
 
+def test_build_eval_audit_report_loads_rows_audit_and_findings(tmp_path):
+    from imperial_rag.evals.audit import build_eval_audit_report
+
+    questions_path = tmp_path / "questions.jsonl"
+    chunks_path = tmp_path / "chunks.jsonl"
+    _write_jsonl(
+        questions_path,
+        [
+            {
+                "id": "imperial-conflict-001",
+                "suite": "imperial_gold_core",
+                "tags": ["warehouse", "conflict"],
+                "question": "Какая версия регламента склада действует?",
+                "expected_behavior": "surface_conflict",
+                "expected_source_hints": ["РЕГЛАМЕНТ СКЛАДА"],
+                "reference_context_ids": [],
+                "reference_answer": "Ответ должен показать конфликт.",
+            }
+        ],
+    )
+    _write_jsonl(
+        chunks_path,
+        [
+            _chunk(
+                "warehouse-v1",
+                relative_path="РЕГЛАМЕНТ СКЛАДА/НОВЫЙ РЕГЛАМЕНТ СКЛАДА.docx",
+                file_name="НОВЫЙ РЕГЛАМЕНТ СКЛАДА.docx",
+                text="Версия регламента склада.",
+            )
+        ],
+    )
+
+    report = build_eval_audit_report(
+        questions_path=questions_path,
+        chunks_path=chunks_path,
+        documents_root=tmp_path / "documents",
+        phoenix_metric_names=["faithfulness", "factual_correctness"],
+    )
+
+    assert report.rows[0]["id"] == "imperial-conflict-001"
+    assert report.audit_rows[0]["lane"] == "conflict_version_behavior"
+    assert {finding["code"] for finding in report.findings} == {
+        "missing_required_reference_context_ids",
+        "unsupported_phoenix_metric",
+    }
+
+
 def test_row_level_quarantine_allows_known_bad_gold_contract(tmp_path):
     from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index, validate_eval_contract
 

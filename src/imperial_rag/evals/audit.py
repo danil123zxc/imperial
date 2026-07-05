@@ -94,6 +94,14 @@ class CorpusIndex:
         return _ranked_by_hint_score(chunks, _normalized_hints(hints))[:limit]
 
 
+@dataclass(frozen=True)
+class EvalAuditReport:
+    rows: list[dict[str, Any]]
+    corpus_index: CorpusIndex
+    audit_rows: list[dict[str, Any]]
+    findings: list[dict[str, Any]]
+
+
 def load_corpus_index(chunks_path: Path) -> CorpusIndex:
     index = CorpusIndex(documents={})
     for chunk in iter_corpus_chunks(chunks_path):
@@ -109,6 +117,20 @@ def load_corpus_index(chunks_path: Path) -> CorpusIndex:
 
 def load_question_rows(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def build_eval_audit_report(
+    *,
+    questions_path: Path,
+    chunks_path: Path,
+    documents_root: Path,
+    phoenix_metric_names: Iterable[str] = (),
+) -> EvalAuditReport:
+    rows = load_question_rows(questions_path)
+    corpus_index = load_corpus_index(chunks_path)
+    audit_rows = audit_eval_rows(rows, corpus_index=corpus_index, documents_root=documents_root)
+    findings = validate_eval_contract(audit_rows, phoenix_metric_names=phoenix_metric_names)
+    return EvalAuditReport(rows=rows, corpus_index=corpus_index, audit_rows=audit_rows, findings=findings)
 
 
 def audit_eval_rows(
