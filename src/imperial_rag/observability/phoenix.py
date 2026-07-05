@@ -6,9 +6,10 @@ import hashlib
 import hmac
 import socket
 import subprocess
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from itertools import islice
 from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
@@ -98,23 +99,23 @@ class OpenInferenceTraceSpan:
         self._span.set_attribute(_OUTPUT_VALUE, _json_value(value))
         self._span.set_attribute(_OUTPUT_MIME_TYPE, _JSON_MIME_TYPE)
 
-    def set_retrieval_documents(self, documents: Sequence[Any]) -> None:
+    def set_retrieval_documents(self, documents: Iterable[Any]) -> None:
         self._set_documents(_RETRIEVAL_DOCUMENTS, documents)
 
-    def set_reranker_input_documents(self, documents: Sequence[Any]) -> None:
+    def set_reranker_input_documents(self, documents: Iterable[Any]) -> None:
         self._set_documents(_RERANKER_INPUT_DOCUMENTS, documents)
 
-    def set_reranker_output_documents(self, documents: Sequence[Any]) -> None:
+    def set_reranker_output_documents(self, documents: Iterable[Any]) -> None:
         self._set_documents(_RERANKER_OUTPUT_DOCUMENTS, documents)
 
-    def set_final_evidence_documents(self, documents: Sequence[Any]) -> None:
+    def set_final_evidence_documents(self, documents: Iterable[Any]) -> None:
         content_chars = 0 if _trace_full_final_evidence() else None
         self._set_documents(_RETRIEVAL_DOCUMENTS, documents, content_chars=content_chars)
 
     def _set_documents(
         self,
         key_prefix: str,
-        documents: Sequence[Any],
+        documents: Iterable[Any],
         *,
         content_chars: int | None = None,
     ) -> None:
@@ -348,13 +349,13 @@ def trace_user_id_from_email(email: str | None) -> str:
 
 
 def retrieval_documents_preview(
-    documents: Sequence[Any],
+    documents: Iterable[Any],
     *,
     limit: int = _RETRIEVAL_PREVIEW_LIMIT,
     content_chars: int = 160,
 ) -> list[dict[str, Any]]:
     previews: list[dict[str, Any]] = []
-    for rank, document in enumerate(list(documents)[:limit]):
+    for rank, document in _iter_limited_documents(documents, limit):
         metadata = dict(getattr(document, "metadata", {}) or {})
         preview = _compact_text(str(getattr(document, "page_content", "")), content_chars)
         previews.append(
@@ -372,20 +373,19 @@ def retrieval_documents_preview(
 
 def openinference_document_attributes(
     key_prefix: str,
-    documents: Sequence[Any],
+    documents: Iterable[Any],
     *,
     document_limit: int | None = None,
     content_chars: int | None = None,
 ) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
-    document_list = list(documents)
-    resolved_document_limit = _trace_document_limit(len(document_list), document_limit)
+    resolved_document_limit = _trace_document_limit(document_limit)
     resolved_content_chars = (
         _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", _TRACE_DOCUMENT_CONTENT_CHARS)
         if content_chars is None
         else content_chars
     )
-    for index, document in enumerate(document_list[:resolved_document_limit]):
+    for index, document in _iter_limited_documents(documents, resolved_document_limit):
         content = _compact_text(str(getattr(document, "page_content", "")), resolved_content_chars)
         metadata = dict(getattr(document, "metadata", {}) or {})
         document_id = _document_id(metadata)
@@ -404,13 +404,18 @@ def openinference_document_attributes(
     return attributes
 
 
-def _trace_document_limit(total_documents: int, explicit_limit: int | None = None) -> int:
+def _iter_limited_documents(documents: Iterable[Any], limit: int | None) -> Iterator[tuple[int, Any]]:
+    iterator = iter(documents)
+    if limit is not None:
+        iterator = islice(iterator, max(limit, 0))
+    for index, document in enumerate(iterator):
+        yield index, document
+
+
+def _trace_document_limit(explicit_limit: int | None = None) -> int | None:
     if explicit_limit is not None:
         return max(explicit_limit, 0)
-    raw_value = os.environ.get("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", "").strip()
-    if not raw_value:
-        return total_documents
-    return _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", total_documents, minimum=0)
+    return _env_optional_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", minimum=0)
 
 
 def _trace_document_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -610,6 +615,19 @@ def _env_flag(name: str, *, default: bool = False) -> bool:
 
 def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     return env_int(name, default, minimum=minimum, invalid="default")
+
+
+def _env_optional_int(name: str, *, minimum: int | None = None) -> int | None:
+    value = _env_text(name)
+    if value is None:
+        return None
+    try:
+        resolved = int(value)
+    except ValueError:
+        return None
+    if minimum is not None:
+        return max(resolved, minimum)
+    return resolved
 
 
 def _env_text(name: str) -> str | None:

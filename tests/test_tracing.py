@@ -500,6 +500,48 @@ def test_trace_document_limits_and_truncation_are_configurable(monkeypatch) -> N
     assert "retrieval.documents.1.document.content" not in recorded_span.attributes
 
 
+def test_trace_document_limit_does_not_materialize_full_sequence() -> None:
+    class CountingDocuments:
+        def __init__(self, documents: list[Any]) -> None:
+            self._documents = documents
+            self.requested_indexes: list[int] = []
+
+        def __len__(self) -> int:
+            return len(self._documents)
+
+        def __getitem__(self, index: int) -> Any:
+            self.requested_indexes.append(index)
+            return self._documents[index]
+
+    documents = [
+        type(
+            "Document",
+            (),
+            {
+                "page_content": f"doc-{index}",
+                "metadata": {"chunk_id": f"chunk-{index}"},
+            },
+        )()
+        for index in range(5)
+    ]
+    attribute_documents = CountingDocuments(documents)
+    preview_documents = CountingDocuments(documents)
+
+    attrs = tracing_module.openinference_document_attributes(
+        "retrieval.documents",
+        attribute_documents,
+        document_limit=2,
+    )
+    preview = tracing_module.retrieval_documents_preview(preview_documents, limit=2)
+
+    assert attrs["retrieval.documents.0.document.id"] == "chunk-0"
+    assert attrs["retrieval.documents.1.document.id"] == "chunk-1"
+    assert "retrieval.documents.2.document.id" not in attrs
+    assert [row["chunk_id"] for row in preview] == ["chunk-0", "chunk-1"]
+    assert attribute_documents.requested_indexes == [0, 1]
+    assert preview_documents.requested_indexes == [0, 1]
+
+
 def test_final_evidence_documents_can_store_full_content_when_enabled(monkeypatch) -> None:
     records: list[TraceRecord] = []
 
