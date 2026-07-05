@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import json
 import math
 import sys
 from collections import Counter
@@ -27,6 +26,7 @@ from imperial_rag.cli import (  # noqa: E402
 from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
 from imperial_rag.jsonl import iter_jsonl_with_line_numbers  # noqa: E402
+from imperial_rag.serialization import stable_json_dumps  # noqa: E402
 
 
 DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
@@ -823,38 +823,49 @@ def _to_phoenix_dataset_rows(
     outputs: list[dict[str, Any]] = []
     metadata: list[dict[str, Any]] = []
     for row_index, example in enumerate(examples):
-        expected = {
-            "expected_behavior": example["expected_behavior"],
-            "expected_source_hints": example.get("expected_source_hints", []),
-        }
-        if example.get("lane"):
-            expected["lane"] = example["lane"]
-        if example.get("reference_answer"):
-            expected["reference_answer"] = example["reference_answer"]
-        if "reference_context_ids" in example:
-            expected["reference_context_ids"] = [
-                str(context_id).strip() for context_id in example.get("reference_context_ids") or []
-            ]
-        if example.get("quarantine_reason"):
-            expected["quarantine_reason"] = str(example["quarantine_reason"]).strip()
-        stable_payload = json.dumps(
-            {"question": example["question"], "expected": expected},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        example_id = str(example.get("id") or hashlib.sha1(stable_payload.encode("utf-8")).hexdigest())
+        expected = _phoenix_dataset_expected_payload(example)
         inputs.append({"question": example["question"]})
         outputs.append(expected)
-        metadata.append({"id": example_id, "row_index": row_index, "source": str(DEFAULT_QUESTIONS_PATH)})
-        if example.get("suite"):
-            metadata[-1]["suite"] = example["suite"]
-        if "tags" in example:
-            metadata[-1]["tags"] = list(example.get("tags") or [])
-        if example.get("lane"):
-            metadata[-1]["lane"] = str(example["lane"])
-        if example.get("quarantine_reason"):
-            metadata[-1]["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+        metadata.append(_phoenix_dataset_metadata(example, row_index=row_index, expected=expected))
     return inputs, outputs, metadata
+
+
+def _phoenix_dataset_expected_payload(example: Mapping[str, Any]) -> dict[str, Any]:
+    expected: dict[str, Any] = {
+        "expected_behavior": example["expected_behavior"],
+        "expected_source_hints": example.get("expected_source_hints", []),
+    }
+    if example.get("lane"):
+        expected["lane"] = example["lane"]
+    if example.get("reference_answer"):
+        expected["reference_answer"] = example["reference_answer"]
+    if "reference_context_ids" in example:
+        expected["reference_context_ids"] = [
+            str(context_id).strip() for context_id in example.get("reference_context_ids") or []
+        ]
+    if example.get("quarantine_reason"):
+        expected["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+    return expected
+
+
+def _phoenix_dataset_metadata(
+    example: Mapping[str, Any],
+    *,
+    row_index: int,
+    expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    stable_payload = stable_json_dumps({"question": example["question"], "expected": expected})
+    example_id = str(example.get("id") or hashlib.sha1(stable_payload.encode("utf-8")).hexdigest())
+    metadata: dict[str, Any] = {"id": example_id, "row_index": row_index, "source": str(DEFAULT_QUESTIONS_PATH)}
+    if example.get("suite"):
+        metadata["suite"] = example["suite"]
+    if "tags" in example:
+        metadata["tags"] = list(example.get("tags") or [])
+    if example.get("lane"):
+        metadata["lane"] = str(example["lane"])
+    if example.get("quarantine_reason"):
+        metadata["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+    return metadata
 
 
 def retrieval_relevance_metrics(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import argparse
 from collections import Counter
+import hashlib
 import importlib
 import json
 import os
@@ -13,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from imperial_rag.serialization import stable_json_dumps
 
 
 PORTABLE_EVAL_CORPUS_PATH = Path("tests/fixtures/eval_corpus_chunks.jsonl")
@@ -945,6 +948,9 @@ def test_phoenix_dataset_rows_preserve_reference_context_ids():
 
     _, outputs, metadata = module._to_phoenix_dataset_rows([example])
     _, _, repeated_metadata = module._to_phoenix_dataset_rows([example])
+    expected_id = hashlib.sha1(
+        stable_json_dumps({"question": example["question"], "expected": outputs[0]}).encode("utf-8")
+    ).hexdigest()
 
     assert outputs == [
         {
@@ -955,6 +961,7 @@ def test_phoenix_dataset_rows_preserve_reference_context_ids():
             "quarantine_reason": "source_document_exists_but_is_not_indexed",
         }
     ]
+    assert metadata[0]["id"] == expected_id
     assert metadata[0]["id"] == repeated_metadata[0]["id"]
 
 
