@@ -3,19 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any, Mapping, Sequence
 
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-SRC_DIR = SCRIPT_DIR.parent / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+_ensure_src_on_path(__file__)
 
 from imperial_rag.cli import load_project_environment as _load_project_env  # noqa: E402
 from imperial_rag.evals.ragas_runner import (  # noqa: E402

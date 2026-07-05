@@ -55,6 +55,19 @@ def test_ingestion_promotion_script_imports_and_defines_main():
     assert hasattr(module, "main")
 
 
+def test_script_bootstrap_adds_repo_src_once(monkeypatch):
+    module = _load_script("scripts/_bootstrap.py", "script_bootstrap")
+    src_path = str(Path("src").resolve())
+    sys_path = [path for path in sys.path if path != src_path]
+    monkeypatch.setattr(sys, "path", sys_path)
+
+    module.ensure_src_on_path(Path("scripts/query.py"))
+    module.ensure_src_on_path(Path("scripts/run_phoenix_eval.py"))
+
+    assert sys.path[0] == src_path
+    assert sys.path.count(src_path) == 1
+
+
 def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/ingest.py").read_text(encoding="utf-8")
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")

@@ -1,20 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
 
-_ensure_src_on_path()
+_ensure_src_on_path(__file__)
 
 from imperial_rag.cli import (  # noqa: E402
     build_settings as _build_settings,
@@ -29,7 +23,7 @@ from imperial_rag.cli import (  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> None:
-    _ensure_src_on_path()
+    _ensure_src_on_path(__file__)
     parser = argparse.ArgumentParser(description="Ask a question against the Imperial RAG runtime.")
     parser.add_argument("question")
     parser.add_argument("--workspace-root", type=Path, help="Workspace root containing the processed RAG state.")

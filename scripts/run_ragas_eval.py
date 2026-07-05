@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
 
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-
-
-_ensure_src_on_path()
+_ensure_src_on_path(__file__)
 
 from imperial_rag.evals import ragas_runner as _ragas_runner  # noqa: E402
 from imperial_rag.evals.ragas_runner import *  # noqa: E402,F403

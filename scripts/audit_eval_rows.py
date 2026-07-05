@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from collections import Counter
 from pathlib import Path
 
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+_ensure_src_on_path(__file__)
 
 from imperial_rag.evals.audit import (  # noqa: E402
     build_eval_audit_report,
