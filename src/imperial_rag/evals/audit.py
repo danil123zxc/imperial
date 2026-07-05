@@ -65,6 +65,42 @@ class CorpusDocument:
     chunk_count: int = 0
 
 
+@dataclass(frozen=True)
+class _SourceHintMatcher:
+    normalized_hints: tuple[str, ...]
+
+    @classmethod
+    def from_hints(cls, hints: Iterable[Any]) -> _SourceHintMatcher:
+        normalized_hints: list[str] = []
+        for hint in hints:
+            raw_hint = str(hint).strip()
+            if not raw_hint:
+                continue
+            normalized = normalize_text(raw_hint)
+            if normalized:
+                normalized_hints.append(normalized)
+        return cls(tuple(normalized_hints))
+
+    def __bool__(self) -> bool:
+        return bool(self.normalized_hints)
+
+    def score_text(self, normalized_value: str) -> int:
+        return sum(1 for hint in self.normalized_hints if hint in normalized_value)
+
+    def score_path(self, path: Path) -> int:
+        return self.score_text(normalize_text(str(path)))
+
+    def rank_chunks(self, chunks: Iterable[CorpusChunk], *, require_match: bool = False) -> list[CorpusChunk]:
+        scored: list[tuple[tuple[int, str, str], CorpusChunk]] = []
+        for chunk in chunks:
+            score = self.score_text(chunk.normalized_search_text)
+            if require_match and score <= 0:
+                continue
+            sort_key = (-score, chunk.relative_path or chunk.file_name, chunk.reference_id)
+            scored.append((sort_key, chunk))
+        return [chunk for _sort_key, chunk in sorted(scored, key=lambda item: item[0])]
+
+
 @dataclass
 class CorpusIndex:
     documents: dict[str, CorpusDocument]
@@ -76,21 +112,18 @@ class CorpusIndex:
     def resolve_chunk(self, context_id: str) -> CorpusChunk | None:
         return self.chunks.resolve(context_id)
 
-    def candidate_chunks(self, hints: Iterable[str], *, limit: int = 8) -> list[CorpusChunk]:
-        normalized_hints = _normalized_hints(hints)
-        if not normalized_hints:
+    def candidate_chunks(self, hint_matcher: _SourceHintMatcher, *, limit: int = 8) -> list[CorpusChunk]:
+        if not hint_matcher:
             return []
-        matched = [
-            chunk
-            for chunk in self.chunks.chunks_by_reference_id.values()
-            if _normalized_match_score(chunk.normalized_search_text, normalized_hints) > 0
-        ]
-        return _ranked_by_hint_score(matched, normalized_hints)[:limit]
+        chunks = self.chunks.chunks_by_reference_id.values()
+        return hint_matcher.rank_chunks(chunks, require_match=True)[:limit]
 
-    def chunks_for_files(self, file_ids: Iterable[str], hints: Iterable[str], *, limit: int = 8) -> list[CorpusChunk]:
+    def chunks_for_files(
+        self, file_ids: Iterable[str], hint_matcher: _SourceHintMatcher, *, limit: int = 8
+    ) -> list[CorpusChunk]:
         wanted = {str(file_id or "").strip() for file_id in file_ids}
         chunks = [chunk for chunk in self.chunks.chunks_by_reference_id.values() if chunk.file_id in wanted]
-        return _ranked_by_hint_score(chunks, _normalized_hints(hints))[:limit]
+        return hint_matcher.rank_chunks(chunks)[:limit]
 
 
 @dataclass(frozen=True)
@@ -328,7 +361,7 @@ def _audit_row(
 ) -> dict[str, Any]:
     row_id = str(row.get("id") or "").strip()
     behavior = str(row.get("expected_behavior") or "").strip()
-    hints = [str(hint).strip() for hint in row.get("expected_source_hints") or [] if str(hint).strip()]
+    hint_matcher = _SourceHintMatcher.from_hints(row.get("expected_source_hints") or [])
     current_ids = clean_string_list(row.get("reference_context_ids"), allow_scalar=True)
     resolved_chunks: list[CorpusChunk] = []
     file_only_ids: list[str] = []
@@ -343,15 +376,15 @@ def _audit_row(
             unresolved_ids.append(context_id)
     resolved_chunk_ids = unique_nonempty(chunk.reference_id for chunk in resolved_chunks)
     if file_only_ids:
-        candidate_chunks = corpus_index.chunks_for_files(file_only_ids, hints)
+        candidate_chunks = corpus_index.chunks_for_files(file_only_ids, hint_matcher)
     else:
-        candidate_chunks = corpus_index.candidate_chunks(hints)
-    source_path = _best_source_path(hints, source_paths)
-    candidate_ids = _candidate_file_ids(candidate_chunks, hints=hints, source_path=source_path)
+        candidate_chunks = corpus_index.candidate_chunks(hint_matcher)
+    source_path = _best_source_path(hint_matcher, source_paths)
+    candidate_ids = _candidate_file_ids(candidate_chunks, hint_matcher=hint_matcher, source_path=source_path)
     lane = _lane_for(row)
     answer_quality = _reference_answer_quality(str(row.get("reference_answer") or ""))
     hints_quality = _expected_source_hints_quality(
-        hints,
+        hint_matcher,
         resolved_chunks=resolved_chunks,
         candidate_ids=candidate_ids,
         source_path=source_path,
@@ -502,20 +535,17 @@ def _row_action(
 
 
 def _expected_source_hints_quality(
-    hints: list[str],
+    hint_matcher: _SourceHintMatcher,
     *,
     resolved_chunks: list[CorpusChunk],
     candidate_ids: list[str],
     source_path: Path | None,
 ) -> str:
-    normalized_hints = _normalized_hints(hints)
-    if not normalized_hints:
+    if not hint_matcher:
         return "not_required"
     resolved_text = " ".join(chunk.normalized_search_text for chunk in resolved_chunks)
-    resolved_score = _normalized_match_score(resolved_text, normalized_hints) if resolved_text else 0
-    source_score = (
-        _normalized_match_score(normalize_text(str(source_path)), normalized_hints) if source_path is not None else 0
-    )
+    resolved_score = hint_matcher.score_text(resolved_text) if resolved_text else 0
+    source_score = hint_matcher.score_path(source_path) if source_path is not None else 0
     if source_score > resolved_score:
         return "source_path_only"
     if resolved_score > 0:
@@ -555,13 +585,12 @@ def _is_ignored_source_path(path: Path) -> bool:
     return name.startswith("~$") or name.startswith(".~lock.") or name in {".DS_Store", "Thumbs.db"}
 
 
-def _best_source_path(hints: list[str], source_paths: list[Path]) -> Path | None:
-    normalized_hints = _normalized_hints(hints)
-    if not normalized_hints:
+def _best_source_path(hint_matcher: _SourceHintMatcher, source_paths: list[Path]) -> Path | None:
+    if not hint_matcher:
         return None
     scored: list[tuple[int, str, Path]] = []
     for path in source_paths:
-        score = _normalized_match_score(normalize_text(str(path)), normalized_hints)
+        score = hint_matcher.score_path(path)
         if score > 0:
             scored.append((score, str(path), path))
     if not scored:
@@ -573,17 +602,14 @@ def _best_source_path(hints: list[str], source_paths: list[Path]) -> Path | None
 def _candidate_file_ids(
     candidate_chunks: list[CorpusChunk],
     *,
-    hints: list[str],
+    hint_matcher: _SourceHintMatcher,
     source_path: Path | None,
 ) -> list[str]:
     candidate_ids = unique_nonempty(chunk.file_id for chunk in candidate_chunks)
-    normalized_hints = _normalized_hints(hints)
-    if not candidate_ids or source_path is None or not normalized_hints:
+    if not candidate_ids or source_path is None or not hint_matcher:
         return candidate_ids
-    source_score = _normalized_match_score(normalize_text(str(source_path)), normalized_hints)
-    candidate_score = max(
-        _normalized_match_score(chunk.normalized_search_text, normalized_hints) for chunk in candidate_chunks
-    )
+    source_score = hint_matcher.score_path(source_path)
+    candidate_score = max(hint_matcher.score_text(chunk.normalized_search_text) for chunk in candidate_chunks)
     if source_score > candidate_score:
         return []
     return candidate_ids
@@ -612,25 +638,6 @@ def _chunk_locator(chunk: CorpusChunk) -> dict[str, Any]:
         "source_locator": chunk.source_locator,
         "evidence_quote": " ".join(chunk.text.split())[:300],
     }
-
-
-def _normalized_hints(hints: Iterable[str]) -> list[str]:
-    return [normalize_text(hint) for hint in hints if normalize_text(hint)]
-
-
-def _normalized_match_score(normalized_value: str, normalized_hints: list[str]) -> int:
-    return sum(1 for hint in normalized_hints if hint in normalized_value)
-
-
-def _ranked_by_hint_score(chunks: list[CorpusChunk], normalized_hints: list[str]) -> list[CorpusChunk]:
-    return sorted(
-        chunks,
-        key=lambda chunk: (
-            -_normalized_match_score(chunk.normalized_search_text, normalized_hints),
-            chunk.relative_path or chunk.file_name,
-            chunk.reference_id,
-        ),
-    )
 
 
 def _markdown_value(value: Any) -> str:
