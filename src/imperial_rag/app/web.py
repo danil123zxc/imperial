@@ -16,6 +16,7 @@ PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
 AUTH_SESSION_EMAIL_KEY = "auth_user_email"
 CHAT_HISTORY_USER_KEY = "chat_history_user_email"
 ACTIVE_CONVERSATION_ID_KEY = "active_conversation_id"
+PENDING_CHAT_TURN_KEY = "pending_chat_turn"
 QUERY_FAILURE_TEXT = "Something went wrong while answering. Check local logs for details."
 INCOMPLETE_ANSWER_TEXT = "The previous answer was not saved. Ask again to regenerate it."
 FILE_PREVIEW_CHAR_LIMIT = 12_000
@@ -34,6 +35,18 @@ class RetrievedFileGroup:
     download_mime: str
     preview_text: str
     can_download: bool
+
+
+@dataclass(frozen=True)
+class ChatInputContext:
+    conversation_id: str | None
+    phoenix_session_id: str
+
+
+@dataclass(frozen=True)
+class CompletedChatTurn:
+    message: dict[str, Any]
+    message_index: int
 
 
 def build_status_summary(total_files: int, indexed_files: int, failed_files: int) -> str:
@@ -219,7 +232,7 @@ def main() -> None:
     st.title(APP_TITLE)
     settings = Settings()
     from imperial_rag.observability import configure_observability
-    from imperial_rag.observability.phoenix import configure_phoenix_tracing, phoenix_trace_context
+    from imperial_rag.observability.phoenix import configure_phoenix_tracing
 
     configure_observability(settings)
     configure_phoenix_tracing(settings)
@@ -231,6 +244,8 @@ def main() -> None:
         return
     chat_store = _prepare_chat_history_store(settings)
     _sync_chat_history_state(st, chat_store, current_user.email)
+    _complete_pending_chat_turn(st, chat_store, settings, current_user.email)
+    chat_input_context = _capture_chat_input_context(st)
 
     with st.sidebar:
         _render_chat_history_sidebar(st, chat_store, current_user.email)
@@ -239,6 +254,7 @@ def main() -> None:
             st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
             st.session_state.pop(CHAT_HISTORY_USER_KEY, None)
             st.session_state.pop(ACTIVE_CONVERSATION_ID_KEY, None)
+            st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
             st.session_state.pop("messages", None)
             st.session_state.pop("phoenix_trace_session_id", None)
             _rerun(st)
@@ -258,70 +274,29 @@ def main() -> None:
     if not question:
         return
 
-    conversation = _ensure_active_conversation(st, chat_store, current_user.email, question)
-    user_message = {"role": "user", "content": question}
-    st.session_state.messages.append(user_message)
-    chat_store.add_message(current_user.email, conversation.id, "user", question)
-    with st.chat_message("user"):
-        st.write(question)
-
-    from imperial_rag.observability.phoenix import trace_user_id_from_email
-
-    user_hash = trace_user_id_from_email(current_user.email)
-    phoenix_session_id = st.session_state.phoenix_trace_session_id
-    started_at = perf_counter()
-    try:
-        with phoenix_trace_context(
-            phoenix_session_id,
-            user_id=user_hash,
-            metadata={"entrypoint": "streamlit"},
-            tags=["imperial-rag", "streamlit"],
-        ):
-            result = query_runtime(settings, question)
-    except Exception as exc:
-        from imperial_rag.observability import log_failure
-
-        log_failure(
-            "web_query",
-            exc,
-            component="streamlit",
-            duration_ms=_duration_ms(started_at),
-            phoenix_session_id=phoenix_session_id,
-            session_id=phoenix_session_id,
-            user_hash=user_hash,
-        )
-        assistant_message = _build_query_failure_message(exc)
-        message_index = _persist_chat_message(
-            st,
-            chat_store,
-            current_user.email,
-            conversation.id,
-            assistant_message,
-        )
-        _render_chat_message(st, assistant_message, message_index, settings)
-        return
-    from imperial_rag.observability import log_event
-
-    assistant_message = _build_assistant_message(result, settings)
-    message_index = _persist_chat_message(
+    conversation = _ensure_submission_conversation(
+        st,
+        chat_store,
+        current_user.email,
+        question,
+        chat_input_context,
+    )
+    target_is_active = _is_active_conversation(st, conversation.id)
+    user_message = _queue_pending_chat_turn(
         st,
         chat_store,
         current_user.email,
         conversation.id,
-        assistant_message,
+        question,
+        conversation.phoenix_session_id,
+        append_to_session=target_is_active,
     )
-    log_event(
-        "imperial_rag.web_query",
-        operation="web_query",
-        status="success",
-        component="streamlit",
-        duration_ms=_duration_ms(started_at),
-        phoenix_session_id=phoenix_session_id,
-        session_id=phoenix_session_id,
-        user_hash=user_hash,
-        **_query_log_fields(result),
-    )
-    _render_chat_message(st, assistant_message, message_index, settings)
+    if target_is_active:
+        with st.chat_message("user"):
+            st.write(user_message["content"])
+    completed_turn = _complete_pending_chat_turn(st, chat_store, settings, current_user.email)
+    if completed_turn is not None:
+        _render_chat_message(st, completed_turn.message, completed_turn.message_index, settings)
 
 
 def _prepare_auth_store(settings: Any) -> Any:
@@ -422,22 +397,217 @@ def _load_conversation_state(st: Any, chat_store: Any, user_email: str, conversa
     st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id or str(uuid.uuid4())
 
 
-def _ensure_active_conversation(st: Any, chat_store: Any, user_email: str, first_question: str) -> Any:
-    active_conversation_id = st.session_state.get(ACTIVE_CONVERSATION_ID_KEY)
-    if active_conversation_id:
-        conversation = chat_store.get_conversation(user_email, str(active_conversation_id))
+def _capture_chat_input_context(st: Any) -> ChatInputContext:
+    return ChatInputContext(
+        conversation_id=_active_conversation_id(st),
+        phoenix_session_id=str(st.session_state.get("phoenix_trace_session_id") or uuid.uuid4()),
+    )
+
+
+def _ensure_submission_conversation(
+    st: Any,
+    chat_store: Any,
+    user_email: str,
+    first_question: str,
+    chat_input_context: ChatInputContext,
+) -> Any:
+    original_conversation_id = chat_input_context.conversation_id
+    current_active_id = _active_conversation_id(st)
+    if original_conversation_id:
+        conversation = chat_store.get_conversation(user_email, original_conversation_id)
         if conversation is not None:
             return conversation
 
-    phoenix_session_id = st.session_state.get("phoenix_trace_session_id") or str(uuid.uuid4())
     conversation = chat_store.create_conversation(
         user_email,
         title=_chat_title_from_question(first_question),
-        phoenix_session_id=phoenix_session_id,
+        phoenix_session_id=chat_input_context.phoenix_session_id,
     )
-    st.session_state[ACTIVE_CONVERSATION_ID_KEY] = conversation.id
-    st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id
+    if current_active_id == original_conversation_id:
+        st.session_state[ACTIVE_CONVERSATION_ID_KEY] = conversation.id
+        st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id
     return conversation
+
+
+def _active_conversation_id(st: Any) -> str | None:
+    value = st.session_state.get(ACTIVE_CONVERSATION_ID_KEY)
+    return str(value) if value else None
+
+
+def _is_active_conversation(st: Any, conversation_id: str) -> bool:
+    return _active_conversation_id(st) == str(conversation_id)
+
+
+def _queue_pending_chat_turn(
+    st: Any,
+    chat_store: Any,
+    user_email: str,
+    conversation_id: str,
+    question: str,
+    phoenix_session_id: str,
+    *,
+    append_to_session: bool,
+) -> dict[str, Any]:
+    from imperial_rag.app.users import normalize_user_email
+
+    user_message = {"role": "user", "content": question}
+    saved_message = chat_store.add_message(user_email, conversation_id, "user", question)
+    st.session_state[PENDING_CHAT_TURN_KEY] = {
+        "user_email": normalize_user_email(user_email),
+        "conversation_id": str(conversation_id),
+        "question": str(question),
+        "phoenix_session_id": str(phoenix_session_id or uuid.uuid4()),
+        "user_message_id": saved_message.id,
+    }
+    if append_to_session:
+        st.session_state.messages.append(user_message)
+    return user_message
+
+
+def _complete_pending_chat_turn(
+    st: Any,
+    chat_store: Any,
+    settings: Any,
+    user_email: str,
+) -> CompletedChatTurn | None:
+    pending_turn = _pending_chat_turn_for_user(st, user_email)
+    if pending_turn is None:
+        return None
+
+    conversation_id = str(pending_turn["conversation_id"])
+    conversation = chat_store.get_conversation(user_email, conversation_id)
+    if conversation is None:
+        st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+        return None
+
+    user_message_id = _pending_user_message_id(pending_turn)
+    if _has_assistant_after_user_message(chat_store, user_email, conversation_id, user_message_id):
+        st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+        if _is_active_conversation(st, conversation_id):
+            _load_conversation_state(st, chat_store, user_email, conversation_id)
+        return None
+
+    append_to_session = _is_active_conversation(st, conversation_id)
+    if append_to_session:
+        st.session_state.messages = _chat_messages_from_history(
+            chat_store,
+            user_email,
+            conversation_id,
+            include_incomplete=False,
+        )
+        st.session_state.phoenix_trace_session_id = conversation.phoenix_session_id or str(
+            pending_turn["phoenix_session_id"]
+        )
+
+    from imperial_rag.observability.phoenix import phoenix_trace_context, trace_user_id_from_email
+
+    user_hash = trace_user_id_from_email(user_email)
+    phoenix_session_id = str(pending_turn["phoenix_session_id"])
+    started_at = perf_counter()
+    try:
+        with phoenix_trace_context(
+            phoenix_session_id,
+            user_id=user_hash,
+            metadata={"entrypoint": "streamlit"},
+            tags=["imperial-rag", "streamlit"],
+        ):
+            result = query_runtime(settings, str(pending_turn["question"]))
+    except Exception as exc:
+        from imperial_rag.observability import log_failure
+
+        log_failure(
+            "web_query",
+            exc,
+            component="streamlit",
+            duration_ms=_duration_ms(started_at),
+            phoenix_session_id=phoenix_session_id,
+            session_id=phoenix_session_id,
+            user_hash=user_hash,
+        )
+        assistant_message = _build_query_failure_message(exc)
+        message_index = _persist_chat_message(
+            st,
+            chat_store,
+            user_email,
+            conversation_id,
+            assistant_message,
+            append_to_session=append_to_session,
+        )
+        st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+        if append_to_session:
+            return CompletedChatTurn(message=assistant_message, message_index=message_index)
+        return None
+
+    from imperial_rag.observability import log_event
+
+    assistant_message = _build_assistant_message(result, settings)
+    message_index = _persist_chat_message(
+        st,
+        chat_store,
+        user_email,
+        conversation_id,
+        assistant_message,
+        append_to_session=append_to_session,
+    )
+    st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+    log_event(
+        "imperial_rag.web_query",
+        operation="web_query",
+        status="success",
+        component="streamlit",
+        duration_ms=_duration_ms(started_at),
+        phoenix_session_id=phoenix_session_id,
+        session_id=phoenix_session_id,
+        user_hash=user_hash,
+        **_query_log_fields(result),
+    )
+    if append_to_session:
+        return CompletedChatTurn(message=assistant_message, message_index=message_index)
+    return None
+
+
+def _pending_chat_turn_for_user(st: Any, user_email: str) -> dict[str, Any] | None:
+    from imperial_rag.app.users import normalize_user_email
+
+    pending_turn = st.session_state.get(PENDING_CHAT_TURN_KEY)
+    if not isinstance(pending_turn, dict):
+        return None
+    if pending_turn.get("user_email") != normalize_user_email(user_email):
+        st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+        return None
+    for key in ("conversation_id", "question", "phoenix_session_id"):
+        if not pending_turn.get(key):
+            st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+            return None
+    return pending_turn
+
+
+def _pending_user_message_id(pending_turn: dict[str, Any]) -> int | None:
+    raw_message_id = pending_turn.get("user_message_id")
+    if raw_message_id is None:
+        return None
+    try:
+        return int(raw_message_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_assistant_after_user_message(
+    chat_store: Any,
+    user_email: str,
+    conversation_id: str,
+    user_message_id: int | None,
+) -> bool:
+    if user_message_id is None:
+        return False
+    seen_user_message = False
+    for message in chat_store.list_messages(user_email, conversation_id):
+        if message.id == user_message_id:
+            seen_user_message = True
+            continue
+        if seen_user_message and message.role == "assistant":
+            return True
+    return False
 
 
 def _conversation_button_label(conversation: Any) -> str:
@@ -591,9 +761,15 @@ def _build_incomplete_assistant_message() -> dict[str, Any]:
     }
 
 
-def _chat_messages_from_history(chat_store: Any, user_email: str, conversation_id: str) -> list[dict[str, Any]]:
+def _chat_messages_from_history(
+    chat_store: Any,
+    user_email: str,
+    conversation_id: str,
+    *,
+    include_incomplete: bool = True,
+) -> list[dict[str, Any]]:
     messages = [message.to_chat_message() for message in chat_store.list_messages(user_email, conversation_id)]
-    if messages and messages[-1].get("role") == "user":
+    if include_incomplete and messages and messages[-1].get("role") == "user":
         return [*messages, _build_incomplete_assistant_message()]
     return messages
 
@@ -604,6 +780,8 @@ def _persist_chat_message(
     user_email: str,
     conversation_id: str,
     message: dict[str, Any],
+    *,
+    append_to_session: bool = True,
 ) -> int:
     chat_store.add_message(
         user_email,
@@ -612,6 +790,8 @@ def _persist_chat_message(
         message["content"],
         payload=_chat_message_payload(message),
     )
+    if not append_to_session:
+        return -1
     st.session_state.messages.append(message)
     return len(st.session_state.messages) - 1
 
