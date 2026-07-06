@@ -141,6 +141,17 @@ def test_chat_history_store_lists_messages_with_one_read_connection(monkeypatch,
     assert all(connection.closed for connection in opened)
 
 
+def test_chat_history_store_claims_assistant_response_once(tmp_path):
+    db_path = tmp_path / "chat_history.sqlite3"
+    first_store = ChatHistoryStore(db_path)
+    second_store = ChatHistoryStore(db_path)
+    conversation = first_store.create_conversation("user@example.com", "Question")
+    user_message = first_store.add_message("user@example.com", conversation.id, "user", "Hello")
+
+    assert first_store.claim_assistant_response("user@example.com", conversation.id, user_message.id)
+    assert not second_store.claim_assistant_response("user@example.com", conversation.id, user_message.id)
+
+
 def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):
     store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
     older = store.create_conversation("user@example.com", "Older chat", phoenix_session_id="trace-old")
@@ -235,6 +246,46 @@ def test_pending_chat_turn_finishes_user_only_saved_turn(monkeypatch, tmp_path):
         "Pending question",
         "Recovered answer.",
     ]
+
+
+def test_pending_chat_turn_skips_query_when_user_message_is_already_claimed(monkeypatch, tmp_path):
+    store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
+    conversation = store.create_conversation("user@example.com", "Pending chat", phoenix_session_id="trace-pending")
+    user_message = store.add_message("user@example.com", conversation.id, "user", "Pending question")
+    streamlit = SimpleNamespace(
+        session_state=SessionState(
+            active_conversation_id=conversation.id,
+            phoenix_trace_session_id="trace-pending",
+            messages=[{"role": "user", "content": "Pending question"}],
+            pending_chat_turn={
+                "user_email": "user@example.com",
+                "conversation_id": conversation.id,
+                "question": "Pending question",
+                "phoenix_session_id": "trace-pending",
+                "user_message_id": user_message.id,
+            },
+        )
+    )
+    store.claim_assistant_response = lambda *args, **kwargs: False
+    calls = []
+    monkeypatch.setattr(
+        web_app,
+        "query_runtime",
+        lambda settings, question: calls.append(question)
+        or {"answer": "Duplicate answer.", "sources": [], "retrieval": {"final_evidence": 0}},
+    )
+
+    completed = web_app._complete_pending_chat_turn(
+        streamlit,
+        store,
+        SimpleNamespace(documents_root=tmp_path / "documents", extraction_root=tmp_path / "extracted"),
+        "user@example.com",
+    )
+
+    assert completed is None
+    assert calls == []
+    assert web_app.PENDING_CHAT_TURN_KEY not in streamlit.session_state
+    assert [message.role for message in store.list_messages("user@example.com", conversation.id)] == ["user"]
 
 
 def test_build_assistant_message_preserves_debug_retrieval_payload(tmp_path):

@@ -481,11 +481,18 @@ def _complete_pending_chat_turn(
         return None
 
     user_message_id = _pending_user_message_id(pending_turn)
-    if _has_assistant_after_user_message(chat_store, user_email, conversation_id, user_message_id):
-        st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
-        if _is_active_conversation(st, conversation_id):
-            _load_conversation_state(st, chat_store, user_email, conversation_id)
-        return None
+    if user_message_id is not None:
+        claimed_response = chat_store.claim_assistant_response(user_email, conversation_id, user_message_id)
+        if not claimed_response:
+            st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
+            if _is_active_conversation(st, conversation_id) and _has_assistant_after_user_message(
+                chat_store,
+                user_email,
+                conversation_id,
+                user_message_id,
+            ):
+                _load_conversation_state(st, chat_store, user_email, conversation_id)
+            return None
 
     append_to_session = _is_active_conversation(st, conversation_id)
     if append_to_session:

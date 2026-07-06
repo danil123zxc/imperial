@@ -12,6 +12,8 @@ import uuid
 
 from imperial_rag.app.users import normalize_user_email
 
+ASSISTANT_RESPONSE_CLAIM_TTL_NS = 30 * 60 * 1_000_000_000
+
 
 @dataclass(frozen=True)
 class ConversationRecord:
@@ -86,6 +88,17 @@ class ChatHistoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS messages_conversation_sequence_idx
                 ON messages(conversation_id, sequence ASC, id ASC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assistant_response_claims (
+                    user_message_id INTEGER PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    claimed_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                )
                 """
             )
         self._initialized = True
@@ -187,6 +200,56 @@ class ChatHistoryStore:
             raise RuntimeError("failed to append chat message")
         return _row_to_message(row)
 
+    def claim_assistant_response(
+        self,
+        user_email: str,
+        conversation_id: str,
+        user_message_id: int,
+        *,
+        stale_after_ns: int = ASSISTANT_RESPONSE_CLAIM_TTL_NS,
+    ) -> bool:
+        normalized_email = normalize_user_email(user_email)
+        self.initialize()
+        now = time.time_ns()
+        with self._connection() as conn:
+            conversation = self._find_conversation(conn, normalized_email, conversation_id)
+            if conversation is None:
+                exists = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+                if exists is not None:
+                    raise PermissionError("conversation does not belong to this user")
+                raise KeyError(conversation_id)
+            user_message = conn.execute(
+                """
+                SELECT id, role, sequence FROM messages
+                WHERE id = ? AND conversation_id = ?
+                """,
+                (user_message_id, conversation_id),
+            ).fetchone()
+            if user_message is None or str(user_message["role"]) != "user":
+                return False
+            if self._assistant_after_user_exists(conn, conversation_id, user_message):
+                return False
+            if stale_after_ns > 0:
+                conn.execute(
+                    """
+                    DELETE FROM assistant_response_claims
+                    WHERE user_message_id = ? AND claimed_at < ?
+                    """,
+                    (user_message_id, now - stale_after_ns),
+                )
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO assistant_response_claims(
+                    user_message_id,
+                    conversation_id,
+                    claimed_at
+                )
+                VALUES (?, ?, ?)
+                """,
+                (user_message_id, conversation_id, now),
+            )
+        return cursor.rowcount == 1
+
     def list_messages(self, user_email: str, conversation_id: str) -> list[MessageRecord]:
         normalized_email = normalize_user_email(user_email)
         self.initialize()
@@ -219,6 +282,32 @@ class ChatHistoryStore:
             "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
             (conversation_id, user_email),
         ).fetchone()
+
+    def _assistant_after_user_exists(
+        self,
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        user_message: sqlite3.Row,
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1 FROM messages
+            WHERE conversation_id = ?
+              AND role = 'assistant'
+              AND (
+                  sequence > ?
+                  OR (sequence = ? AND id > ?)
+              )
+            LIMIT 1
+            """,
+            (
+                conversation_id,
+                int(user_message["sequence"]),
+                int(user_message["sequence"]),
+                int(user_message["id"]),
+            ),
+        ).fetchone()
+        return row is not None
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
