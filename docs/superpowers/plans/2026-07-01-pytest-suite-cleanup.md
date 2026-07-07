@@ -946,4 +946,3 @@ git commit -m "test: add opt-in live qwen ocr coverage"
 ```
 
 Do not stage `.DS_Store`, untracked council reports/transcripts, generated corpus state, secrets, or unrelated planning docs.
-

@@ -1,6 +1,6 @@
 # LLM Council Transcript — Imperial RAG Evals Pipeline
 
-**Date:** 2026-06-23  
+**Date:** 2026-06-23
 **Question:** What improvements to the Imperial RAG evals pipeline would make it more robust, comprehensive, and aligned with RAGAS best practices?
 
 ---

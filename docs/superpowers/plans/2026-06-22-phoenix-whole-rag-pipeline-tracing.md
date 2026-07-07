@@ -200,4 +200,3 @@ Confirm split merge/RRF diagnostics and candidate-doc gating behave exactly as d
 - Do not enable framework auto-instrumentation by default.
 - Do not dump all candidate text into `output.value`.
 - Do not change retrieval ranking, reranking, answer generation, or citation validation behavior as part of tracing.
-
