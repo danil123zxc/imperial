@@ -1,21 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+_ensure_src_on_path(__file__)
 
 from imperial_rag.evals.audit import (  # noqa: E402
-    audit_eval_rows,
-    load_corpus_index,
-    load_question_rows,
-    validate_eval_contract,
+    build_eval_audit_report,
     write_jsonl as write_audit_jsonl,
 )
 from imperial_rag.evals.golden import (  # noqa: E402
@@ -44,17 +39,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true", help="Exit non-zero when eval contract errors are present.")
     args = parser.parse_args(argv)
 
-    rows = load_question_rows(args.questions_path)
-    corpus_index = load_corpus_index(args.chunks_path)
-    audit_rows = audit_eval_rows(rows, corpus_index=corpus_index, documents_root=args.documents_root)
-    findings = validate_eval_contract(audit_rows)
-    packets = build_evidence_packets(rows, corpus=load_evidence_corpus(args.chunks_path), audit_rows=audit_rows)
+    report = build_eval_audit_report(
+        questions_path=args.questions_path,
+        chunks_path=args.chunks_path,
+        documents_root=args.documents_root,
+    )
+    findings = report.findings
+    packets = build_evidence_packets(
+        report.rows,
+        corpus=load_evidence_corpus(args.chunks_path),
+        audit_rows=report.audit_rows,
+    )
 
     write_jsonl(args.output_path, packets)
     if args.markdown_path:
         write_markdown_packets(args.markdown_path, packets)
     if args.audit_path:
-        write_audit_jsonl(args.audit_path, audit_rows)
+        write_audit_jsonl(args.audit_path, report.audit_rows)
     if args.findings_path:
         write_audit_jsonl(args.findings_path, findings)
 

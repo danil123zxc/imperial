@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from time import perf_counter
 from urllib import request
 
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+_ensure_src_on_path(__file__)
 
 import run_phoenix_eval as phoenix_eval
+from imperial_rag.cli import (  # noqa: E402
+    configure_observability as _configure_observability,
+    duration_ms as _duration_ms,
+    log_failure as _log_failure,
+)
 
 
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-all-evals"
@@ -19,7 +22,7 @@ PHOENIX_START_COMMAND = "docker compose up -d phoenix"
 
 
 def main(argv: list[str] | None = None) -> None:
-    phoenix_eval._ensure_src_on_path()
+    _ensure_src_on_path(__file__)
     parser = argparse.ArgumentParser(
         description="Run all currently runnable Imperial RAG evals and store one Phoenix experiment."
     )
@@ -75,12 +78,6 @@ def _assert_phoenix_reachable(endpoint: str, timeout: float = 2.0) -> None:
         ) from exc
 
 
-def _configure_observability(settings) -> None:
-    from imperial_rag.cli import configure_observability
-
-    configure_observability(settings)
-
-
 def _log_completion(started_at: float, *, example_count: int, ragas_metrics: str) -> None:
     from imperial_rag.observability import log_event
 
@@ -94,18 +91,6 @@ def _log_completion(started_at: float, *, example_count: int, ragas_metrics: str
         phoenix_mode=True,
         ragas_metrics=ragas_metrics,
     )
-
-
-def _log_failure(operation: str, exc: BaseException, started_at: float, **fields) -> None:
-    from imperial_rag.cli import log_failure
-
-    log_failure(operation, exc, started_at, **fields)
-
-
-def _duration_ms(started_at: float) -> int:
-    from imperial_rag.cli import duration_ms
-
-    return duration_ms(started_at)
 
 
 if __name__ == "__main__":

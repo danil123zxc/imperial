@@ -29,6 +29,8 @@ __all__ = [
     "evaluation_dataset_from_rows",
     "faithfulness_row_from_run_output",
     "parse_ragas_metric_names",
+    "preferred_retrieved_context_ids",
+    "retrieved_chunk_ids_from_output",
     "retrieved_context_ids_from_output",
     "retrieved_contexts_from_output",
     "score_answer_relevancy_for_phoenix",

@@ -5,6 +5,24 @@ import importlib.util
 from pathlib import Path
 
 
+def test_load_question_rows_reuses_shared_jsonl_reader(tmp_path, monkeypatch):
+    from imperial_rag.evals import audit as audit_module
+
+    questions_path = tmp_path / "questions.jsonl"
+    _write_jsonl(questions_path, [{"id": "from-file"}])
+    expected_rows = [{"id": "from-shared-helper"}]
+    captured: dict[str, Path] = {}
+
+    def fake_read_jsonl(path: Path):
+        captured["path"] = path
+        return expected_rows
+
+    monkeypatch.setattr(audit_module, "read_jsonl", fake_read_jsonl, raising=False)
+
+    assert audit_module.load_question_rows(questions_path) == expected_rows
+    assert captured["path"] == questions_path
+
+
 def test_audit_detects_gold_id_that_points_away_from_existing_source(tmp_path):
     from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index
 
@@ -48,18 +66,36 @@ def test_audit_detects_gold_id_that_points_away_from_existing_source(tmp_path):
             "expected_behavior": "cite_answer",
             "lane": "indexed_answerability",
             "current_reference_context_ids": ["timesheets"],
-            "resolved_indexed_file_ids": ["timesheets"],
+            "resolved_chunk_ids": [],
+            "file_only_reference_context_ids": ["timesheets"],
+            "unresolved_reference_context_ids": [],
+            "resolved_indexed_file_ids": [],
+            "candidate_chunk_ids": ["timesheets:chunk-0"],
             "candidate_file_ids": [],
+            "candidate_locators": [
+                {
+                    "chunk_id": "timesheets:chunk-0",
+                    "citation_id": "ПРИКАЗ О табелях и мотивациях.pdf#chunk-0",
+                    "file_id": "timesheets",
+                    "relative_path": "11. РЕГЛАМЕНТЫ/ПРИКАЗ О табелях и мотивациях.pdf",
+                    "file_name": "ПРИКАЗ О табелях и мотивациях.pdf",
+                    "chunk_index": 0,
+                    "page_number": "",
+                    "section_heading": "",
+                    "source_locator": "",
+                    "evidence_quote": (
+                        "Правила оформления табелей и мотивационных листов при отсутствии на рабочем месте."
+                    ),
+                },
+            ],
             "source_path": "11. РЕГЛАМЕНТЫ/1. БЛАНКИ/Акт об отсутствии на рабочем месте.doc",
-            "indexed_status": "source_exists_not_indexed",
+            "indexed_status": "file_only_gold_ids",
             "reference_answer_quality": "evidence_shaped",
             "expected_source_hints_quality": "source_path_only",
-            "action": "needs_ingestion",
-            "quarantine_reason": "gold_ids_do_not_match_hints",
-            "backlog_category": "missing_indexed_source",
-            "notes": [
-                "reference_context_ids resolve, but the resolved indexed files do not contain the expected source hints"
-            ],
+            "action": "rewrite",
+            "quarantine_reason": "file_only_reference_context_ids",
+            "backlog_category": "chunk_id_migration",
+            "notes": ["reference_context_ids resolve only as file IDs; migrate them to chunk IDs"],
         }
     ]
 
@@ -176,6 +212,53 @@ def test_eval_contract_validator_reports_missing_gold_ids_and_unsupported_metric
     } in findings
 
 
+def test_eval_contract_validator_rejects_file_only_references(tmp_path):
+    from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index, validate_eval_contract
+
+    chunks_path = tmp_path / "chunks.jsonl"
+    _write_jsonl(
+        chunks_path,
+        [
+            _chunk(
+                "file-a",
+                chunk_id="chunk-a",
+                citation_id="source.docx#body:chunk-0",
+                relative_path="documents/source.docx",
+                file_name="source.docx",
+                text="Регламент источника.",
+            )
+        ],
+    )
+
+    audit = audit_eval_rows(
+        [
+            {
+                "id": "imperial-cite-001",
+                "suite": "imperial_gold_core",
+                "tags": ["returns"],
+                "question": "Как оформить возврат?",
+                "expected_behavior": "cite_answer",
+                "expected_source_hints": ["Регламент источника"],
+                "reference_context_ids": ["file-a"],
+                "reference_answer": "Возврат оформляется по регламенту.",
+            }
+        ],
+        corpus_index=load_corpus_index(chunks_path),
+        documents_root=tmp_path / "documents",
+    )
+
+    assert audit[0]["resolved_chunk_ids"] == []
+    assert audit[0]["file_only_reference_context_ids"] == ["file-a"]
+    assert audit[0]["candidate_chunk_ids"] == ["chunk-a"]
+    findings = validate_eval_contract(audit)
+    assert {
+        "severity": "error",
+        "row_id": "imperial-cite-001",
+        "code": "file_only_reference_context_ids",
+        "message": "reference_context_ids must identify chunks, not files",
+    } in findings
+
+
 def test_eval_contract_validator_rejects_invalid_or_mismatched_lanes(tmp_path):
     from imperial_rag.evals.audit import audit_eval_rows, load_corpus_index, validate_eval_contract
 
@@ -234,6 +317,53 @@ def test_eval_contract_validator_rejects_invalid_or_mismatched_lanes(tmp_path):
         "code": "invalid_lane",
         "message": "Invalid eval lane 'not_a_lane'",
     } in findings
+
+
+def test_build_eval_audit_report_loads_rows_audit_and_findings(tmp_path):
+    from imperial_rag.evals.audit import build_eval_audit_report
+
+    questions_path = tmp_path / "questions.jsonl"
+    chunks_path = tmp_path / "chunks.jsonl"
+    _write_jsonl(
+        questions_path,
+        [
+            {
+                "id": "imperial-conflict-001",
+                "suite": "imperial_gold_core",
+                "tags": ["warehouse", "conflict"],
+                "question": "Какая версия регламента склада действует?",
+                "expected_behavior": "surface_conflict",
+                "expected_source_hints": ["РЕГЛАМЕНТ СКЛАДА"],
+                "reference_context_ids": [],
+                "reference_answer": "Ответ должен показать конфликт.",
+            }
+        ],
+    )
+    _write_jsonl(
+        chunks_path,
+        [
+            _chunk(
+                "warehouse-v1",
+                relative_path="РЕГЛАМЕНТ СКЛАДА/НОВЫЙ РЕГЛАМЕНТ СКЛАДА.docx",
+                file_name="НОВЫЙ РЕГЛАМЕНТ СКЛАДА.docx",
+                text="Версия регламента склада.",
+            )
+        ],
+    )
+
+    report = build_eval_audit_report(
+        questions_path=questions_path,
+        chunks_path=chunks_path,
+        documents_root=tmp_path / "documents",
+        phoenix_metric_names=["faithfulness", "factual_correctness"],
+    )
+
+    assert report.rows[0]["id"] == "imperial-conflict-001"
+    assert report.audit_rows[0]["lane"] == "conflict_version_behavior"
+    assert {finding["code"] for finding in report.findings} == {
+        "missing_required_reference_context_ids",
+        "unsupported_phoenix_metric",
+    }
 
 
 def test_row_level_quarantine_allows_known_bad_gold_contract(tmp_path):
@@ -345,11 +475,21 @@ def test_audit_cli_writes_artifacts_and_findings(tmp_path):
     }
 
 
-def _chunk(file_id: str, *, relative_path: str, file_name: str, text: str) -> dict[str, object]:
+def _chunk(
+    file_id: str,
+    *,
+    relative_path: str,
+    file_name: str,
+    text: str,
+    chunk_id: str | None = None,
+    citation_id: str | None = None,
+) -> dict[str, object]:
     return {
         "page_content": text,
         "metadata": {
             "file_id": file_id,
+            "chunk_id": chunk_id or f"{file_id}:chunk-0",
+            "citation_id": citation_id or f"{file_name}#chunk-0",
             "relative_path": relative_path,
             "file_name": file_name,
             "file_path": f"/private/documents/{relative_path}",

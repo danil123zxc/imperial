@@ -8,6 +8,13 @@ The `loop-constraints` skill must read this file at the start of every loop run.
 - Report-only loops may update `STATE.md` and `loop-run-log.md`.
 - Do not implement fixes, rewrite files, run formatters, stage changes, commit, push, open PRs, or restart services unless the human explicitly asks in the active thread.
 
+## Run Hygiene
+
+- Before every manual loop run, capture `git status --short`, the current branch, and the current SHA.
+- If `STATE.md` or `loop-run-log.md` are already modified, treat them as in-flight state, preserve existing entries, and report that the loop state files were dirty before the run.
+- After every loop run, capture `git status --short` again and inspect the diff. L1 success requires changes to stay within the allowed write paths and pass the privacy review.
+- If same-day `daily-triage` entries already exist, rerun only on explicit human request; otherwise wait for a later-day cadence window. Early-exit when there is no new signal.
+
 ## Push & Merge
 
 - Never auto-merge.

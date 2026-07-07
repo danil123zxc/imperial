@@ -4,8 +4,9 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any
+
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
 
 REQUIRED_SPANS: dict[str, str] = {
@@ -59,7 +60,7 @@ RETRIEVAL_DOCUMENT_SPANS = (
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    _ensure_src_on_path()
+    _ensure_src_on_path(__file__)
 
     from imperial_rag.config import Settings
     from imperial_rag.env import load_project_env
@@ -327,14 +328,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser.parse_args(argv)
-
-
-def _ensure_src_on_path() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    src_path = str(repo_root / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

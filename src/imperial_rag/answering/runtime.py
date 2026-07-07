@@ -34,6 +34,7 @@ class QueryDependencies:
     vector_search: Any
     keyword_search: Any
     chat_model: SupportsInvoke
+    retrieval_settings: RetrievalSettings
 
 
 class _NoopVectorSearch:
@@ -110,6 +111,7 @@ def build_query_dependencies(settings: Settings) -> QueryDependencies:
         vector_search=vector_search,
         keyword_search=ElasticsearchKeywordIndex(settings),
         chat_model=_DeferredProviderChatModel(),
+        retrieval_settings=retrieval_settings,
     )
 
 
@@ -181,7 +183,7 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
                     retrieval_service_cache = RetrievalService(
                         vector_search=deps.vector_search,
                         keyword_search=deps.keyword_search,
-                        settings=RetrievalSettings.from_env(),
+                        settings=deps.retrieval_settings,
                     )
         return retrieval_service_cache
 

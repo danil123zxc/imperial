@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from imperial_rag.ingestion.ledger import write_corpus_ledger
+from imperial_rag.jsonl import iter_jsonl, write_jsonl
 from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_lineage_attributes, trace_pipeline_step
+from imperial_rag.serialization import stable_json_dumps
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,9 @@ class IngestionSummary:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def counts(self) -> dict[str, int]:
+        return {"files": self.total_files, "chunks": self.chunk_count}
 
 
 def _new_ingest_run_id() -> str:
@@ -563,7 +568,7 @@ def _index_version(
         "vector_indexed": vector_indexed,
         "embedding_model": embedding_model,
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    encoded = stable_json_dumps(payload)
     return f"index_sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
@@ -599,7 +604,7 @@ def _chunk_signature(chunk: Any) -> str:
         "page_content": str(getattr(chunk, "page_content", "")),
         "metadata": dict(getattr(chunk, "metadata", {}) or {}),
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return stable_json_dumps(payload)
 
 
 def _chunk_content_hash(chunk: Any) -> str:
@@ -697,28 +702,22 @@ def _write_extracted_artifact(extraction_root: Path, record: Any, result: Any) -
 
 def _write_chunks(extraction_root: Path, chunks: list[Any]) -> None:
     chunks_path = _safe_artifact_path(extraction_root, "chunks.jsonl")
-    with chunks_path.open("w", encoding="utf-8") as handle:
-        for chunk in chunks:
-            handle.write(
-                json.dumps(
-                    {
-                        "page_content": str(chunk.page_content),
-                        "metadata": dict(chunk.metadata),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+    write_jsonl(
+        chunks_path,
+        (
+            {
+                "page_content": str(chunk.page_content),
+                "metadata": dict(chunk.metadata),
+            }
+            for chunk in chunks
+        ),
+    )
 
 
 def _read_existing_chunks(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
+    return list(iter_jsonl(path))
 
 
 def _write_old_to_new_id_map(extraction_root: Path, old_rows: list[dict[str, Any]], chunks: list[Any]) -> None:

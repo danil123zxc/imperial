@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Council — Imperial RAG Eval (Quality-Only Plan) · 2026-06-25</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1c2430; --muted:#5b6675; --line:#e4e8ee;
+    --accent:#3a5bd9; --warn:#b4451f; --good:#1f7a4d; --clash:#9a6b00;
+    --contrarian:#c2410c; --first:#7c3aed; --expand:#0e7490; --outsider:#be185d; --exec:#15803d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.55;font-size:15px}
+  .wrap{max-width:860px;margin:0 auto;padding:40px 22px 80px}
+  header.top{margin-bottom:26px}
+  .kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  h1{font-size:25px;margin:6px 0 4px;line-height:1.25}
+  .sub{color:var(--muted);font-size:14px}
+  .q{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:10px;padding:16px 18px;margin:18px 0 26px}
+  .q b{display:block;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+  .verdict{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:8px 26px 22px;box-shadow:0 1px 3px rgba(20,30,50,.05)}
+  .verdict h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+    margin:22px 0 8px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .verdict h2:first-child{margin-top:14px}
+  .verdict ul{margin:0;padding-left:18px}
+  .verdict li{margin:7px 0}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;vertical-align:middle}
+  .pill.rec{background:#eaf1ff;color:var(--accent)}
+  .pill.first{background:#fff3e6;color:var(--warn)}
+  .callout{border-radius:10px;padding:13px 15px;margin:12px 0}
+  .callout.rec{background:#eef4ff;border:1px solid #cfe0ff}
+  .callout.first{background:#fff6ec;border:1px solid #ffd9b3}
+  .callout.kill{background:#fdeeee;border:1px solid #f4c9c9}
+  .callout p{margin:6px 0}
+  /* agreement visual */
+  .matrix{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:26px 0}
+  .matrix h3{margin:0 0 4px;font-size:15px}
+  .matrix .note{color:var(--muted);font-size:13px;margin:0 0 16px}
+  .spectrum{position:relative;height:64px;margin:26px 8px 8px}
+  .axis{position:absolute;top:32px;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--good) 0%,#e4e8ee 50%,var(--clash) 100%);border-radius:2px}
+  .endlabel{position:absolute;top:46px;font-size:11px;color:var(--muted);font-weight:600}
+  .endlabel.l{left:0}.endlabel.r{right:0;text-align:right}
+  .node{position:absolute;top:18px;transform:translateX(-50%);text-align:center;width:120px}
+  .dot{width:13px;height:13px;border-radius:50%;margin:0 auto 5px;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.12)}
+  .node span{font-size:11px;font-weight:600;display:block;line-height:1.2}
+  .agreebar{display:flex;align-items:center;gap:10px;margin:14px 0 0;font-size:13px}
+  .agreebar .lab{width:160px;color:var(--muted);flex:none}
+  .agreebar .track{flex:1;height:9px;background:#eef1f5;border-radius:6px;overflow:hidden}
+  .agreebar .fill{height:100%;border-radius:6px}
+  details{background:var(--card);border:1px solid var(--line);border-radius:11px;margin:11px 0;overflow:hidden}
+  summary{cursor:pointer;padding:13px 16px;font-weight:600;font-size:14px;list-style:none;display:flex;align-items:center;gap:9px}
+  summary::-webkit-details-marker{display:none}
+  summary .tag{width:9px;height:9px;border-radius:50%;flex:none}
+  summary .who{flex:1}
+  summary .chev{color:var(--muted);font-size:12px;transition:transform .15s}
+  details[open] summary .chev{transform:rotate(90deg)}
+  .body{padding:2px 18px 16px;color:#2b3543;font-size:14px;border-top:1px solid var(--line)}
+  .body .stance{font-size:12px;color:var(--muted);font-style:italic;margin:10px 0 8px}
+  .secttitle{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;margin:30px 0 4px}
+  footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="kicker">LLM Council · Verdict</div>
+    <h1>Should the Imperial RAG eval be hardened "quality-only, no new questions"?</h1>
+    <div class="sub">2026-06-25 · 5 advisors · 5 peer reviews · 1 chairman · follow-up to the 2026-06-23 council</div>
+  </header>
+
+  <div class="q">
+    <b>The question</b>
+    Imperial RAG is a Russian-language RAG over a company's internal operational docs (warehouse/HR/logistics/pricing; 103 docs) where wrong answers have operational consequences. The eval is 37 questions (27 cite / 5 conflict / 5 refuse) plus a 20-row Russian judge-calibration set. The user locked a <strong>quality-only</strong> plan — rewrite vague reference answers into concrete facts (W1), backfill gold context IDs (W2), turn on <code>factual_correctness</code> (W3), rebuild calibration quality (W4), tighten source hints (W5), add a validation lint (W6) — and explicitly <strong>no new questions</strong>. Is that the right call, and what's the biggest flaw?
+  </div>
+
+  <div class="verdict">
+    <h2>Verdict <span class="pill rec">Do W1–W6, but change two things</span></h2>
+    <p style="margin:14px 0 4px"><strong>"Quality-only, no new questions" is the wrong strategy — and the vote was unanimous.</strong> All five advisors and all five reviewers rejected the constraint. The six workstreams are real work and none is wasted, but they sharpen <em>precision</em> when the eval's actual problem is <em>bias</em>: a 73%-happy-path sample, polished, becomes a <strong>false green</strong> — a dashboard that reads "validated" while the operationally dangerous cases were never tested.</p>
+
+    <div class="callout kill">
+      <p><strong>🔩 The load-bearing catch (every reviewer, no advisor):</strong> the judge itself is unvalidated. <code>factual_correctness</code> (W3) is only as trustworthy as a judge calibrated on <em>trivial polar-opposite negations</em> — and such a judge can't be trusted to grade the harder cases everyone wants to add. <strong>W4 is the precondition, not the fourth step.</strong></p>
+    </div>
+
+    <h2>Two changes that make the plan trustworthy</h2>
+    <div class="callout rec">
+      <p><strong>1 · Reorder around the judge — W4 first.</strong> Rebuild the calibration set with hard/borderline negatives, then validate it against a small human-graded held-out set (measure agreement). Keep <code>factual_correctness</code> (W3) <strong>OFF</strong> until that lands. Correct order: <strong>W4 → validate judge → W3 → harder cases.</strong></p>
+      <p><strong>2 · Crack the lock exactly once — in-domain near-miss refusals.</strong> Not a question factory (the "1 fact = 3 questions" math fails for conflict/refuse, which need engineered conditions). Add ~5–8 plausible, in-domain questions that <em>should refuse</em> (e.g. "return window for [scenario not in corpus]?"). Reframe the rule as <strong>"no new document <em>families</em>,"</strong> not "no new questions."</p>
+    </div>
+    <div class="callout first">
+      <p><span class="pill first">Do first</span> &nbsp;<strong>Rebuild + human-validate the judge (W4).</strong> Hand-grade ~15 answers and check whether the calibrated judge agrees with the humans. Everything downstream produces a number only as trustworthy as that judge.</p>
+      <p style="margin-top:8px"><strong>Chairman's 30-minute aside:</strong> first check whether <strong>production query logs</strong> exist. A bias problem is solved by sampling the real question distribution — if logs exist, they outrank every invented question here.</p>
+    </div>
+  </div>
+
+  <!-- AGREEMENT / DISAGREEMENT VISUAL -->
+  <div class="matrix">
+    <h3>Where the advisors landed</h3>
+    <p class="note">All five rejected "quality-only." They split only on <em>how far</em> to push past the lock.</p>
+    <div class="spectrum">
+      <div class="axis"></div>
+      <div class="endlabel l">Surgical · un-lock one thing</div>
+      <div class="endlabel r">Expansive · don't stop at 37</div>
+      <div class="node" style="left:8%"><div class="dot" style="background:var(--contrarian)"></div><span>Contrarian</span></div>
+      <div class="node" style="left:26%"><div class="dot" style="background:var(--first)"></div><span>First Principles</span></div>
+      <div class="node" style="left:40%"><div class="dot" style="background:var(--outsider)"></div><span>Outsider</span></div>
+      <div class="node" style="left:58%"><div class="dot" style="background:var(--exec)"></div><span>Executor*</span></div>
+      <div class="node" style="left:90%"><div class="dot" style="background:var(--expand)"></div><span>Expansionist</span></div>
+    </div>
+    <p class="note" style="margin-top:18px">*The Executor accepted the lock and optimized execution — rated <strong>strongest on doability</strong> yet <strong>biggest blind spot</strong> by the reviewers (solving the wrong problem flawlessly).</p>
+
+    <div class="agreebar"><div class="lab">Reject "no new questions"</div><div class="track"><div class="fill" style="width:100%;background:var(--good)"></div></div><div>5 / 5</div></div>
+    <div class="agreebar"><div class="lab">Gate W3 on W1+W4</div><div class="track"><div class="fill" style="width:100%;background:var(--good)"></div></div><div>unanimous</div></div>
+    <div class="agreebar"><div class="lab">Judge is unvalidated (peer round)</div><div class="track"><div class="fill" style="width:100%;background:var(--warn)"></div></div><div>5 / 5 reviewers</div></div>
+    <div class="agreebar"><div class="lab">Add in-domain near-miss refusals</div><div class="track"><div class="fill" style="width:80%;background:var(--clash)"></div></div><div>4 / 5</div></div>
+    <div class="agreebar"><div class="lab">Scale to a question factory</div><div class="track"><div class="fill" style="width:20%;background:#b9c2cf"></div></div><div>1 / 5 (reviewers rejected)</div></div>
+  </div>
+
+  <!-- ADVISOR DETAIL -->
+  <div class="secttitle">Advisor responses</div>
+
+  <details>
+    <summary><span class="tag" style="background:var(--contrarian)"></span><span class="who">The Contrarian</span><span class="chev">▶</span></summary>
+    <div class="body">
+      <p class="stance">Looks for the fatal flaw.</p>
+      <p>Fixing measurement quality of 37 questions only makes the eval <em>accurate about a tiny, biased sample</em> — and a sharper instrument on the happy path manufactures false confidence. The worst call is W3+W1 together: <code>factual_correctness</code> graded only where the system already answers measures paraphrasing of <em>handed</em> facts, never the harmful mode — confidently answering an in-domain question it should refuse, or the wrong-entity approver. Cheapest high-value add: the in-domain near-miss refusal ("return window for X" where X isn't covered) — the only test separating a careful RAG from a confident liar. Do W1–W6, but un-lock that one.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary><span class="tag" style="background:var(--first)"></span><span class="who">The First Principles Thinker</span><span class="chev">▶</span></summary>
+    <div class="body">
+      <p class="stance">Rebuilds the problem from scratch.</p>
+      <p>An eval is a <em>sampling estimator of production risk</em>; trustworthiness is dominated by coverage of the failure distribution, not polish per probe. W1–W6 are all fidelity-per-question; none touch coverage — so the constraint optimizes precision while the dominant error is bias → a <strong>false green</strong>, worse than a smoke test. W4 adds hard negatives to <em>calibration</em> while the plan refuses to give the <em>system</em> hard cases — incoherent. Reframe: not "no new questions" but <strong>"no new document families"</strong>; adversarial variants of the 27 covered docs cost almost nothing.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary><span class="tag" style="background:var(--outsider)"></span><span class="who">The Outsider</span><span class="chev">▶</span></summary>
+    <div class="body">
+      <p class="stance">Fresh eyes, zero context.</p>
+      <p>Treating "no new questions" as a virtue is the bug. Polishing 37 is like a restaurant that failed inspection for having 3 dishes deciding to "make those 3 dishes really good" — the dishes were never the problem, the menu is. The 6 fixes make the eval more rigorous about the same happy paths, not more <em>representative</em>. ~10 document families have zero signal. And W1 is the expensive, judgment-heavy part — once you're reading every doc closely, 2 new questions per family is nearly free.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary><span class="tag" style="background:var(--expand)"></span><span class="who">The Expansionist</span><span class="chev">▶</span></summary>
+    <div class="body">
+      <p class="stance">Hunts the upside everyone's missing.</p>
+      <p><strong>W1 is question-generation in disguise.</strong> Mining each gradeable fact is 90% of the cost of writing new questions: one fact = one reference answer <em>or</em> three questions. Same labor, 3× the eval. The corpus is a moat; the eval should compound with it, not certify a frozen 37-row snapshot. W1+W2 build the infrastructure to auto-generate and grade at scale; W4's calibrated judge is reusable across an unbounded set. "Trustworthy" and "37 questions" cannot coexist.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary><span class="tag" style="background:var(--exec)"></span><span class="who">The Executor</span><span class="chev">▶</span></summary>
+    <div class="body">
+      <p class="stance">Only asks: what do you do Monday morning?</p>
+      <p>W1 is most of the value and it's blocked on an unstated step — you can't rewrite references from your armchair; each needs you to open the doc and grab the exact fact, which is the <em>same motion</em> as W2 and W5. So do <strong>one pass per question</strong>, not six workstreams. Monday: take the 12 rows that already have context IDs and write answer + ID + hint together. Biggest risk: turning on W3 before W1/W4 → a dashboard that lies. <strong>Gate W3.</strong> Build W6's lint first so it polices the rewrite.</p>
+    </div>
+  </details>
+
+  <details>
+    <summary><span class="tag" style="background:#8a94a3"></span><span class="who">Peer-review highlights</span><span class="chev">▶</span></summary>
+    <div class="body">
+      <p><em>Anonymized A–E for review; revealed here.</em></p>
+      <ul>
+        <li><strong>Strongest:</strong> the Contrarian (3 votes) and First Principles (1) for the most surgical, buildable critique; the Executor (1) for executability.</li>
+        <li><strong>Biggest blind spot:</strong> the Executor (3 votes) — accepts the lock and optimizes the wrong objective; the Expansionist (1) — the "1 fact = 3 questions" math fails for conflict/refuse, which need engineered conditions; the Outsider (1) — diagnosis without an execution path.</li>
+        <li><strong>Universal miss (all 5 reviewers):</strong> the 20-row judge-calibration set is load-bearing and unvalidated — a judge tuned on trivial negations can't grade the hard cases everyone proposes, so <strong>W4 must precede W3</strong>. Two reviewers added: anchor coverage to <strong>production query logs</strong>, not invented variants.</li>
+      </ul>
+    </div>
+  </details>
+
+  <footer>
+    Counciled 2026-06-25 · Imperial RAG eval dataset (<code>evals/questions.jsonl</code>, <code>evals/russian_judge_calibration.jsonl</code>) · quality-only hardening plan W1–W6 · methodology: Karpathy's LLM Council (5 advisors → anonymized peer review → chairman synthesis). Full transcript: <code>docs/council-transcript-2026-06-25.md</code>.
+  </footer>
+</div>
+</body>
+</html>

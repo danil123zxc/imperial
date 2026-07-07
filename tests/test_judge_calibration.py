@@ -9,6 +9,23 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_calibration_rows_reuse_shared_jsonl_reader(tmp_path, monkeypatch):
+    module = _load_calibration_script()
+    calibration_path = tmp_path / "calibration.jsonl"
+    _write_jsonl(calibration_path, [{"id": "from-file"}])
+    expected_rows = [{"id": "from-shared-helper"}]
+    captured: dict[str, Path] = {}
+
+    def fake_read_jsonl(path: Path):
+        captured["path"] = path
+        return expected_rows
+
+    monkeypatch.setattr(module, "read_jsonl", fake_read_jsonl, raising=False)
+
+    assert module.load_calibration_rows(calibration_path) == expected_rows
+    assert captured["path"] == calibration_path
+
+
 def test_calibration_rows_prepare_factual_correctness_inputs():
     module = _load_calibration_script()
 

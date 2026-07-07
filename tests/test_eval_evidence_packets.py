@@ -42,7 +42,7 @@ def test_build_evidence_packets_resolves_gold_context_chunks(tmp_path):
                 "question": "Как оформить возврат?",
                 "expected_behavior": "cite_answer",
                 "expected_source_hints": ["returns"],
-                "reference_context_ids": ["return-reg"],
+                "reference_context_ids": ["return-reg:body::1:def"],
                 "reference_answer": "Возврат оформляется по регламенту.",
             }
         ],
@@ -69,20 +69,11 @@ def test_build_evidence_packets_resolves_gold_context_chunks(tmp_path):
             "expected_source_hints": ["returns"],
             "current_reference_answer": "Возврат оформляется по регламенту.",
             "candidate_reference_answer": "",
-            "current_reference_context_ids": ["return-reg"],
-            "resolved_reference_context_ids": ["return-reg"],
+            "current_reference_context_ids": ["return-reg:body::1:def"],
+            "resolved_reference_context_ids": ["return-reg:body::1:def"],
             "unresolved_reference_context_ids": [],
             "gold_status": "ready_for_review",
             "evidence": [
-                {
-                    "file_id": "return-reg",
-                    "chunk_id": "return-reg:body::0:abc",
-                    "citation_id": "returns.docx#body:chunk-0",
-                    "relative_path": "11/returns.docx",
-                    "file_name": "returns.docx",
-                    "chunk_index": 0,
-                    "text": "Срок принятия решения о возврате товара компанией - 7 календарных дней.",
-                },
                 {
                     "file_id": "return-reg",
                     "chunk_id": "return-reg:body::1:def",
@@ -124,7 +115,7 @@ def test_build_evidence_packets_keeps_refusal_rows_without_evidence(tmp_path):
                 "reference_answer": "В документах Imperial нет ответа.",
             }
         ],
-        corpus=EvidenceCorpus(chunks_by_file_id={}),
+        corpus=EvidenceCorpus(),
     )
 
     assert packets[0]["gold_status"] == "refusal_boundary"
@@ -153,7 +144,7 @@ def test_build_evidence_packets_marks_quarantined_rows_non_promotable(tmp_path):
                 "quarantine_reason": "source_document_exists_but_is_not_indexed",
             }
         ],
-        corpus=EvidenceCorpus(chunks_by_file_id={}),
+        corpus=EvidenceCorpus(),
     )
 
     assert packets[0]["gold_status"] == "quarantined"
@@ -180,7 +171,7 @@ def test_generate_eval_evidence_packets_cli_writes_review_artifacts(tmp_path):
                 "question": "Как оформить возврат?",
                 "expected_behavior": "cite_answer",
                 "expected_source_hints": ["returns"],
-                "reference_context_ids": ["return-reg"],
+                "reference_context_ids": ["return-reg:body::0:abc"],
                 "reference_answer": "Возврат оформляется по регламенту.",
             }
         ],

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Any
+
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
 
 EVENT_POLICY_NAME = "imperial-rag-events-delete-30d"
@@ -14,7 +15,7 @@ EVAL_TEMPLATE_NAME = "imperial-rag-eval-summaries-template-v1"
 
 
 def main(argv: list[str] | None = None) -> None:
-    _ensure_src_on_path()
+    _ensure_src_on_path(__file__)
     parser = argparse.ArgumentParser(description="Set up local Elasticsearch data streams for Imperial event logs.")
     parser.add_argument("--workspace-root", type=Path)
     args = parser.parse_args(argv)
@@ -161,14 +162,6 @@ def _event_mappings() -> dict[str, dict[str, Any]]:
     mappings.update({field: {"type": "long"} for field in long_fields})
     mappings.update({field: {"type": "boolean"} for field in boolean_fields})
     return mappings
-
-
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-
 
 if __name__ == "__main__":
     main()

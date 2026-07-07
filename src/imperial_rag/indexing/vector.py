@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from typing import Any, Protocol, Sequence
 
@@ -17,6 +16,7 @@ from imperial_rag.integrations.dashscope import (
     ensure_vector_metadata_compatible,
     write_vector_metadata,
 )
+from imperial_rag.serialization import stable_json_dumps
 
 
 _QDRANT_ID_NAMESPACE = uuid.UUID("2f931f90-f82a-4ef6-8a49-310e6c4bd8d7")
@@ -48,16 +48,12 @@ def stable_chunk_id(document: Document) -> str:
         if key in metadata and metadata[key] is not None
     }
     if not citation_metadata:
-        citation_metadata = {"metadata_sha1": hashlib.sha1(_json_dumps(metadata).encode("utf-8")).hexdigest()}
+        citation_metadata = {"metadata_sha1": hashlib.sha1(stable_json_dumps(metadata).encode("utf-8")).hexdigest()}
     payload = {
         "citation": citation_metadata,
         "content_sha256": hashlib.sha256(document.page_content.encode("utf-8")).hexdigest(),
     }
-    return str(uuid.uuid5(_QDRANT_ID_NAMESPACE, _json_dumps(payload)))
-
-
-def _json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return str(uuid.uuid5(_QDRANT_ID_NAMESPACE, stable_json_dumps(payload)))
 
 
 def create_qdrant_vector_store(settings: Settings, embeddings: Embeddings | None = None) -> QdrantVectorStore:

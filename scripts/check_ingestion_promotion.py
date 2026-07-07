@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
+
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 
 
 def main(argv: list[str] | None = None) -> None:
-    _ensure_src_on_path()
+    _ensure_src_on_path(__file__)
     parser = argparse.ArgumentParser(description="Check whether a shadow ingestion run can be promoted.")
     parser.add_argument("--baseline-root", type=Path, required=True)
     parser.add_argument("--shadow-root", type=Path, required=True)
@@ -37,14 +38,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     if not result.passed:
         raise SystemExit(1)
-
-
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
-
 
 if __name__ == "__main__":
     main()

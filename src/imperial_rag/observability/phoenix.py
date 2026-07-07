@@ -6,9 +6,11 @@ import hashlib
 import hmac
 import socket
 import subprocess
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
+from itertools import islice
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -18,6 +20,7 @@ from openinference.semconv.trace import DocumentAttributes, RerankerAttributes
 from phoenix.otel import SpanAttributes
 
 from imperial_rag.config import Settings, env_bool, env_int
+from imperial_rag.serialization import stable_json_dumps
 
 
 _CONFIGURED_PROVIDER: object | None = None
@@ -43,6 +46,8 @@ _TRACE_DOCUMENT_CONTENT_CHARS = 800
 _TRACE_SCHEMA_VERSION_VALUE = "rag-v2"
 _TEXT_MIME_TYPE = "text/plain"
 _JSON_MIME_TYPE = "application/json"
+_INPUT_ATTRIBUTE_KEYS = (_INPUT_VALUE, _INPUT_MIME_TYPE)
+_OUTPUT_ATTRIBUTE_KEYS = (_OUTPUT_VALUE, _OUTPUT_MIME_TYPE)
 _IMPERIAL_PHASE = "imperial.phase"
 _IMPERIAL_STEP = "imperial.step"
 _IMPERIAL_TRACE_SCHEMA_VERSION = "imperial.trace_schema_version"
@@ -51,7 +56,7 @@ _TRACE_MODE_COMPACT = "compact"
 _TRACE_MODE_RETRIEVAL_DEBUG = "retrieval_debug"
 _TRACE_LINEAGE_ATTRIBUTES: ContextVar[Mapping[str, Any]] = ContextVar(
     "imperial_rag_trace_lineage_attributes",
-    default={},
+    default=MappingProxyType({}),
 )
 _TRACE_METADATA_ALLOWLIST = frozenset(
     {
@@ -92,26 +97,26 @@ class OpenInferenceTraceSpan:
     def set_output(self, value: Any) -> None:
         if _hide_outputs():
             return
-        self._span.set_attribute(_OUTPUT_VALUE, _json_value(value))
+        self._span.set_attribute(_OUTPUT_VALUE, stable_json_dumps(value))
         self._span.set_attribute(_OUTPUT_MIME_TYPE, _JSON_MIME_TYPE)
 
-    def set_retrieval_documents(self, documents: Sequence[Any]) -> None:
+    def set_retrieval_documents(self, documents: Iterable[Any]) -> None:
         self._set_documents(_RETRIEVAL_DOCUMENTS, documents)
 
-    def set_reranker_input_documents(self, documents: Sequence[Any]) -> None:
+    def set_reranker_input_documents(self, documents: Iterable[Any]) -> None:
         self._set_documents(_RERANKER_INPUT_DOCUMENTS, documents)
 
-    def set_reranker_output_documents(self, documents: Sequence[Any]) -> None:
+    def set_reranker_output_documents(self, documents: Iterable[Any]) -> None:
         self._set_documents(_RERANKER_OUTPUT_DOCUMENTS, documents)
 
-    def set_final_evidence_documents(self, documents: Sequence[Any]) -> None:
+    def set_final_evidence_documents(self, documents: Iterable[Any]) -> None:
         content_chars = 0 if _trace_full_final_evidence() else None
         self._set_documents(_RETRIEVAL_DOCUMENTS, documents, content_chars=content_chars)
 
     def _set_documents(
         self,
         key_prefix: str,
-        documents: Sequence[Any],
+        documents: Iterable[Any],
         *,
         content_chars: int | None = None,
     ) -> None:
@@ -345,13 +350,13 @@ def trace_user_id_from_email(email: str | None) -> str:
 
 
 def retrieval_documents_preview(
-    documents: Sequence[Any],
+    documents: Iterable[Any],
     *,
     limit: int = _RETRIEVAL_PREVIEW_LIMIT,
     content_chars: int = 160,
 ) -> list[dict[str, Any]]:
     previews: list[dict[str, Any]] = []
-    for rank, document in enumerate(list(documents)[:limit]):
+    for rank, document in _iter_limited_documents(documents, limit):
         metadata = dict(getattr(document, "metadata", {}) or {})
         preview = _compact_text(str(getattr(document, "page_content", "")), content_chars)
         previews.append(
@@ -369,20 +374,19 @@ def retrieval_documents_preview(
 
 def openinference_document_attributes(
     key_prefix: str,
-    documents: Sequence[Any],
+    documents: Iterable[Any],
     *,
     document_limit: int | None = None,
     content_chars: int | None = None,
 ) -> dict[str, Any]:
     attributes: dict[str, Any] = {}
-    document_list = list(documents)
-    resolved_document_limit = _trace_document_limit(len(document_list), document_limit)
+    resolved_document_limit = _trace_document_limit(document_limit)
     resolved_content_chars = (
         _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_CONTENT_CHARS", _TRACE_DOCUMENT_CONTENT_CHARS)
         if content_chars is None
         else content_chars
     )
-    for index, document in enumerate(document_list[:resolved_document_limit]):
+    for index, document in _iter_limited_documents(documents, resolved_document_limit):
         content = _compact_text(str(getattr(document, "page_content", "")), resolved_content_chars)
         metadata = dict(getattr(document, "metadata", {}) or {})
         document_id = _document_id(metadata)
@@ -395,19 +399,24 @@ def openinference_document_attributes(
             attributes[f"{prefix}.{_DOCUMENT_ID}"] = document_id
         trace_metadata = _trace_document_metadata(metadata)
         if trace_metadata:
-            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = _json_value(trace_metadata)
+            attributes[f"{prefix}.{_DOCUMENT_METADATA}"] = stable_json_dumps(trace_metadata)
         if score is not None:
             attributes[f"{prefix}.{_DOCUMENT_SCORE}"] = score
     return attributes
 
 
-def _trace_document_limit(total_documents: int, explicit_limit: int | None = None) -> int:
+def _iter_limited_documents(documents: Iterable[Any], limit: int | None) -> Iterator[tuple[int, Any]]:
+    iterator = iter(documents)
+    if limit is not None:
+        iterator = islice(iterator, max(limit, 0))
+    for index, document in enumerate(iterator):
+        yield index, document
+
+
+def _trace_document_limit(explicit_limit: int | None = None) -> int | None:
     if explicit_limit is not None:
         return max(explicit_limit, 0)
-    raw_value = os.environ.get("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", "").strip()
-    if not raw_value:
-        return total_documents
-    return _env_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", total_documents, minimum=0)
+    return _env_optional_int("IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT", minimum=0)
 
 
 def _trace_document_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -454,13 +463,9 @@ def _attribute_value(value: Any) -> str | bool | int | float | Sequence[str | bo
             if isinstance(item, (str, bool, int, float)):
                 values.append(item)
             else:
-                return _json_value(value)
+                return stable_json_dumps(value)
         return values
-    return _json_value(value)
-
-
-def _json_value(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return stable_json_dumps(value)
 
 
 @contextmanager
@@ -609,6 +614,19 @@ def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     return env_int(name, default, minimum=minimum, invalid="default")
 
 
+def _env_optional_int(name: str, *, minimum: int | None = None) -> int | None:
+    value = _env_text(name)
+    if value is None:
+        return None
+    try:
+        resolved = int(value)
+    except ValueError:
+        return None
+    if minimum is not None:
+        return max(resolved, minimum)
+    return resolved
+
+
 def _env_text(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
@@ -680,9 +698,9 @@ def _trace_full_final_evidence() -> bool:
 
 
 def _attribute_hidden(key: str, kind: str | None = None) -> bool:
-    if _hide_span_input(kind) and (key == _INPUT_VALUE or key == _INPUT_MIME_TYPE or key.startswith("input.")):
+    if _hide_span_input(kind) and (key in _INPUT_ATTRIBUTE_KEYS or key.startswith("input.")):
         return True
-    if _hide_outputs() and (key == _OUTPUT_VALUE or key == _OUTPUT_MIME_TYPE or key.startswith("output.")):
+    if _hide_outputs() and (key in _OUTPUT_ATTRIBUTE_KEYS or key.startswith("output.")):
         return True
     if _hide_input_messages() and key.startswith(f"{_LLM_INPUT_MESSAGES}."):
         return True
@@ -690,9 +708,7 @@ def _attribute_hidden(key: str, kind: str | None = None) -> bool:
         return True
     if _hide_llm_tools() and key.startswith(f"{_LLM_TOOLS}."):
         return True
-    if _hide_input_text() and key.endswith(f".{_DOCUMENT_CONTENT}"):
-        return True
-    return False
+    return _hide_input_text() and key.endswith(f".{_DOCUMENT_CONTENT}")
 
 
 def _collector_endpoint_reachable(endpoint: str, timeout: float = 0.2) -> bool:

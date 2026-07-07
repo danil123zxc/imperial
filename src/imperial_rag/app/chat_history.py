@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -7,6 +9,10 @@ import json
 import sqlite3
 import time
 import uuid
+
+from imperial_rag.app.users import normalize_user_email
+
+ASSISTANT_RESPONSE_CLAIM_TTL_NS = 30 * 60 * 1_000_000_000
 
 
 @dataclass(frozen=True)
@@ -39,10 +45,13 @@ class MessageRecord:
 class ChatHistoryStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
+        self._initialized = False
 
     def initialize(self) -> None:
+        if self._initialized:
+            return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversations (
@@ -81,6 +90,18 @@ class ChatHistoryStore:
                 ON messages(conversation_id, sequence ASC, id ASC)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS assistant_response_claims (
+                    user_message_id INTEGER PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    claimed_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+                    FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+                )
+                """
+            )
+        self._initialized = True
 
     def create_conversation(
         self,
@@ -93,7 +114,7 @@ class ChatHistoryStore:
         now = time.time_ns()
         conversation_id = str(uuid.uuid4())
         clean_title = _clean_title(title)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO conversations(id, user_email, title, created_at, updated_at, phoenix_session_id)
@@ -119,7 +140,7 @@ class ChatHistoryStore:
     def list_conversations(self, user_email: str) -> list[ConversationRecord]:
         normalized_email = normalize_user_email(user_email)
         self.initialize()
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM conversations
@@ -133,11 +154,8 @@ class ChatHistoryStore:
     def get_conversation(self, user_email: str, conversation_id: str) -> ConversationRecord | None:
         normalized_email = normalize_user_email(user_email)
         self.initialize()
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
-                (conversation_id, normalized_email),
-            ).fetchone()
+        with self._connection() as conn:
+            row = self._find_conversation(conn, normalized_email, conversation_id)
         return _row_to_conversation(row) if row is not None else None
 
     def add_message(
@@ -153,11 +171,8 @@ class ChatHistoryStore:
         self.initialize()
         now = time.time_ns()
         payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
-        with self._connect() as conn:
-            conversation = conn.execute(
-                "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
-                (conversation_id, normalized_email),
-            ).fetchone()
+        with self._connection() as conn:
+            conversation = self._find_conversation(conn, normalized_email, conversation_id)
             if conversation is None:
                 exists = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
                 if exists is not None:
@@ -185,18 +200,68 @@ class ChatHistoryStore:
             raise RuntimeError("failed to append chat message")
         return _row_to_message(row)
 
+    def claim_assistant_response(
+        self,
+        user_email: str,
+        conversation_id: str,
+        user_message_id: int,
+        *,
+        stale_after_ns: int = ASSISTANT_RESPONSE_CLAIM_TTL_NS,
+    ) -> bool:
+        normalized_email = normalize_user_email(user_email)
+        self.initialize()
+        now = time.time_ns()
+        with self._connection() as conn:
+            conversation = self._find_conversation(conn, normalized_email, conversation_id)
+            if conversation is None:
+                exists = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+                if exists is not None:
+                    raise PermissionError("conversation does not belong to this user")
+                raise KeyError(conversation_id)
+            user_message = conn.execute(
+                """
+                SELECT id, role, sequence FROM messages
+                WHERE id = ? AND conversation_id = ?
+                """,
+                (user_message_id, conversation_id),
+            ).fetchone()
+            if user_message is None or str(user_message["role"]) != "user":
+                return False
+            if self._assistant_after_user_exists(conn, conversation_id, user_message):
+                return False
+            if stale_after_ns > 0:
+                conn.execute(
+                    """
+                    DELETE FROM assistant_response_claims
+                    WHERE user_message_id = ? AND claimed_at < ?
+                    """,
+                    (user_message_id, now - stale_after_ns),
+                )
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO assistant_response_claims(
+                    user_message_id,
+                    conversation_id,
+                    claimed_at
+                )
+                VALUES (?, ?, ?)
+                """,
+                (user_message_id, conversation_id, now),
+            )
+        return cursor.rowcount == 1
+
     def list_messages(self, user_email: str, conversation_id: str) -> list[MessageRecord]:
         normalized_email = normalize_user_email(user_email)
-        if self.get_conversation(normalized_email, conversation_id) is None:
-            return []
-        with self._connect() as conn:
+        self.initialize()
+        with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM messages
-                WHERE conversation_id = ?
-                ORDER BY sequence ASC, id ASC
+                SELECT messages.* FROM messages
+                INNER JOIN conversations ON conversations.id = messages.conversation_id
+                WHERE messages.conversation_id = ? AND conversations.user_email = ?
+                ORDER BY messages.sequence ASC, messages.id ASC
                 """,
-                (conversation_id,),
+                (conversation_id, normalized_email),
             ).fetchall()
         return [_row_to_message(row) for row in rows]
 
@@ -207,12 +272,51 @@ class ChatHistoryStore:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    def _find_conversation(
+        self,
+        conn: sqlite3.Connection,
+        user_email: str,
+        conversation_id: str,
+    ) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT * FROM conversations WHERE id = ? AND user_email = ?",
+            (conversation_id, user_email),
+        ).fetchone()
 
-def normalize_user_email(email: str) -> str:
-    normalized = str(email or "").strip().casefold()
-    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise ValueError("valid email is required")
-    return normalized
+    def _assistant_after_user_exists(
+        self,
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        user_message: sqlite3.Row,
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1 FROM messages
+            WHERE conversation_id = ?
+              AND role = 'assistant'
+              AND (
+                  sequence > ?
+                  OR (sequence = ? AND id > ?)
+              )
+            LIMIT 1
+            """,
+            (
+                conversation_id,
+                int(user_message["sequence"]),
+                int(user_message["sequence"]),
+                int(user_message["id"]),
+            ),
+        ).fetchone()
+        return row is not None
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _clean_title(title: str) -> str:

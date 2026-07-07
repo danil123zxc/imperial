@@ -248,6 +248,30 @@ def test_elasticsearch_retrieval_id_hashes_content_when_ids_and_hit_id_are_missi
     assert "private keyword text" not in elasticsearch_keyword_module._retrieval_id(document)
 
 
+def test_keyword_retriever_hashes_content_only_hits_without_leaking_text() -> None:
+    client = FakeClient()
+    mark_index_exists(client)
+    client.search_responses.append(
+        {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 1.0,
+                        "_source": {"text": "private keyword text", "metadata": {}},
+                    }
+                ]
+            }
+        }
+    )
+    index = ElasticsearchKeywordIndex(cast(Settings, FakeSettings(Path("."))), client=client, bulk=fake_bulk)
+    expected = f"content_sha256:{hashlib.sha256(b'private keyword text').hexdigest()[:12]}"
+
+    hits = index.search_with_scores("keyword", limit=1)
+
+    assert hits[0].document.metadata["_retrieval_id"] == expected
+    assert "private keyword text" not in hits[0].document.metadata["_retrieval_id"]
+
+
 def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:
     import time
 
@@ -322,7 +346,7 @@ def test_keyword_retriever_async_invocation_offloads_sync_search() -> None:
                     "metadata": {},
                 }
             },
-            "Регламент возврата брака",
+            f"content_sha256:{hashlib.sha256('Регламент возврата брака'.encode('utf-8')).hexdigest()[:12]}",
         ),
     ],
 )

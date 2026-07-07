@@ -10,6 +10,26 @@ from imperial_rag.ingestion.manifest import (
     assign_duplicate_groups,
     scan_files,
 )
+from imperial_rag.ingestion import manifest as manifest_module
+
+
+class TrackingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "closed", False)
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in {"_connection", "closed"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._connection, name, value)
+
+    def close(self) -> None:
+        object.__setattr__(self, "closed", True)
+        self._connection.close()
 
 
 def test_manifest_store_persists_every_scanned_file(tmp_path):
@@ -123,3 +143,21 @@ def test_manifest_store_context_manager_closes_connection(tmp_path):
 
     with pytest.raises(sqlite3.ProgrammingError):
         store.list_records()
+
+
+def test_manifest_store_finalizer_closes_unclosed_connection(monkeypatch, tmp_path):
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(manifest_module.sqlite3, "connect", tracking_connect)
+    store = ManifestStore(tmp_path / "manifest.sqlite3")
+
+    del store
+
+    assert opened
+    assert all(connection.closed for connection in opened)

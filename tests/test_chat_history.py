@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from types import SimpleNamespace
+import sqlite3
 import sys
 import types
 
@@ -11,6 +12,7 @@ from langchain_core.documents import Document
 from imperial_rag.app import web as web_app
 from imperial_rag.app.auth import AuthStore
 from imperial_rag.app.chat_history import ChatHistoryStore
+from imperial_rag.app import chat_history as chat_history_module
 
 
 class SessionState(dict):
@@ -19,6 +21,32 @@ class SessionState(dict):
 
     def __setattr__(self, key, value):
         self[key] = value
+
+
+class TrackingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "closed", False)
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in {"_connection", "closed"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._connection, name, value)
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self._connection.__exit__(exc_type, exc, traceback)
+
+    def close(self) -> None:
+        object.__setattr__(self, "closed", True)
+        self._connection.close()
 
 
 def test_chat_history_store_persists_and_scopes_conversations_by_user(tmp_path):
@@ -67,6 +95,63 @@ def test_chat_history_store_persists_and_scopes_conversations_by_user(tmp_path):
     assert messages[1].to_chat_message()["retrieval"] == {"final_evidence": 1}
 
 
+def test_chat_history_store_closes_short_lived_connections(monkeypatch, tmp_path):
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(chat_history_module.sqlite3, "connect", tracking_connect)
+    store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
+
+    conversation = store.create_conversation("user@example.com", "Question")
+    store.add_message("user@example.com", conversation.id, "user", "Hello")
+    store.list_messages("user@example.com", conversation.id)
+
+    assert opened
+    assert all(connection.closed for connection in opened)
+
+
+def test_chat_history_store_lists_messages_with_one_read_connection(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.sqlite3"
+    setup_store = ChatHistoryStore(db_path)
+    conversation = setup_store.create_conversation("user@example.com", "Question")
+    setup_store.add_message("user@example.com", conversation.id, "user", "Hello")
+
+    real_connect = sqlite3.connect
+    opened: list[TrackingConnection] = []
+
+    def tracking_connect(*args, **kwargs):
+        connection = TrackingConnection(real_connect(*args, **kwargs))
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(chat_history_module.sqlite3, "connect", tracking_connect)
+    store = ChatHistoryStore(db_path)
+    store.initialize()
+    opened.clear()
+
+    messages = store.list_messages("user@example.com", conversation.id)
+
+    assert [message.content for message in messages] == ["Hello"]
+    assert len(opened) == 1
+    assert all(connection.closed for connection in opened)
+
+
+def test_chat_history_store_claims_assistant_response_once(tmp_path):
+    db_path = tmp_path / "chat_history.sqlite3"
+    first_store = ChatHistoryStore(db_path)
+    second_store = ChatHistoryStore(db_path)
+    conversation = first_store.create_conversation("user@example.com", "Question")
+    user_message = first_store.add_message("user@example.com", conversation.id, "user", "Hello")
+
+    assert first_store.claim_assistant_response("user@example.com", conversation.id, user_message.id)
+    assert not second_store.claim_assistant_response("user@example.com", conversation.id, user_message.id)
+
+
 def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):
     store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
     older = store.create_conversation("user@example.com", "Older chat", phoenix_session_id="trace-old")
@@ -92,6 +177,115 @@ def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):
         },
     ]
     assert "Other user's private question" not in str(streamlit.session_state.messages)
+
+
+def test_pending_chat_turn_finishes_user_only_saved_turn(monkeypatch, tmp_path):
+    store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
+    conversation = store.create_conversation("user@example.com", "Pending chat", phoenix_session_id="trace-pending")
+    user_message = store.add_message("user@example.com", conversation.id, "user", "Pending question")
+    streamlit = SimpleNamespace(
+        session_state=SessionState(
+            active_conversation_id=conversation.id,
+            phoenix_trace_session_id="trace-pending",
+            messages=[
+                {"role": "user", "content": "Pending question"},
+                web_app._build_incomplete_assistant_message(),
+            ],
+            pending_chat_turn={
+                "user_email": "user@example.com",
+                "conversation_id": conversation.id,
+                "question": "Pending question",
+                "phoenix_session_id": "trace-pending",
+                "user_message_id": user_message.id,
+            },
+        )
+    )
+    tracing_module = types.ModuleType("imperial_rag.observability.phoenix")
+    tracing_module.phoenix_trace_context = _null_trace_context
+    tracing_module.trace_user_id_from_email = lambda email: "user_sha256:testhash"
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.log_event = lambda *args, **kwargs: None
+    observability_module.log_failure = lambda *args, **kwargs: None
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setattr(
+        web_app,
+        "query_runtime",
+        lambda settings, question: {
+            "answer": "Recovered answer.",
+            "sources": [],
+            "retrieval": {"final_evidence": 0},
+        },
+    )
+
+    completed = web_app._complete_pending_chat_turn(
+        streamlit,
+        store,
+        SimpleNamespace(documents_root=tmp_path / "documents", extraction_root=tmp_path / "extracted"),
+        "user@example.com",
+    )
+
+    assert completed is not None
+    assert streamlit.session_state.messages == [
+        {"role": "user", "content": "Pending question"},
+        {
+            "role": "assistant",
+            "content": "Recovered answer.",
+            "sources": [],
+            "error": None,
+            "citations_valid": None,
+            "invalid_citations": [],
+            "retrieved_files": [],
+            "retrieved_documents": [],
+            "retrieval": {"final_evidence": 0},
+        },
+    ]
+    assert web_app.PENDING_CHAT_TURN_KEY not in streamlit.session_state
+    assert [message.content for message in store.list_messages("user@example.com", conversation.id)] == [
+        "Pending question",
+        "Recovered answer.",
+    ]
+
+
+def test_pending_chat_turn_skips_query_when_user_message_is_already_claimed(monkeypatch, tmp_path):
+    store = ChatHistoryStore(tmp_path / "chat_history.sqlite3")
+    conversation = store.create_conversation("user@example.com", "Pending chat", phoenix_session_id="trace-pending")
+    user_message = store.add_message("user@example.com", conversation.id, "user", "Pending question")
+    streamlit = SimpleNamespace(
+        session_state=SessionState(
+            active_conversation_id=conversation.id,
+            phoenix_trace_session_id="trace-pending",
+            messages=[{"role": "user", "content": "Pending question"}],
+            pending_chat_turn={
+                "user_email": "user@example.com",
+                "conversation_id": conversation.id,
+                "question": "Pending question",
+                "phoenix_session_id": "trace-pending",
+                "user_message_id": user_message.id,
+            },
+        )
+    )
+    store.claim_assistant_response = lambda *args, **kwargs: False
+    calls = []
+    monkeypatch.setattr(
+        web_app,
+        "query_runtime",
+        lambda settings, question: calls.append(question)
+        or {"answer": "Duplicate answer.", "sources": [], "retrieval": {"final_evidence": 0}},
+    )
+
+    completed = web_app._complete_pending_chat_turn(
+        streamlit,
+        store,
+        SimpleNamespace(documents_root=tmp_path / "documents", extraction_root=tmp_path / "extracted"),
+        "user@example.com",
+    )
+
+    assert completed is None
+    assert calls == []
+    assert web_app.PENDING_CHAT_TURN_KEY not in streamlit.session_state
+    assert [message.role for message in store.list_messages("user@example.com", conversation.id)] == ["user"]
 
 
 def test_build_assistant_message_preserves_debug_retrieval_payload(tmp_path):
@@ -217,6 +411,104 @@ def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkey
     ]
     assert messages[1].to_chat_message()["sources"] == ["travel-policy.docx"]
     assert history.list_conversations("other@example.com") == []
+
+
+def test_main_persists_prompt_to_original_chat_when_sidebar_selection_changes(monkeypatch, tmp_path):
+    auth_db_path = tmp_path / "auth.sqlite3"
+    chat_history_db_path = tmp_path / "chat_history.sqlite3"
+    auth_store = AuthStore(auth_db_path)
+    auth_store.initialize()
+    auth_store.bootstrap_admin("admin@example.com", "admin-password")
+    auth_store.register_user("user@example.com", "user-password", "User", "Testing")
+    auth_store.approve_user("admin@example.com", "user@example.com")
+
+    history = ChatHistoryStore(chat_history_db_path)
+    older = history.create_conversation("user@example.com", "Older chat", phoenix_session_id="trace-old")
+    history.add_message("user@example.com", older.id, "user", "Older question")
+    history.add_message("user@example.com", older.id, "assistant", "Older answer")
+    active = history.create_conversation("user@example.com", "Active chat", phoenix_session_id="trace-active")
+    history.add_message("user@example.com", active.id, "user", "Active question")
+    history.add_message("user@example.com", active.id, "assistant", "Active answer")
+
+    env_module = types.ModuleType("imperial_rag.env")
+    env_module.load_project_env = lambda: None
+
+    class FakeSettings:
+        def __init__(self):
+            self.auth_db_path = auth_db_path
+            self.chat_history_db_path = chat_history_db_path
+            self.documents_root = tmp_path / "documents"
+            self.extraction_root = tmp_path / "extracted"
+
+    config_module = types.ModuleType("imperial_rag.config")
+    config_module.Settings = FakeSettings
+
+    tracing_module = types.ModuleType("imperial_rag.observability.phoenix")
+    tracing_module.configure_phoenix_tracing = lambda settings: None
+    tracing_module.phoenix_trace_context = _null_trace_context
+    tracing_module.trace_user_id_from_email = lambda email: "user_sha256:testhash"
+
+    observability_module = types.ModuleType("imperial_rag.observability")
+    observability_module.configure_observability = lambda settings: None
+    observability_module.log_event = lambda *args, **kwargs: None
+    observability_module.log_failure = lambda *args, **kwargs: None
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    streamlit_module = types.SimpleNamespace(
+        set_page_config=lambda **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        sidebar=Context(),
+        header=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        session_state=SessionState(
+            auth_user_email="user@example.com",
+            chat_history_user_email="user@example.com",
+            active_conversation_id=active.id,
+            phoenix_trace_session_id="trace-active",
+        ),
+        caption=lambda *args, **kwargs: None,
+        button=lambda *args, **kwargs: kwargs.get("key") == f"chat-history-select-{older.id}",
+        chat_input=lambda *args, **kwargs: "Question typed in the active chat",
+        chat_message=lambda *args, **kwargs: Context(),
+        write=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        rerun=lambda: None,
+    )
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.env", env_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.config", config_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability.phoenix", tracing_module)
+    monkeypatch.setitem(sys.modules, "imperial_rag.observability", observability_module)
+    monkeypatch.setitem(sys.modules, "streamlit", streamlit_module)
+    monkeypatch.setattr(
+        web_app,
+        "query_runtime",
+        lambda settings, question: {
+            "answer": "Answer for the active chat.",
+            "sources": [],
+            "retrieval": {"final_evidence": 0},
+        },
+    )
+
+    web_app.main()
+
+    updated_history = ChatHistoryStore(chat_history_db_path)
+    active_messages = updated_history.list_messages("user@example.com", active.id)
+    older_messages = updated_history.list_messages("user@example.com", older.id)
+    assert [message.content for message in active_messages] == [
+        "Active question",
+        "Active answer",
+        "Question typed in the active chat",
+        "Answer for the active chat.",
+    ]
+    assert [message.content for message in older_messages] == ["Older question", "Older answer"]
 
 
 def test_main_persists_assistant_error_when_signed_in_query_fails(monkeypatch, tmp_path):

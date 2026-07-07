@@ -63,6 +63,9 @@ def _counts_from_summary(summary: Any) -> dict[str, int]:
         if isinstance(summary_counts, Mapping):
             return {str(key): int(value) for key, value in summary_counts.items()}
         return {str(key): int(value) for key, value in summary.items() if isinstance(value, int)}
+    counts = getattr(summary, "counts", None)
+    if callable(counts):
+        return {str(key): int(value) for key, value in counts().items()}
     result_counts: dict[str, int] = {}
     for source_name, target_name in (
         ("total_files", "files"),

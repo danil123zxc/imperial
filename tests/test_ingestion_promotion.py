@@ -279,3 +279,30 @@ def test_check_promotion_gates_accepts_reviewed_drop(tmp_path):
 
     assert result.passed is True
     assert result.errors == []
+
+
+def test_check_promotion_gates_reports_invalid_optional_reviewed_drops(tmp_path):
+    baseline = tmp_path / "baseline"
+    shadow = tmp_path / "shadow"
+    baseline.mkdir()
+    shadow.mkdir()
+    _write_jsonl(baseline / "corpus-ledger.jsonl", [{"file_id": "file-a", "status": "indexed", "chunk_count": 1}])
+    _write_jsonl(
+        shadow / "corpus-ledger.jsonl",
+        [{"file_id": "file-a", "status": "indexed", "chunk_count": 1, "locator_coverage": 1.0}],
+    )
+    _write_chunks(baseline / "chunks.jsonl", [{"metadata": {"file_id": "file-a", "chunk_id": "old-1"}}])
+    _write_chunks(shadow / "chunks.jsonl", [{"metadata": {"file_id": "file-a", "chunk_id": "new-1"}}])
+    (shadow / "old-to-new-id-map.json").write_text(json.dumps({"rows": []}), encoding="utf-8")
+    (shadow / "reviewed-drops.json").write_text("{", encoding="utf-8")
+    _write_lineage(shadow / "index-lineage.json")
+    questions = tmp_path / "questions.jsonl"
+    _write_jsonl(questions, [])
+
+    result = check_promotion_gates(baseline, shadow, questions_path=questions)
+
+    assert result.passed is False
+    assert any(
+        "optional artifact is not valid JSON" in error and "reviewed-drops.json" in error
+        for error in result.errors
+    )

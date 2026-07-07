@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -8,6 +10,8 @@ from pathlib import Path
 import secrets
 import sqlite3
 import time
+
+from imperial_rag.app.users import normalize_user_email
 
 
 APPROVED = "approved"
@@ -48,7 +52,7 @@ class AuthStore:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -69,14 +73,14 @@ class AuthStore:
             conn.execute("CREATE INDEX IF NOT EXISTS users_status_idx ON users(status)")
 
     def bootstrap_admin(self, email: str, password: str) -> UserRecord:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         _validate_password(password)
         self.initialize()
         existing = self.get_user(normalized_email)
         now = time.time_ns()
         if existing is not None:
             salt, digest = _hash_password(password)
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.execute(
                     """
                     UPDATE users
@@ -91,7 +95,7 @@ class AuthStore:
             return self.get_user(normalized_email) or existing
 
         salt, digest = _hash_password(password)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO users(
@@ -119,7 +123,7 @@ class AuthStore:
         return user
 
     def register_user(self, email: str, password: str, full_name: str = "", reason: str = "") -> UserRecord:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         _validate_password(password)
         self.initialize()
         existing = self.get_user(normalized_email)
@@ -128,7 +132,7 @@ class AuthStore:
 
         salt, digest = _hash_password(password)
         now = time.time_ns()
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO users(
@@ -155,9 +159,9 @@ class AuthStore:
         return user
 
     def authenticate(self, email: str, password: str) -> AuthenticationResult:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         self.initialize()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute("SELECT * FROM users WHERE email = ?", (normalized_email,)).fetchone()
         if row is None:
             return AuthenticationResult(AuthenticationStatus.NOT_FOUND, None)
@@ -172,8 +176,8 @@ class AuthStore:
         return AuthenticationResult(AuthenticationStatus.PENDING_APPROVAL, None)
 
     def approve_user(self, admin_email: str, target_email: str) -> UserRecord:
-        normalized_admin = _normalize_email(admin_email)
-        normalized_target = _normalize_email(target_email)
+        normalized_admin = normalize_user_email(admin_email)
+        normalized_target = normalize_user_email(target_email)
         self.initialize()
         admin = self.get_user(normalized_admin)
         if admin is None or not admin.is_admin or admin.status != APPROVED:
@@ -182,7 +186,7 @@ class AuthStore:
             raise KeyError(normalized_target)
 
         now = time.time_ns()
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE users
@@ -197,15 +201,15 @@ class AuthStore:
         return user
 
     def get_user(self, email: str) -> UserRecord | None:
-        normalized_email = _normalize_email(email)
+        normalized_email = normalize_user_email(email)
         self.initialize()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute("SELECT * FROM users WHERE email = ?", (normalized_email,)).fetchone()
         return _row_to_user(row) if row is not None else None
 
     def list_pending_users(self) -> list[UserRecord]:
         self.initialize()
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM users WHERE status = ? ORDER BY created_at ASC, email ASC",
                 (PENDING,),
@@ -217,12 +221,14 @@ class AuthStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-
-def _normalize_email(email: str) -> str:
-    normalized = str(email or "").strip().casefold()
-    if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise ValueError("valid email is required")
-    return normalized
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _validate_password(password: str) -> None:

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Council Report — Imperial RAG Evals Pipeline</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; color: #1a1a2e; line-height: 1.6; }
+  .container { max-width: 860px; margin: 0 auto; padding: 40px 24px 80px; }
+  .header { border-bottom: 2px solid #e2e8f0; padding-bottom: 24px; margin-bottom: 32px; }
+  .header h1 { font-size: 1.5rem; font-weight: 700; color: #0f172a; }
+  .header .question { margin-top: 10px; font-size: 0.95rem; color: #475569; background: #f1f5f9; border-left: 3px solid #6366f1; padding: 12px 16px; border-radius: 0 6px 6px 0; }
+  .verdict { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 28px 32px; margin-bottom: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+  .verdict h2 { font-size: 1.05rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #e2e8f0; }
+  .verdict.agrees h2 { color: #166534; border-color: #bbf7d0; }
+  .verdict.clashes h2 { color: #92400e; border-color: #fde68a; }
+  .verdict.blindspots h2 { color: #1e3a5f; border-color: #bfdbfe; }
+  .verdict.recommendation h2 { color: #3730a3; border-color: #c7d2fe; }
+  .verdict.one-thing h2 { color: #7c3aed; border-color: #ddd6fe; }
+  .verdict.agrees { border-left: 4px solid #22c55e; }
+  .verdict.clashes { border-left: 4px solid #f59e0b; }
+  .verdict.blindspots { border-left: 4px solid #3b82f6; }
+  .verdict.recommendation { border-left: 4px solid #6366f1; }
+  .verdict.one-thing { background: #faf5ff; border-left: 4px solid #7c3aed; }
+  .verdict p { font-size: 0.93rem; color: #374151; margin-bottom: 10px; }
+  .verdict p:last-child { margin-bottom: 0; }
+  .verdict strong { color: #0f172a; }
+  .verdict ol, .verdict ul { padding-left: 20px; font-size: 0.93rem; color: #374151; }
+  .verdict li { margin-bottom: 6px; }
+  .one-thing .highlight { font-size: 1rem; font-weight: 600; color: #5b21b6; background: #ede9fe; padding: 14px 18px; border-radius: 8px; margin-top: 10px; }
+
+  .alignment-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 24px 0; }
+  .advisor-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 10px; text-align: center; font-size: 0.78rem; }
+  .advisor-card .name { font-weight: 600; color: #0f172a; margin-bottom: 6px; font-size: 0.8rem; }
+  .advisor-card .verdict-label { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 0.72rem; font-weight: 600; }
+  .strongest { background: #dcfce7; color: #166534; }
+  .blind-spot { background: #fef3c7; color: #92400e; }
+  .solid { background: #e0e7ff; color: #3730a3; }
+  .expan { background: #fce7f3; color: #9d174d; }
+
+  .section-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; font-weight: 600; margin-bottom: 6px; }
+
+  details { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  details summary { cursor: pointer; padding: 14px 18px; font-size: 0.88rem; font-weight: 600; color: #374151; user-select: none; display: flex; justify-content: space-between; align-items: center; }
+  details summary::after { content: "▸"; color: #94a3b8; transition: transform 0.2s; }
+  details[open] summary::after { transform: rotate(90deg); }
+  details summary:hover { background: #f8fafc; }
+  .detail-body { padding: 0 18px 18px; font-size: 0.88rem; color: #374151; border-top: 1px solid #f1f5f9; padding-top: 14px; }
+  .detail-body p { margin-bottom: 8px; }
+  .detail-body strong { color: #0f172a; }
+  .advisor-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-bottom: 10px; }
+  .tag-contrarian { background: #fee2e2; color: #991b1b; }
+  .tag-first { background: #dbeafe; color: #1e3a5f; }
+  .tag-expan { background: #fce7f3; color: #9d174d; }
+  .tag-outsider { background: #f3f4f6; color: #374151; }
+  .tag-executor { background: #d1fae5; color: #065f46; }
+
+  .peer-review { background: #fafafa; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 18px; margin-bottom: 10px; font-size: 0.87rem; }
+  .peer-review .reviewer-label { font-weight: 700; color: #6366f1; margin-bottom: 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .peer-review p { margin-bottom: 4px; color: #374151; }
+
+  .unanimous-badge { background: #7c3aed; color: #fff; display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; margin-left: 8px; }
+
+  .footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid #e2e8f0; font-size: 0.78rem; color: #94a3b8; text-align: center; }
+  .meta { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-top: 6px; }
+  .meta span { background: #f1f5f9; padding: 3px 10px; border-radius: 20px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>LLM Council Report</h1>
+    <div class="question">
+      <strong>Question:</strong> What improvements to the Imperial RAG evals pipeline would make it more robust, comprehensive, and aligned with RAGAS best practices?<br>
+      <small style="color:#64748b; margin-top:4px; display:block;">Context: Russian-language document QA over HR/logistics docs · ~20 JSONL questions · Ragas via Qwen/DashScope · Phoenix experiments</small>
+    </div>
+  </div>
+
+  <!-- Alignment grid -->
+  <div class="section-label">Advisor alignment</div>
+  <div class="alignment-grid">
+    <div class="advisor-card">
+      <div class="name">The Contrarian</div>
+      <span class="verdict-label strongest">Strongest ×5</span>
+    </div>
+    <div class="advisor-card">
+      <div class="name">First Principles</div>
+      <span class="verdict-label solid">Strong</span>
+    </div>
+    <div class="advisor-card">
+      <div class="name">The Expansionist</div>
+      <span class="verdict-label blind-spot">Blind spot ×5</span>
+    </div>
+    <div class="advisor-card">
+      <div class="name">The Outsider</div>
+      <span class="verdict-label solid">Strong</span>
+    </div>
+    <div class="advisor-card">
+      <div class="name">The Executor</div>
+      <span class="verdict-label solid">Actionable</span>
+    </div>
+  </div>
+
+  <!-- Where the council agrees -->
+  <div class="verdict agrees">
+    <h2>✓ Where the Council Agrees</h2>
+    <p><strong>The data foundation is broken before any metric runs.</strong> <code>reference_context_ids</code> is empty across all rows, so IDContextRecall — the only metric grounded in actual document identity — produces no output. The metric exists, the infrastructure runs it, and it silently contributes nothing. You're evaluating retrieval using keyword substring matching against the same documents you're retrieving from. The relevance signal is circular.</p>
+    <p><strong>20 questions is a smoke test, not an eval pipeline.</strong> The <code>surface_conflict</code> class has one example. <code>refuse_if_not_found</code> is similarly thin. ~90% of the dataset tests the happy path (<code>cite_answer</code>), repeatedly.</p>
+    <p><strong><code>reference_answer</code> exists for every row but the metrics that consume it are off by default.</strong> <code>factual_correctness</code> and <code>context_recall</code> both require it. Ground truth you aren't using.</p>
+    <p><strong>Async-to-sync bridging is a latent reliability risk.</strong> Serial execution with sync wrappers over async Ragas scorers will produce intermittent, hard-to-diagnose hangs at scale — not clean errors.</p>
+  </div>
+
+  <!-- Where the council clashes -->
+  <div class="verdict clashes">
+    <h2>⚡ Where the Council Clashes</h2>
+    <p><strong>Scale now vs. fix foundation first.</strong> The Expansionist argues for 500+ LLM-generated questions immediately. The Contrarian, Executor, and Outsider all argue the opposite: scaling bad labels produces more noise, not more signal. The Executor is explicit — don't expand until <code>reference_context_ids</code> have real ground-truth <code>file_id</code> values.</p>
+    <p>The Expansionist is strategically correct (more coverage would help) but tactically reckless. LLM-generated QA pairs from Qwen inherit whatever distributional biases and hallucinations the generator has. If you generate 500 questions before fixing the labeling substrate, you've scaled the problem. <strong>Fix substrate first, then scale.</strong></p>
+    <p><strong>Whether behavioral categories are worth expanding.</strong> The Expansionist wants to add <code>synthesize_across_docs</code>, <code>defer_to_authority</code>, <code>acknowledge_ambiguity</code>. The Contrarian notes that <code>surface_conflict</code> — already in the schema — has no scoring mechanism. Adding more behavioral classes before you can measure the ones you have is overhead, not evaluation signal.</p>
+  </div>
+
+  <!-- Blind spots -->
+  <div class="verdict blindspots">
+    <h2>🔍 Blind Spots the Council Caught <span class="unanimous-badge">5/5 reviewers</span></h2>
+    <p><strong>Russian-language LLM judge calibration — the most important finding from peer review, unanimously.</strong></p>
+    <p>Ragas Faithfulness and AnswerRelevancy were designed and validated on English text. The underlying embeddings and entailment logic have not been benchmarked on Russian bureaucratic register — the specific register of warehouse regulations, job descriptions, and HR policy documents.</p>
+    <p>A hallucinated answer about warehouse safety procedures written in fluent Russian bureaucratic prose could score <em>high</em> on Faithfulness because the judge detects stylistic coherence, not factual accuracy. In a domain where wrong answers about safety regulations have real consequences, a mis-calibrated judge is not just a statistical problem — it's a liability.</p>
+    <p>Nobody asked: <em>Are your Ragas prompt templates in Russian? Does Qwen/DashScope reliably detect entailment in this specific register? Have you spot-checked scores against human judgment?</em></p>
+  </div>
+
+  <!-- Recommendation -->
+  <div class="verdict recommendation">
+    <h2>📋 The Recommendation</h2>
+    <ol>
+      <li><strong>Verify Russian-language judge calibration before trusting any metric.</strong> Take 20 scored outputs — 10 good answers, 10 intentionally degraded ones — and compare Ragas scores to human judgment from a native Russian speaker familiar with HR documents. If Faithfulness and AnswerRelevancy don't correlate with human judgment at r > 0.7, your metrics are decorative. This can be done in a day and gates everything else.</li>
+      <li><strong>Fill <code>reference_context_ids</code> for all existing questions and enable <code>factual_correctness</code> by default.</strong> 2–3 hours of labeling work. Activates IDContextRecall (your only retrieval metric grounded in real document identity) and turns on factual correctness scoring against ground truth you already have. These two changes give more real signal than any new metric.</li>
+      <li><strong>Add 5+ questions per underrepresented behavior class</strong> (<code>refuse_if_not_found</code>, <code>surface_conflict</code>) before scaling. One <code>surface_conflict</code> example is not a test; it's an anecdote. Also: consolidate <code>context_recall</code>/<code>factual_correctness</code> into the Phoenix evaluator path — the two-script split is artificial friction.</li>
+    </ol>
+    <p style="margin-top:12px; color: #6366f1;"><strong>Do not scale to 200+ questions until steps 1 and 2 are complete.</strong> Scaling before that multiplies noise.</p>
+  </div>
+
+  <!-- One thing -->
+  <div class="verdict one-thing">
+    <h2>⚡ The One Thing to Do First</h2>
+    <div class="highlight">
+      Spot-check Russian-language LLM judge calibration: take 10 clearly correct and 10 intentionally wrong RAG outputs on your existing questions, score them with Ragas, and compare against human judgment. If the scores don't reliably separate good from bad answers in Russian, every other improvement you make will be measuring the wrong thing.
+    </div>
+  </div>
+
+  <!-- Advisor responses -->
+  <div style="margin-top: 40px;">
+    <div class="section-label" style="margin-bottom: 12px;">Full advisor responses</div>
+
+    <details>
+      <summary>The Contrarian — "The relevance signal is fake"</summary>
+      <div class="detail-body">
+        <span class="advisor-tag tag-contrarian">The Contrarian</span>
+        <p>The evals pipeline has a critical flaw that undermines everything else: the relevance signal is fake.</p>
+        <p>Binary hit@5 based on keyword substring matching in document text is not relevance — it's a string search dressed up as an evaluation metric. You're computing NDCG over labels that have no actual grounding in whether a document is useful for answering the question. When your precision@5 is 0.4, you don't know if retrieval is bad or if your substring hints are too broad/narrow.</p>
+        <p>20 questions is not an eval dataset — it's a smoke test. A single bad question can swing Faithfulness by 5%. Ragas best practices assume hundreds of samples minimum.</p>
+        <p><code>surface_conflict</code> is evaluated how, exactly? There's no LLM judge or rubric for detecting when the system correctly identifies conflicting documents vs. hallucinating a conflict.</p>
+        <p>The async-to-sync bridge for Ragas scorers is a red flag. Intermittent hangs appear as timeouts, not errors. Failure modes here are invisible.</p>
+        <p><strong>Fix data quality and label validity before adding more metrics — more metrics on bad labels is more noise, not more signal.</strong></p>
+      </div>
+    </details>
+
+    <details>
+      <summary>First Principles Thinker — "You're measuring proxies of proxies"</summary>
+      <div class="detail-body">
+        <span class="advisor-tag tag-first">First Principles Thinker</span>
+        <p>The question assumes the current eval structure is the right structure. It isn't.</p>
+        <p>What problem are we actually solving? "Does this RAG system give HR staff correct, trustworthy answers about warehouse regulations?" The current pipeline measures proxies of proxies. Ragas Faithfulness measures whether the answer is grounded in retrieved context — but if retrieval is broken, Faithfulness scores high on wrong documents. You're measuring coherence within a mistake.</p>
+        <p>The <code>expected_behavior</code> taxonomy is the most valuable signal you have — and it's the least developed. You have ~20 questions total. That's not an eval, that's a smoke test.</p>
+        <p>The actual gap: you don't know whether real users are getting real answers to real questions. You have no production query distribution. Mine production logs for actual user queries — that's your eval distribution. Design your eval around the failure mode that causes the most harm in this domain: hallucinated safety regulations? Missing return procedures?</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>The Expansionist — "Scale the dataset aggressively"</summary>
+      <div class="detail-body">
+        <span class="advisor-tag tag-expan">The Expansionist</span>
+        <p>The evals pipeline is thinking too small. Twenty questions is a prototype, not a pipeline.</p>
+        <p>Scale the dataset aggressively. With LLM-assisted generation (use the Qwen endpoint you already have), you can generate 500+ QA pairs from your actual documents in an afternoon. Cover edge cases: cross-document synthesis, adversarial paraphrases, multi-hop reasoning questions.</p>
+        <p>Treat the eval pipeline as a regression harness, not a one-shot run. Wire evals to every retrieval config change. Track NDCG@5 trend lines across chunking/model experiments in Phoenix.</p>
+        <p>Your <code>expected_behavior</code> taxonomy is a product differentiator. Expand it — add <code>synthesize_across_docs</code>, <code>defer_to_authority</code>, <code>acknowledge_ambiguity</code>. This turns your evals from a quality check into a behavioral specification for the entire system.</p>
+        <p><em>Note from peer review: Strategically correct, tactically reckless. Fix the substrate before scaling.</em></p>
+      </div>
+    </details>
+
+    <details>
+      <summary>The Outsider — "You're running dead metrics"</summary>
+      <div class="detail-body">
+        <span class="advisor-tag tag-outsider">The Outsider</span>
+        <p>~27 of your ~30 questions are <code>cite_answer</code>. 90% of the dataset tests the same thing. You have 1 <code>surface_conflict</code> example. One.</p>
+        <p><code>reference_context_ids</code> exists in the schema but is populated for zero questions. IDContextRecall silently skips every single row. You are running infrastructure for a metric that produces no results.</p>
+        <p>The <code>expected_source_hints</code> check does substring matching. A document about "возврат товаров" could satisfy a hint looking for "возврат брака" if those words appear anywhere in the document. You're measuring string co-occurrence, not retrieval quality.</p>
+        <p><code>reference_answer</code> is populated for all rows, but <code>context_recall</code> and <code>factual_correctness</code> are optional and off by default. You have ground truth you aren't using.</p>
+        <p><strong>Three fixes:</strong> (1) fill <code>reference_context_ids</code> for cite_answer questions; (2) add 5+ <code>refuse_if_not_found</code> and <code>surface_conflict</code> cases; (3) make <code>factual_correctness</code> default-on.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>The Executor — "Three concrete actions, in order"</summary>
+      <div class="detail-body">
+        <span class="advisor-tag tag-executor">The Executor</span>
+        <p><strong>1. Parallelize the eval loop — do it Monday.</strong> At ~3-5s per question + LLM scoring, serial execution is already slow and will become a hard blocker at 200 questions. Use <code>asyncio.gather</code> or <code>ThreadPoolExecutor</code>. Phoenix's <code>run_experiment</code> accepts an async task function — use it.</p>
+        <p><strong>2. Add <code>reference_context_ids</code> to every question — 2-3 hours of labeling.</strong> Run <code>uv run scripts/query.py</code> on each question, check which documents came back, confirm the right ones, write the <code>file_id</code>s. This activates IDContextRecall and gives you real retrieval quality signal.</p>
+        <p><strong>3. Consolidate the two-script split.</strong> <code>_phoenix_evaluators</code> hard-errors on <code>context_recall</code>/<code>factual_correctness</code>, forcing a separate script. <code>reference_answer</code> is already passed through <code>_to_phoenix_dataset_rows</code>. Add <code>context_recall</code> as a Phoenix evaluator directly. Remove the artificial friction.</p>
+        <p><em>What not to do yet: Don't expand to 200+ questions before retrieval scoring is based on real <code>file_id</code> ground truth.</em></p>
+      </div>
+    </details>
+  </div>
+
+  <!-- Peer reviews -->
+  <div style="margin-top: 32px;">
+    <details>
+      <summary>Peer review highlights — all 5 reviewers</summary>
+      <div class="detail-body">
+        <div class="peer-review">
+          <div class="reviewer-label">Reviewer 1</div>
+          <p><strong>Strongest:</strong> The Contrarian — identifies the foundational validity problem. More metrics on bad labels is noise, not signal.</p>
+          <p><strong>Biggest blind spot:</strong> The Expansionist — building a cathedral on sand. Scaling bad labels by 25× makes the pipeline confidently wrong.</p>
+          <p><strong>All five missed:</strong> Russian-language scoring validity. Ragas was benchmarked on English. Using Qwen to judge Russian bureaucratic register is an unvalidated assumption.</p>
+        </div>
+        <div class="peer-review">
+          <div class="reviewer-label">Reviewer 2</div>
+          <p><strong>Strongest:</strong> The Contrarian — foundational validity + async bridge as invisible failure mode.</p>
+          <p><strong>Biggest blind spot:</strong> The Expansionist — recommends scaling without noting <code>reference_context_ids</code> is unpopulated.</p>
+          <p><strong>All five missed:</strong> Russian-language LLM judge calibration. Nobody questioned whether Ragas judges are calibrated for Russian HR/logistics text or bureaucratic register.</p>
+        </div>
+        <div class="peer-review">
+          <div class="reviewer-label">Reviewer 3</div>
+          <p><strong>Strongest:</strong> The Contrarian — connects circular relevance labels to every downstream metric.</p>
+          <p><strong>Biggest blind spot:</strong> The Expansionist — treats <code>surface_conflict</code> as underexplored while ignoring there's no mechanism to score it.</p>
+          <p><strong>All five missed:</strong> Russian-language judge calibration. A hallucinated answer in correct Russian bureaucratic style could score high on Faithfulness while being factually dangerous.</p>
+        </div>
+        <div class="peer-review">
+          <div class="reviewer-label">Reviewer 4</div>
+          <p><strong>Strongest:</strong> The Contrarian — only one that identifies circular relevance labels.</p>
+          <p><strong>Biggest blind spot:</strong> The Expansionist — LLM-generated QA pairs inherit hallucinations from the generator. Scaling bad labels at scale.</p>
+          <p><strong>All five missed:</strong> Language-specific evaluation validity. Ragas metrics calibrated on English may not transfer to Russian. Systematic bias, not just noise.</p>
+        </div>
+        <div class="peer-review">
+          <div class="reviewer-label">Reviewer 5</div>
+          <p><strong>Strongest:</strong> The Contrarian — diagnoses root causes rather than prescribing patches on a broken foundation.</p>
+          <p><strong>Biggest blind spot:</strong> The Expansionist — strategically correct, tactically reckless. Multiplies substrate problems.</p>
+          <p><strong>All five missed:</strong> Russian-language LLM judge validity. A mis-calibrated judge silently scores garbage as high-quality and corrupts every metric discussion.</p>
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div class="footer">
+    <div>LLM Council — Imperial RAG Evals Pipeline Review</div>
+    <div class="meta">
+      <span>📅 2026-06-23</span>
+      <span>🤖 5 advisors · 5 peer reviewers · 1 chairman</span>
+      <span>Based on Karpathy's LLM Council methodology</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

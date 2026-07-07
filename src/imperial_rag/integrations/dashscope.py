@@ -3,15 +3,17 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
-import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from langchain_core.embeddings import Embeddings
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_core import PydanticUseDefault
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from imperial_rag.config import env_bool, env_optional_bool, env_optional_int, env_optional_str, env_str
+from imperial_rag.config import TRUE_ENV_VALUES
 from imperial_rag.observability.phoenix import trace_embedding_step
 
 
@@ -40,45 +42,81 @@ class DashScopeProviderError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
-class QwenProviderSettings:
-    api_key: str | None
-    region: str = "beijing"
-    base_url: str = DEFAULT_DASHSCOPE_BASE_URL
-    compat_base_url: str = DEFAULT_DASHSCOPE_COMPAT_BASE_URL
-    chat_model: str = DEFAULT_QWEN_CHAT_MODEL
-    vision_model: str = DEFAULT_QWEN_VISION_MODEL
-    ocr_task: str = DEFAULT_QWEN_OCR_TASK
-    ocr_min_pixels: int | None = None
-    ocr_max_pixels: int | None = None
-    ocr_enable_rotate: bool | None = None
-    embedding_model: str = DEFAULT_QWEN_EMBEDDING_MODEL
-    embedding_dimensions: int | None = DEFAULT_QWEN_EMBEDDING_DIMENSIONS
-    rerank_model: str = DEFAULT_QWEN_RERANK_MODEL
-    allow_legacy_openai: bool = False
-    allow_legacy_cohere: bool = False
+class QwenProviderSettings(BaseSettings):
+    model_config = SettingsConfigDict(populate_by_name=True, frozen=True, extra="ignore")
+
+    api_key: str | None = Field(None, validation_alias=AliasChoices("DASHSCOPE_API_KEY", "api_key"))
+    region: str = Field("beijing", validation_alias=AliasChoices("IMPERIAL_RAG_DASHSCOPE_REGION", "region"))
+    base_url: str = Field(
+        DEFAULT_DASHSCOPE_BASE_URL,
+        validation_alias=AliasChoices("IMPERIAL_RAG_DASHSCOPE_BASE_URL", "base_url"),
+    )
+    compat_base_url: str = Field(
+        DEFAULT_DASHSCOPE_COMPAT_BASE_URL,
+        validation_alias=AliasChoices("IMPERIAL_RAG_DASHSCOPE_COMPAT_BASE_URL", "compat_base_url"),
+    )
+    chat_model: str = Field(
+        DEFAULT_QWEN_CHAT_MODEL,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_CHAT_MODEL", "chat_model"),
+    )
+    vision_model: str = Field(
+        DEFAULT_QWEN_VISION_MODEL,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_VISION_MODEL", "vision_model"),
+    )
+    ocr_task: str = Field(
+        DEFAULT_QWEN_OCR_TASK,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_OCR_TASK", "ocr_task"),
+    )
+    ocr_min_pixels: int | None = Field(
+        None,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_OCR_MIN_PIXELS", "ocr_min_pixels"),
+    )
+    ocr_max_pixels: int | None = Field(
+        None,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_OCR_MAX_PIXELS", "ocr_max_pixels"),
+    )
+    ocr_enable_rotate: bool | None = Field(
+        None,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_OCR_ENABLE_ROTATE", "ocr_enable_rotate"),
+    )
+    embedding_model: str = Field(
+        DEFAULT_QWEN_EMBEDDING_MODEL,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_EMBEDDING_MODEL", "embedding_model"),
+    )
+    embedding_dimensions: int | None = Field(
+        DEFAULT_QWEN_EMBEDDING_DIMENSIONS,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS", "embedding_dimensions"),
+    )
+    rerank_model: str = Field(
+        DEFAULT_QWEN_RERANK_MODEL,
+        validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_RERANK_MODEL", "rerank_model"),
+    )
+    allow_legacy_openai: bool = Field(
+        False,
+        validation_alias=AliasChoices("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "allow_legacy_openai"),
+    )
+    allow_legacy_cohere: bool = Field(
+        False,
+        validation_alias=AliasChoices("IMPERIAL_RAG_ALLOW_LEGACY_COHERE", "allow_legacy_cohere"),
+    )
 
     @classmethod
     def from_env(cls) -> "QwenProviderSettings":
-        return cls(
-            api_key=env_optional_str("DASHSCOPE_API_KEY"),
-            region=env_str("IMPERIAL_RAG_DASHSCOPE_REGION", "beijing"),
-            base_url=env_str("IMPERIAL_RAG_DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE_URL),
-            compat_base_url=env_str("IMPERIAL_RAG_DASHSCOPE_COMPAT_BASE_URL", DEFAULT_DASHSCOPE_COMPAT_BASE_URL),
-            chat_model=env_str("IMPERIAL_RAG_QWEN_CHAT_MODEL", DEFAULT_QWEN_CHAT_MODEL),
-            vision_model=env_str("IMPERIAL_RAG_QWEN_VISION_MODEL", DEFAULT_QWEN_VISION_MODEL),
-            ocr_task=env_str("IMPERIAL_RAG_QWEN_OCR_TASK", DEFAULT_QWEN_OCR_TASK),
-            ocr_min_pixels=env_optional_int("IMPERIAL_RAG_QWEN_OCR_MIN_PIXELS"),
-            ocr_max_pixels=env_optional_int("IMPERIAL_RAG_QWEN_OCR_MAX_PIXELS"),
-            ocr_enable_rotate=env_optional_bool("IMPERIAL_RAG_QWEN_OCR_ENABLE_ROTATE"),
-            embedding_model=env_str("IMPERIAL_RAG_QWEN_EMBEDDING_MODEL", DEFAULT_QWEN_EMBEDDING_MODEL),
-            embedding_dimensions=env_optional_int("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS")
-            if os.environ.get("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS", "").strip()
-            else DEFAULT_QWEN_EMBEDDING_DIMENSIONS,
-            rerank_model=env_str("IMPERIAL_RAG_QWEN_RERANK_MODEL", DEFAULT_QWEN_RERANK_MODEL),
-            allow_legacy_openai=env_bool("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI"),
-            allow_legacy_cohere=env_bool("IMPERIAL_RAG_ALLOW_LEGACY_COHERE"),
-        )
+        return cls()  # type: ignore[call-arg]
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _blank_env_uses_default(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip() == "":
+            raise PydanticUseDefault()
+        return value
+
+    @field_validator("allow_legacy_openai", "allow_legacy_cohere", "ocr_enable_rotate", mode="before")
+    @classmethod
+    def _coerce_bool_env(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().casefold() in TRUE_ENV_VALUES
+        return value
 
     def require_api_key(self) -> str:
         if not self.api_key:

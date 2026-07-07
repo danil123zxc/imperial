@@ -13,6 +13,7 @@ from typing import Any
 import anyio
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 
+from imperial_rag.evals.corpus import CHUNK_ID_METADATA_FIELDS, clean_context_ids as _clean_context_ids
 from imperial_rag.integrations.dashscope import MissingDashScopeKeyError, QwenProviderSettings
 
 
@@ -140,20 +141,38 @@ def retrieved_contexts_from_output(output: Mapping[str, Any]) -> list[str]:
 
 
 def retrieved_context_ids_from_output(output: Mapping[str, Any]) -> list[str]:
-    direct_ids = output.get("retrieved_context_ids")
+    return _ids_from_output(output, direct_key="retrieved_context_ids", metadata_fields=("file_id",))
+
+
+def retrieved_chunk_ids_from_output(output: Mapping[str, Any]) -> list[str]:
+    return _ids_from_output(output, direct_key="retrieved_chunk_ids", metadata_fields=CHUNK_ID_METADATA_FIELDS)
+
+
+def preferred_retrieved_context_ids(output: Mapping[str, Any]) -> list[str]:
+    """Chunk-level retrieved IDs when available, else legacy file-level IDs."""
+    return retrieved_chunk_ids_from_output(output) or retrieved_context_ids_from_output(output)
+
+
+def _ids_from_output(
+    output: Mapping[str, Any],
+    *,
+    direct_key: str,
+    metadata_fields: tuple[str, ...],
+) -> list[str]:
+    direct_ids = output.get(direct_key)
     if direct_ids:
         return _clean_context_ids(direct_ids)
 
     documents = output.get("documents") or output.get("evidence") or []
     ids: list[str] = []
-    seen: set[str] = set()
     for document in documents:
         metadata = _document_metadata(document)
-        file_id = str(metadata.get("file_id") or "").strip()
-        if file_id and file_id not in seen:
-            seen.add(file_id)
-            ids.append(file_id)
-    return ids
+        for field in metadata_fields:
+            value = str(metadata.get(field) or "").strip()
+            if value:
+                ids.append(value)
+                break
+    return _clean_context_ids(ids)
 
 
 def build_faithfulness_scorer(provider_settings: QwenProviderSettings | None = None) -> Any:
@@ -259,15 +278,16 @@ async def score_id_context_recall_for_phoenix_async(
     resolved_output = output or {}
     resolved_expected = expected or resolved_input
     reference_context_ids = _clean_context_ids(resolved_expected.get("reference_context_ids") or [])
+    retrieved_context_ids = preferred_retrieved_context_ids(resolved_output)
     if not reference_context_ids:
         return _id_context_recall_not_applicable_result(
             "missing_reference_context_ids",
-            retrieved_context_count=len(retrieved_context_ids_from_output(resolved_output)),
+            retrieved_context_count=len(retrieved_context_ids),
             reference_context_count=0,
         )
     row = {
         "user_input": str(resolved_input.get("question") or resolved_input.get("user_input") or ""),
-        "retrieved_context_ids": retrieved_context_ids_from_output(resolved_output),
+        "retrieved_context_ids": retrieved_context_ids,
         "reference_context_ids": reference_context_ids,
     }
     return await score_id_context_recall_row_async(row, scorer=scorer)
@@ -285,11 +305,14 @@ async def score_faithfulness_row_async(row: Mapping[str, Any], scorer: Any | Non
         return _skipped_result("missing_response_or_contexts")
 
     resolved_scorer = scorer or build_faithfulness_scorer()
-    raw_result = await _score_with_ragas_async(
+    raw_result = await _score_text_metric_with_ragas_async(
         resolved_scorer,
-        user_input=user_input,
-        response=response,
-        retrieved_contexts=retrieved_contexts,
+        metric_name="Faithfulness",
+        score_kwargs={
+            "user_input": user_input,
+            "response": response,
+            "retrieved_contexts": retrieved_contexts,
+        },
     )
     score = _coerce_score_value(raw_result)
     return {
@@ -314,10 +337,13 @@ async def score_answer_relevancy_row_async(row: Mapping[str, Any], scorer: Any |
         return _answer_relevancy_skipped_result("missing_user_input_or_response")
 
     resolved_scorer = scorer or build_answer_relevancy_scorer()
-    raw_result = await _score_answer_relevancy_with_ragas_async(
+    raw_result = await _score_text_metric_with_ragas_async(
         resolved_scorer,
-        user_input=user_input,
-        response=response,
+        metric_name="AnswerRelevancy",
+        score_kwargs={
+            "user_input": user_input,
+            "response": response,
+        },
     )
     score = _coerce_score_value(raw_result)
     return {
@@ -464,95 +490,21 @@ async def evaluate_id_context_recall_rows_async(
     return await _map_rows_bounded(rows, evaluate, concurrency=concurrency)
 
 
-def _score_with_ragas(
+async def _score_text_metric_with_ragas_async(
     scorer: Any,
     *,
-    user_input: str,
-    response: str,
-    retrieved_contexts: list[str],
+    metric_name: str,
+    score_kwargs: dict[str, Any],
 ) -> Any:
-    return _run_coroutine(
-        _score_with_ragas_async(
-            scorer,
-            user_input=user_input,
-            response=response,
-            retrieved_contexts=retrieved_contexts,
-        )
-    )
-
-
-async def _score_with_ragas_async(
-    scorer: Any,
-    *,
-    user_input: str,
-    response: str,
-    retrieved_contexts: list[str],
-) -> Any:
-    kwargs = {
-        "user_input": user_input,
-        "response": response,
-        "retrieved_contexts": retrieved_contexts,
-    }
     if hasattr(scorer, "ascore"):
-        return await _resolve_awaitable_async(scorer.ascore(**kwargs))
+        return await _resolve_awaitable_async(scorer.ascore(**score_kwargs))
     if hasattr(scorer, "single_turn_ascore"):
-        sample = _import_single_turn_sample()(**kwargs)
+        sample = _import_single_turn_sample()(**score_kwargs)
         return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
     if hasattr(scorer, "score"):
-        result = await run_sync_in_worker_thread(lambda: scorer.score(**kwargs))
+        result = await run_sync_in_worker_thread(lambda: scorer.score(**score_kwargs))
         return await _resolve_awaitable_async(result)
-    raise TypeError("Ragas Faithfulness scorer does not expose score/ascore methods.")
-
-
-def _score_answer_relevancy_with_ragas(
-    scorer: Any,
-    *,
-    user_input: str,
-    response: str,
-) -> Any:
-    return _run_coroutine(
-        _score_answer_relevancy_with_ragas_async(
-            scorer,
-            user_input=user_input,
-            response=response,
-        )
-    )
-
-
-async def _score_answer_relevancy_with_ragas_async(
-    scorer: Any,
-    *,
-    user_input: str,
-    response: str,
-) -> Any:
-    kwargs = {
-        "user_input": user_input,
-        "response": response,
-    }
-    if hasattr(scorer, "ascore"):
-        return await _resolve_awaitable_async(scorer.ascore(**kwargs))
-    if hasattr(scorer, "single_turn_ascore"):
-        sample = _import_single_turn_sample()(**kwargs)
-        return await _resolve_awaitable_async(scorer.single_turn_ascore(sample))
-    if hasattr(scorer, "score"):
-        result = await run_sync_in_worker_thread(lambda: scorer.score(**kwargs))
-        return await _resolve_awaitable_async(result)
-    raise TypeError("Ragas AnswerRelevancy scorer does not expose score/ascore methods.")
-
-
-def _score_id_context_recall_with_ragas(
-    scorer: Any,
-    *,
-    retrieved_context_ids: list[str],
-    reference_context_ids: list[str],
-) -> Any:
-    return _run_coroutine(
-        _score_id_context_recall_with_ragas_async(
-            scorer,
-            retrieved_context_ids=retrieved_context_ids,
-            reference_context_ids=reference_context_ids,
-        )
-    )
+    raise TypeError(f"Ragas {metric_name} scorer does not expose score/ascore methods.")
 
 
 async def _score_id_context_recall_with_ragas_async(
@@ -748,23 +700,6 @@ def _clean_texts(values: Any) -> list[str]:
         if text:
             texts.append(text)
     return texts
-
-
-def _clean_context_ids(values: Any) -> list[str]:
-    if values is None:
-        raw_values: list[Any] = []
-    elif isinstance(values, str) or not isinstance(values, Sequence):
-        raw_values = [values]
-    else:
-        raw_values = list(values)
-    ids: list[str] = []
-    seen: set[str] = set()
-    for value in raw_values:
-        context_id = str(value).strip()
-        if context_id and context_id not in seen:
-            seen.add(context_id)
-            ids.append(context_id)
-    return ids
 
 
 def _has_scoreable_fields(row: Mapping[str, Any]) -> bool:

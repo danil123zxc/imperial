@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Imperial RAG Eval Hardening Council Report</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #5f6b7a;
+      --line: #d9e2ec;
+      --panel: #f8fafc;
+      --accent: #0f766e;
+      --warn: #9a3412;
+      --ok: #166534;
+      --blue: #1d4ed8;
+    }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #ffffff;
+      line-height: 1.55;
+    }
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px 24px 48px;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin: 0 0 12px;
+    }
+    h1 {
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    h2 {
+      font-size: 20px;
+      margin-top: 30px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+    h3 {
+      font-size: 16px;
+      margin-top: 20px;
+    }
+    p {
+      margin: 8px 0 12px;
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+      background: #eef2f7;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .meta {
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
+    .verdict {
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--accent);
+      background: var(--panel);
+      padding: 18px 20px;
+      border-radius: 8px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .tile {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+    .tile strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+    .agree {
+      color: var(--ok);
+      font-weight: 700;
+    }
+    .gate {
+      color: var(--warn);
+      font-weight: 700;
+    }
+    .step-list {
+      counter-reset: step;
+      padding: 0;
+      margin: 12px 0;
+      list-style: none;
+    }
+    .step-list li {
+      counter-increment: step;
+      border-left: 3px solid var(--blue);
+      padding: 8px 0 8px 12px;
+      margin: 8px 0;
+      background: #f8fafc;
+    }
+    .step-list li::before {
+      content: counter(step) ". ";
+      font-weight: 700;
+      color: var(--blue);
+    }
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 10px 0;
+      background: #fff;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+    footer {
+      border-top: 1px solid var(--line);
+      margin-top: 32px;
+      padding-top: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Imperial RAG Eval Hardening Council Report</h1>
+  <p class="meta">Generated 2026-06-25 01:18:55 from a five-advisor council and anonymous peer review round.</p>
+
+  <section class="verdict">
+    <h2>Chairman's Verdict</h2>
+    <p><strong>Use Plan 1 as the spine and Plan 2 as the gated measurement layer.</strong> The row audit is the first deliverable. Judge calibration matters, but it comes after the evidence contract is coherent and before any semantic correctness score is trusted.</p>
+    <p>The immediate blocker is not the lack of another metric; it is that rows still lack auditable file-level evidence, and <code>imperial-cite-003</code> points at the wrong indexed document while expecting a raw absence-act document that is not extracted.</p>
+  </section>
+
+  <h2>Agreement Map</h2>
+  <div class="grid">
+    <div class="tile"><strong>All advisors</strong><span class="agree">Row audit first</span><br>Every perspective rejected judge-first ordering.</div>
+    <div class="tile"><strong>All advisors</strong><span class="agree">Keep calibration gate</span><br>But run it after the dataset contract is cleaned.</div>
+    <div class="tile"><strong>All advisors</strong><span class="gate">Do not enable factual correctness early</span><br>Phoenix does not support it yet, and the judge is not validated.</div>
+    <div class="tile"><strong>Peer reviews</strong><span class="gate">Add acceptance criteria</span><br>Define row invariants, lane routing, thresholds, and artifact outputs.</div>
+  </div>
+
+  <h2>Final Plan</h2>
+  <ol class="step-list">
+    <li><strong>Freeze a baseline.</strong> Save current per-row results before changing row semantics, using currently supported metrics.</li>
+    <li><strong>Create the row audit table.</strong> Include row ID, behavior, lane, current and candidate file IDs, indexed status, source path, answer-key quality, action, quarantine reason, and backlog category.</li>
+    <li><strong>Repair or quarantine defects.</strong> Start with <code>imperial-cite-003</code>; either ingest/convert the absence-act <code>.doc</code>, retarget the row to real indexed evidence, or quarantine it.</li>
+    <li><strong>Backfill and rewrite in one pass.</strong> For cite rows, add concrete Russian references, file-level gold IDs, and specific hints. For conflict rows, include both competing source IDs.</li>
+    <li><strong>Split lanes.</strong> Separate indexed answerability, conflict/version behavior, refusal/out-of-corpus behavior, and known missing-document coverage.</li>
+    <li><strong>Add corpus-aware validation.</strong> Enforce row schema, ID resolution against extracted chunks, lane-specific ID rules, hint checks, quarantine semantics, and unsupported metric gating.</li>
+    <li><strong>Rebuild judge calibration.</strong> Add hard cite negatives, partial answers, wrong-role/entity cases, conflict examples, and refusal examples. Report accuracy, confusion matrix, separation, model, and prompt/config.</li>
+    <li><strong>Enable semantic correctness only after the gate.</strong> Keep <code>factual_correctness</code> disabled until the judge passes and the metric is either supported in Phoenix or explicitly routed through a supported Ragas runner.</li>
+    <li><strong>Expand last.</strong> Add 5-8 in-domain near-miss refusals and audit-derived coverage gaps only after the 37-row dataset is clean.</li>
+  </ol>
+
+  <h2>Definition of Done</h2>
+  <div class="grid">
+    <div class="tile">Baseline artifacts saved before edits.</div>
+    <div class="tile">Audit completed for all 37 rows.</div>
+    <div class="tile"><code>imperial-cite-003</code> fixed or quarantined.</div>
+    <div class="tile">All indexed cite/conflict rows have resolving file-level gold IDs.</div>
+    <div class="tile">Generic meta-reference answers removed from cite/conflict rows.</div>
+    <div class="tile">Corpus-aware linter and ID resolver pass.</div>
+    <div class="tile">Calibration set covers cite/conflict/refusal hard cases.</div>
+    <div class="tile"><code>factual_correctness</code> remains gated until supported and calibrated.</div>
+  </div>
+
+  <h2>Advisor Notes</h2>
+  <details>
+    <summary>The Contrarian</summary>
+    <p>Reject Plan 2's ordering. Judge calibration first is a distraction while evidence contracts are broken. Keep Plan 1 as the spine, then calibrate before enabling semantic correctness.</p>
+  </details>
+  <details>
+    <summary>The First Principles Thinker</summary>
+    <p>Start from the eval contract: what behavior is objectively testable against indexed private evidence? Until this is answered, <code>factual_correctness</code> is measurement theater.</p>
+  </details>
+  <details>
+    <summary>The Expansionist</summary>
+    <p>The audit is more than cleanup: it becomes a corpus coverage map, routing map, and backlog generator. Use CI to make each eval row an addressable product-quality contract.</p>
+  </details>
+  <details>
+    <summary>The Outsider</summary>
+    <p>Fresh eyes cannot trust any judge, metric, or CI gate until every row says what document proves it, whether it is indexed, and what happens if it is not.</p>
+  </details>
+  <details>
+    <summary>The Executor</summary>
+    <p>First deliver the row audit, fix or quarantine <code>imperial-cite-003</code>, backfill IDs, rewrite references, split lanes, and only then add examples.</p>
+  </details>
+
+  <h2>Peer Review Highlights</h2>
+  <details>
+    <summary>What peer review added</summary>
+    <p>The reviewers agreed the final plan needed stricter acceptance criteria: row invariants, lane-specific routing, quarantine rules, calibration thresholds, artifact outputs, model/prompt pinning, a current-results baseline, and explicit Phoenix capability gating.</p>
+  </details>
+
+  <footer>
+    Full transcript: <code>docs/council-transcript-20260625-011855.md</code>. Report file: <code>docs/council-report-20260625-011855.html</code>.
+  </footer>
+</main>
+</body>
+</html>

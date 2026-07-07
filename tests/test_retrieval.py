@@ -929,6 +929,30 @@ def test_candidate_merger_keeps_same_file_sheet_chunks_when_citation_ids_differ(
     ]
 
 
+def test_candidate_merger_does_not_dedupe_distinct_blank_content_documents():
+    vector = Document(page_content="   ", metadata={"citation_id": "blank-vector", "_vector_rank": 0})
+    keyword = Document(page_content="", metadata={"citation_id": "blank-keyword", "_keyword_rank": 0})
+
+    merged = CandidateMerger().merge([vector], [keyword])
+
+    assert [doc.metadata["citation_id"] for doc in merged] == ["blank-vector", "blank-keyword"]
+
+
+def test_candidate_merger_duplicate_groups_follow_merge_identity_rules():
+    same_vector = Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "same"})
+    same_keyword = Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "same"})
+    content_duplicate = Document(page_content=" Возврат брака оформляется актом. ", metadata={"citation_id": "different"})
+    blank_vector = Document(page_content="   ", metadata={"citation_id": "blank-vector"})
+    blank_keyword = Document(page_content="", metadata={"citation_id": "blank-keyword"})
+
+    groups = CandidateMerger().duplicate_groups(
+        [same_vector, content_duplicate, blank_vector],
+        [same_keyword, blank_keyword],
+    )
+
+    assert groups == [{"retained_id": "same", "dropped_ids": ["different", "same"], "sources": ["keyword", "vector"]}]
+
+
 def test_candidate_merger_reconciles_duplicate_vector_keyword_metadata():
     same_vector = Document(
         page_content="Возврат брака оформляется актом.",
@@ -1046,6 +1070,25 @@ def test_rrf_candidate_fusion_places_unranked_documents_last():
     assert fused[-1].metadata["_rrf_score"] == 0.0
 
 
+def test_rrf_candidate_fusion_uses_shared_rank_metadata_rules():
+    docs = [
+        Document(page_content="truthy bool rank is not a rank", metadata={"citation_id": "bool", "_vector_rank": True}),
+        Document(page_content="negative rank is not a rank", metadata={"citation_id": "negative", "_keyword_rank": -1}),
+        Document(page_content="float rank follows existing int coercion", metadata={"citation_id": "float", "_vector_rank": 1.9}),
+        Document(page_content="keyword rank", metadata={"citation_id": "keyword", "_keyword_rank": 0}),
+    ]
+
+    fused = RrfCandidateFusion().fuse(docs, rrf_k=60)
+
+    assert [doc.metadata["citation_id"] for doc in fused] == ["float", "keyword", "bool", "negative"]
+    assert [doc.metadata["_rrf_score"] for doc in fused] == [
+        1 / 61,
+        1 / 61,
+        0.0,
+        0.0,
+    ]
+
+
 def test_retrieval_service_uses_fused_top_candidates_as_reranker_input(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     monkeypatch.delenv("IMPERIAL_RAG_TRACE_MODE", raising=False)
@@ -1102,7 +1145,7 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     vector_docs = [
         Document(
             page_content=f"vector {index}",
-            metadata={"citation_id": f"v{index}", "file_id": "vf", "source_type": "body", "chunk_index": index},
+            metadata={"citation_id": f"v{index}", "file_id": f"vf-{index}", "source_type": "body", "chunk_index": index},
         )
         for index in range(70)
     ]
@@ -1111,7 +1154,7 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
             page_content=f"keyword {index}",
             metadata={
                 "citation_id": f"k{index}",
-                "file_id": "kf",
+                "file_id": f"kf-{index}",
                 "source_type": "body",
                 "chunk_index": index,
                 "_keyword_rank": index,
@@ -1158,6 +1201,9 @@ def test_retrieval_service_defaults_budget_candidates_and_output_top_10(monkeypa
     assert result.diagnostics["reranked_candidates"] == 10
     assert result.diagnostics["final_evidence"] == 10
     assert len(result.evidence) == 10
+    from imperial_rag.evals.ragas import retrieved_context_ids_from_output
+
+    assert len(retrieved_context_ids_from_output({"documents": result.evidence})) == 10
     assert [record["name"] for record in records] == [
         "retrieval",
         "retrieval.vector_search",

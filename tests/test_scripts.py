@@ -55,6 +55,19 @@ def test_ingestion_promotion_script_imports_and_defines_main():
     assert hasattr(module, "main")
 
 
+def test_script_bootstrap_adds_repo_src_once(monkeypatch):
+    module = _load_script("scripts/_bootstrap.py", "script_bootstrap")
+    src_path = str(Path("src").resolve())
+    sys_path = [path for path in sys.path if path != src_path]
+    monkeypatch.setattr(sys, "path", sys_path)
+
+    module.ensure_src_on_path(Path("scripts/query.py"))
+    module.ensure_src_on_path(Path("scripts/run_phoenix_eval.py"))
+
+    assert sys.path[0] == src_path
+    assert sys.path.count(src_path) == 1
+
+
 def test_entrypoint_scripts_expose_phoenix_tracing_flag():
     assert "--trace-phoenix" in Path("scripts/ingest.py").read_text(encoding="utf-8")
     assert "--trace-phoenix" in Path("scripts/query.py").read_text(encoding="utf-8")
@@ -486,6 +499,20 @@ def test_ingest_vector_store_disabled_does_not_require_dashscope_key(monkeypatch
     assert module._build_vector_store(object(), index_vectors=False) is None
 
 
+def test_ingest_script_uses_canonical_ingestion_workflow(monkeypatch):
+    module = _load_script("scripts/ingest.py", "ingest_script_workflow_import")
+    sentinel = object()
+    ingestion_workflow = _fake_module("imperial_rag.ingestion.workflow")
+    ingestion_workflow.build_ingestion_workflow = lambda: sentinel
+    answering_workflow = _fake_module("imperial_rag.answering.workflow")
+    answering_workflow.build_ingestion_workflow = lambda: pytest.fail("answering workflow re-export should not be used")
+
+    monkeypatch.setitem(sys.modules, "imperial_rag.ingestion.workflow", ingestion_workflow)
+    monkeypatch.setitem(sys.modules, "imperial_rag.answering.workflow", answering_workflow)
+
+    assert module._build_ingestion_workflow() is sentinel
+
+
 def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
     module = _load_script("scripts/query.py", "query_script_trace_session")
     trace_contexts = []
@@ -536,6 +563,10 @@ def test_query_script_uses_explicit_trace_session_id(monkeypatch, capsys):
 def test_entrypoint_trace_session_id_prefers_env_then_generated(monkeypatch):
     query_module = _load_script("scripts/query.py", "query_script_session_id")
     ingest_module = _load_script("scripts/ingest.py", "ingest_script_session_id")
+    from imperial_rag import cli
+
+    assert query_module._trace_session_id is cli.trace_session_id
+    assert ingest_module._trace_session_id is cli.trace_session_id
 
     monkeypatch.setenv("IMPERIAL_RAG_TRACE_SESSION_ID", "session-env")
     assert query_module._trace_session_id(None) == "session-env"
@@ -543,7 +574,7 @@ def test_entrypoint_trace_session_id_prefers_env_then_generated(monkeypatch):
     assert query_module._trace_session_id("session-cli") == "session-cli"
 
     monkeypatch.delenv("IMPERIAL_RAG_TRACE_SESSION_ID", raising=False)
-    monkeypatch.setattr(query_module.uuid, "uuid4", lambda: "generated")
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: "generated")
     assert query_module._trace_session_id(None) == "cli_generated"
 
 

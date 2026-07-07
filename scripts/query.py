@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import argparse
-import os
-import sys
-import uuid
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from _bootstrap import ensure_src_on_path as _ensure_src_on_path
+
+
+_ensure_src_on_path(__file__)
+
+from imperial_rag.cli import (  # noqa: E402
+    build_settings as _build_settings,
+    configure_observability as _configure_observability,
+    configure_tracing as _configure_tracing,
+    duration_ms as _duration_ms,
+    load_project_environment as _load_project_env,
+    log_failure as _log_failure,
+    trace_context as _trace_context,
+    trace_session_id as _trace_session_id,
+)
+
 
 def main(argv: list[str] | None = None) -> None:
-    _ensure_src_on_path()
+    _ensure_src_on_path(__file__)
     parser = argparse.ArgumentParser(description="Ask a question against the Imperial RAG runtime.")
     parser.add_argument("question")
     parser.add_argument("--workspace-root", type=Path, help="Workspace root containing the processed RAG state.")
@@ -21,7 +34,7 @@ def main(argv: list[str] | None = None) -> None:
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     _configure_observability(settings)
-    _configure_tracing(settings, args.trace_phoenix)
+    _configure_tracing(settings, trace_phoenix=args.trace_phoenix)
     trace_session_id = _trace_session_id(args.trace_session_id)
     started_at = perf_counter()
     try:
@@ -60,33 +73,6 @@ def _query(settings: Any, question: str) -> dict[str, Any]:
     return _coerce_result(workflow.invoke({"question": question}))
 
 
-def _configure_tracing(settings: Any, trace_phoenix: bool) -> None:
-    from imperial_rag.cli import configure_tracing
-
-    configure_tracing(settings, trace_phoenix=trace_phoenix)
-
-
-def _trace_context(session_id: str):
-    from imperial_rag.cli import trace_context
-
-    return trace_context(session_id)
-
-
-def _trace_session_id(explicit: str | None) -> str:
-    if explicit is not None and explicit.strip():
-        return explicit.strip()
-    env_value = os.environ.get("IMPERIAL_RAG_TRACE_SESSION_ID", "").strip()
-    if env_value:
-        return env_value
-    return f"cli_{uuid.uuid4()}"
-
-
-def _configure_observability(settings: Any) -> None:
-    from imperial_rag.cli import configure_observability
-
-    configure_observability(settings)
-
-
 def _log_query_completion(result: Any, started_at: float, **fields: Any) -> None:
     from imperial_rag.observability import log_event
 
@@ -99,24 +85,6 @@ def _log_query_completion(result: Any, started_at: float, **fields: Any) -> None
         **fields,
         **_query_log_fields(result),
     )
-
-
-def _log_failure(operation: str, exc: BaseException, started_at: float, **fields: Any) -> None:
-    from imperial_rag.cli import log_failure
-
-    log_failure(operation, exc, started_at, **fields)
-
-
-def _build_settings(workspace_root: Path | None) -> Any:
-    from imperial_rag.cli import build_settings
-
-    return build_settings(workspace_root)
-
-
-def _load_project_env(workspace_root: Path | None) -> None:
-    from imperial_rag.cli import load_project_environment
-
-    load_project_environment(workspace_root)
 
 
 def _coerce_result(result: Any) -> dict[str, Any]:
@@ -161,19 +129,6 @@ def _query_log_fields(result: Any) -> dict[str, Any]:
         except TypeError:
             pass
     return fields
-
-
-def _duration_ms(started_at: float) -> int:
-    from imperial_rag.cli import duration_ms
-
-    return duration_ms(started_at)
-
-
-def _ensure_src_on_path() -> None:
-    root = Path(__file__).resolve().parents[1]
-    src = root / "src"
-    if str(src) not in sys.path:
-        sys.path.insert(0, str(src))
 
 
 if __name__ == "__main__":

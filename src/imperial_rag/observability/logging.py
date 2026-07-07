@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -8,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from imperial_rag.observability.eventlog import ElasticsearchEventSink, EventSchemaError, build_event_document
+from imperial_rag.serialization import stable_json_dumps
 
 
 LOGGER_NAME = "imperial_rag.events"
@@ -40,7 +40,7 @@ class JsonEventFormatter(logging.Formatter):
         payload = dict(getattr(record, "event_payload", {}) or {})
         payload.setdefault("timestamp", datetime.fromtimestamp(record.created, UTC).isoformat().replace("+00:00", "Z"))
         payload.setdefault("level", record.levelname.lower())
-        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return stable_json_dumps(payload)
 
 
 class PlainEventFormatter(logging.Formatter):
@@ -125,7 +125,7 @@ def _formatter_for(log_format: Any) -> logging.Formatter:
 def _plain_value(value: Any) -> str:
     if isinstance(value, (str, bool, int, float)) or value is None:
         return str(value)
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return stable_json_dumps(value)
 
 
 def _logging_level(level: Any) -> int:

@@ -1,0 +1,144 @@
+# Imperial RAG loop pattern registry.
+# This local registry is intentionally narrower than upstream loop-engineering.
+patterns:
+  - id: daily-triage
+    name: Daily Triage
+    status: active
+    level: L1
+    cadence: 1d
+    trigger: manual-or-once-daily-after-gates
+    goal: Summarize repo health signals and update durable loop state.
+    allowed_writes:
+      - STATE.md
+      - loop-run-log.md
+    denied_paths:
+      - .env
+      - .env.*
+      - .imperial_rag/**
+      - documents/**
+      - '**/auth.sqlite3'
+      - '**/chat_history.sqlite3'
+      - '**/eval_outputs/**'
+      - '**/phoenix/**'
+    connector_policy: none for first manual run; GitHub CI/PR metadata read-only after approval.
+    provider_backed: false
+    max_subagents_per_run: 0
+    budget:
+      suggested_daily_cap_tokens: 100000
+      expected_tokens_per_run: 23000
+      expected_runs_per_day: 1
+      early_exit: no-signal or same-day reruns append a short skipped/no-signal entry and stop.
+    verifier:
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
+      privacy_review: counts, paths, IDs, checksums, and statuses only.
+      source_gate: ./scripts/check.sh only after L2 source changes are approved.
+    human_gates:
+      - source edits
+      - dependency changes
+      - runtime restarts
+      - provider-backed evals
+      - ingestion promotion
+      - connector writes
+
+  - id: ci-sweeper-manual
+    name: CI Sweeper Manual
+    status: active
+    level: L1
+    cadence: manual
+    skill_path: .codex/skills/ci-sweeper-manual/SKILL.md
+    trigger: failed-ci-or-human-request
+    goal: Map failed CI or local check output to concise report-only findings.
+    allowed_writes:
+      - STATE.md
+      - loop-run-log.md
+    connector_policy: GitHub CI/PR metadata read-only after approval; no write actions.
+    provider_backed: false
+    max_subagents_per_run: 0
+    budget:
+      suggested_daily_cap_tokens: 100000
+      expected_tokens_per_run: 9500
+      expected_runs_per_day: 1
+      early_exit: exit when CI is green or no failing run is provided.
+    verifier:
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
+      source_gate: ./scripts/check.sh only after L2 source changes are approved.
+    human_gates:
+      - infrastructure failures
+      - security tests
+      - workflow changes
+      - connector writes
+
+  - id: eval-regression-check
+    name: Eval Regression Check
+    status: active
+    level: L1
+    cadence: manual
+    skill_path: .codex/skills/eval-regression-check/SKILL.md
+    trigger: before-eval-changes
+    goal: Summarize eval dataset quality or drift without running provider-backed evals.
+    allowed_writes:
+      - STATE.md
+      - loop-run-log.md
+    connector_policy: none.
+    provider_backed: false
+    max_subagents_per_run: 0
+    budget:
+      suggested_daily_cap_tokens: 100000
+      expected_tokens_per_run: 12000
+      expected_runs_per_day: 1
+      early_exit: exit when no eval-related diff, planned eval change, or explicit request is present.
+    verifier:
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
+      optional_gate: uv run python scripts/audit_eval_rows.py --strict --output-path <tmp>
+    human_gates:
+      - provider-backed evals
+      - eval dataset edits
+      - judge calibration changes
+
+  - id: ingestion-promotion-review
+    name: Ingestion Promotion Review
+    status: active
+    level: L1
+    cadence: manual
+    skill_path: .codex/skills/ingestion-promotion-review/SKILL.md
+    trigger: before-ingestion-promotion
+    goal: Summarize baseline/shadow promotion checks without changing generated corpus state.
+    allowed_writes:
+      - STATE.md
+      - loop-run-log.md
+    connector_policy: none.
+    provider_backed: false
+    max_subagents_per_run: 0
+    budget:
+      suggested_daily_cap_tokens: 100000
+      expected_tokens_per_run: 14000
+      expected_runs_per_day: 1
+      early_exit: exit when baseline/shadow roots or explicit promotion-review context are absent.
+    verifier:
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
+      optional_gate: uv run python scripts/check_ingestion_promotion.py --baseline-root <path> --shadow-root <path>
+    human_gates:
+      - corpus artifact regeneration
+      - index promotion
+      - vector or keyword index replacement
+
+  - id: post-merge-cleanup
+    name: Post-Merge Cleanup
+    status: candidate
+    level: L1
+    cadence: manual
+    trigger: after-merge-review
+    goal: Summarize cleanup follow-ups after merges; do not edit source in L1.
+    allowed_writes:
+      - STATE.md
+      - loop-run-log.md
+    connector_policy: GitHub PR metadata read-only after approval.
+    provider_backed: false
+    max_subagents_per_run: 0
+    verifier:
+      report_only_diff: pre/post git status required; STATE.md and loop-run-log.md only.
+      source_gate: ./scripts/check.sh only after L2 source changes are approved.
+    human_gates:
+      - source cleanup edits
+      - broad refactors
+      - workflow or dependency changes

@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import argparse
 import os
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+
+
+def positive_int(raw_value: str | int) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
 
 
 def load_project_environment(workspace_root: Path | None) -> None:
@@ -19,11 +30,7 @@ def build_settings(workspace_root: Path | None) -> Any:
 
     if workspace_root is None:
         return Settings()
-    try:
-        return Settings(workspace_root=workspace_root)
-    except TypeError:
-        os.environ["IMPERIAL_RAG_WORKSPACE_ROOT"] = str(workspace_root)
-        return Settings()
+    return Settings(workspace_root=workspace_root)
 
 
 def configure_observability(settings: Any) -> None:
