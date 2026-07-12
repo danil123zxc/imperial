@@ -3,7 +3,7 @@
 State: STATE.md.
 State file: `STATE.md`.
 Pattern registry: `patterns/registry.yaml`.
-Mode: L1 report-only loops plus opt-in L2 assisted publish.
+Mode: L1 report-only loops plus default L2 assisted publish for code-changing tasks.
 
 Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/registry.yaml`, and loop skill output.
 
@@ -16,7 +16,7 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 | `eval-regression-check` | Manual before eval changes | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$eval-regression-check`. Audit eval dataset drift without provider-backed runs or dataset edits. |
 | `ingestion-promotion-review` | Manual before promotion | Active L1 report-only | Run `$loop-constraints`, `$loop-budget`, then `$ingestion-promotion-review`. Compare approved baseline/shadow context; never promote artifacts. |
 | `post-merge-cleanup` | Manual after merge review | Candidate L1 report-only | Summarize follow-up cleanup only; any source edit requires later L2 approval. |
-| `agent-assisted-publish` | Exact `Publish: draft-pr` task marker | Active L2 assisted | Work in a fresh `codex/<task>` worktree, verify, commit scoped files, then run `scripts/publish_agent_pr.sh --verifier-approved`; never merge. |
+| `agent-assisted-publish` | Any code-changing task without an opt-out marker | Active L2 assisted | Work in a fresh `codex/<task>` worktree, verify, commit scoped files, run `scripts/publish_agent_pr.sh --verifier-approved`, then remove the clean linked worktree after creating the draft PR; never merge. |
 
 ## Enablement Terms
 
@@ -25,7 +25,7 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 - "Enable" means allowing a manual L1 report-only run after trigger, pause, cadence, budget, write-scope, and privacy gates pass.
 - "Enable" does not mean scheduling, promotion to active, connector access, source edits, dependency changes, provider-backed evals, ingestion promotion, or PR/GitHub writes.
 - `post-merge-cleanup` remains candidate until a human explicitly promotes it.
-- `agent-assisted-publish` is opt-in per task. It is not scheduled and does not promote any L1 loop to source mutation.
+- `agent-assisted-publish` is the default for code-changing tasks. `Local-only`, `Do not publish`, read-only/review-only tasks, and no-diff outcomes do not publish. It is not scheduled and does not promote any L1 loop to source mutation.
 - Future loop ideas such as `dependency-sweeper`, `issue-triage`, `changelog-drafter`, and `pr-babysitter` are not configured loops until they have registry entries, budgets, connector policy, allowed writes, and human gates.
 
 ## Current Findings
@@ -35,7 +35,7 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 ## Safety Gates
 
 - Auto-merge is disabled.
-- Auto-push is disabled except for an explicitly marked L2 `Publish: draft-pr` task that passes the assisted-publish gates.
+- Auto-push to the task's `codex/*` branch and draft-PR creation are enabled by default for code-changing tasks that pass the assisted-publish gates and do not opt out.
 - Report-only loops may write only `STATE.md`, `loop-run-log.md`, and clearly scoped loop reports unless the user explicitly asks for implementation.
 - Any source edit, dependency change, generated corpus rewrite, provider-backed eval run, or runtime restart requires human approval in the active thread.
 - High-risk paths and data-egress rules are binding in `loop-constraints.md` and `docs/safety.md`.
@@ -66,13 +66,14 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 - The implementer cannot verify its own work.
 - The verifier must inspect the diff, confirm no denylist paths changed, and run the relevant checks before a PR or commit is proposed.
 - Assisted publishing must start from fresh `origin/main`; a branch with a merged or closed PR is never reusable.
+- After a new draft PR is created, remove only the clean linked worktree without `--force`; never remove the primary worktree. Keep worktrees for existing draft-PR updates.
 - Stop after three failed attempts on the same item and escalate with evidence.
 
 ## Connectors (MCP)
 
 - MCP is optional for L1 report-only loops.
 - No connectors are required for the first manual L1 run.
-- GitHub access is read-only by default. The exact `Publish: draft-pr` marker permits push access to the task's `codex/*` branch and draft-PR create/update access only after verification.
+- GitHub access is read-only for L1 loops. For default L2 code-changing tasks without an opt-out marker, write access is limited to the task's `codex/*` branch and draft-PR create/update after verification.
 - Do not attach Slack, Drive, Vercel, database, or analytics connectors to L1 loops without a separate approval and scope review.
 - No connector should receive raw `.env`, corpus documents, Phoenix traces, auth databases, or private eval outputs.
 
@@ -100,6 +101,7 @@ Loop IDs are stable coordination keys. They must match `STATE.md`, `patterns/reg
 - 2026-06-30: Start Imperial loop engineering in L1 report-only mode.
 - 2026-07-02: Keep `daily-triage` manual or once daily; promote `ci-sweeper-manual`, `eval-regression-check`, and `ingestion-promotion-review` to active manual L1 report-only loops.
 - 2026-07-13: Enable opt-in L2 assisted publishing through the exact `Publish: draft-pr` task marker; keep auto-merge disabled.
+- 2026-07-13: Make L2 assisted publishing the default for code-changing tasks, add `Local-only` and `Do not publish` opt-outs, and remove clean linked worktrees after new draft-PR creation.
 
 ## Pause State
 

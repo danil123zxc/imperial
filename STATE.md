@@ -1,7 +1,7 @@
 # Loop State - Imperial RAG
 
 Last run: 2026-07-02T16:40:20+0900 `ingestion-promotion-review` manual L1.
-Mode: L1 report-only loops plus opt-in L2 assisted publish.
+Mode: L1 report-only loops plus default L2 assisted publish for code-changing tasks.
 Config: `LOOP.md`.
 Registry: `patterns/registry.yaml`.
 Allowed L1 write paths: `STATE.md`, `loop-run-log.md`. L2 writes are limited to the explicitly approved task scope.
@@ -23,7 +23,7 @@ Event-gated active loops remain gated:
 
 Future ideas such as `dependency-sweeper`, `issue-triage`, `changelog-drafter`, and `pr-babysitter` are not configured loops. They need registry entries, budgets, connector policy, allowed writes, and human gates before use.
 
-On 2026-07-13, the human enabled `agent-assisted-publish` as an opt-in L2 workflow. The exact task marker `Publish: draft-pr` authorizes commit, task-branch push, and draft-PR create/update after all safety and verifier gates pass. It does not enable scheduling, auto-merge, or mutation by the recurring L1 loops.
+On 2026-07-13, the human made `agent-assisted-publish` the default for code-changing tasks. The standing repository instruction authorizes commit, task-branch push, and draft-PR create/update after all safety and verifier gates pass. `Local-only`, `Do not publish`, read-only/review-only tasks, and no-diff outcomes do not publish. New draft-PR creation removes the clean linked worktree but retains the branch and PR. This does not enable scheduling, auto-merge, or mutation by recurring L1 loops.
 
 ## Active Loops
 
@@ -36,7 +36,7 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 | `eval-regression-check` | Active | Manual before eval changes | L1 report-only | Summarizes dataset audit or drift signals; provider-backed evals require approval. |
 | `ingestion-promotion-review` | Active | Manual before promotion | L1 report-only | Summarizes baseline/shadow checks; no promotion. |
 | `post-merge-cleanup` | Candidate | Manual after merge review | L1 report-only | Report-only in L1; any cleanup fix needs later L2 approval. |
-| `agent-assisted-publish` | Active | Exact `Publish: draft-pr` task marker | L2 assisted | Fresh `codex/*` worktree, scoped commit, independent verification, task-branch push, and draft PR only. |
+| `agent-assisted-publish` | Active | Code-changing task without opt-out | L2 assisted | Fresh `codex/*` worktree, scoped commit, independent verification, task-branch push, draft PR, then clean linked-worktree removal. |
 
 ## Current Findings
 
@@ -70,7 +70,7 @@ Loop IDs must match `LOOP.md` and `patterns/registry.yaml`.
 
 - 2026-06-30: Start Imperial loop engineering in L1 report-only mode.
 - Recurring loops have no auto-fix or auto-push; auto-merge is always disabled.
-- 2026-07-13: Allow opt-in L2 commit, task-branch push, and draft-PR create/update after the exact `Publish: draft-pr` marker and all publish gates.
+- 2026-07-13: Make L2 commit, task-branch push, and draft-PR create/update the default for code-changing tasks after all publish gates; allow `Local-only` and `Do not publish` opt-outs and remove clean linked worktrees after new PR creation.
 - 2026-07-02: Pin `daily-triage` to manual or once daily; keep high-frequency CI sweeps disabled.
 - 2026-07-02: Promote `ci-sweeper-manual`, `eval-regression-check`, and `ingestion-promotion-review` to active manual L1 report-only loops on explicit human request.
 
