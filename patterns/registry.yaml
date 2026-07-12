@@ -1,6 +1,42 @@
 # Imperial RAG loop pattern registry.
 # This local registry is intentionally narrower than upstream loop-engineering.
 patterns:
+  - id: agent-assisted-publish
+    name: Agent Assisted Publish
+    status: active
+    level: L2
+    cadence: manual
+    trigger: exact-publish-draft-pr-task-marker
+    goal: Publish one verified, scoped agent task as a draft pull request.
+    allowed_writes:
+      - explicitly approved task paths
+    denied_paths:
+      - .env
+      - .env.*
+      - .imperial_rag/**
+      - documents/**
+      - '**/auth.sqlite3'
+      - '**/chat_history.sqlite3'
+      - '**/eval_outputs/**'
+      - '**/phoenix/**'
+    connector_policy: Push the current codex/* task branch and create or update its draft PR only.
+    provider_backed: false
+    max_subagents_per_run: 2
+    budget:
+      suggested_daily_cap_tokens: 500000
+      expected_runs_per_day: 1
+      early_exit: Stop on dirty scope, stale base, failed checks, verifier rejection, or unsafe paths.
+    verifier:
+      source_gate: ./scripts/check.sh
+      base_diff_gate: git diff --check origin/main...HEAD
+      independent_verdict: loop-verifier APPROVE required before publish.
+    human_gates:
+      - 'exact Publish: draft-pr marker'
+      - protected or high-risk paths
+      - changes touching more than 10 files
+      - ready-for-review transition
+      - merge
+
   - id: daily-triage
     name: Daily Triage
     status: active
