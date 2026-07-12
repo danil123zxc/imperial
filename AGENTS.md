@@ -28,6 +28,16 @@ The project uses pytest with `pythonpath = ["src"]` and `testpaths = ["tests"]`.
 
 Evaluation workflows should be async-first: write eval runners, provider calls, and eval tests with async-compatible code paths instead of blocking synchronous loops when touching retrieval, model, tracing, or Phoenix-backed evaluation behavior.
 
+## Obsidian Documentation Gate
+
+After every code, configuration, schema, or operational-script change, use the repo-local `sync-imperial-obsidian-docs` skill at `.agents/skills/sync-imperial-obsidian-docs/SKILL.md` before final checks and commit. Treat the `Second brain/1. Projects/Imperial RAG/` note set as detailed human project documentation and `README.md` as the concise repo/operator guide.
+
+Inspect the session diff against the starting `git status --short`, assess durable newcomer-facing impact, and update only affected registered notes through the skill's `obsidian_docs.py` adapter. Architecture, ownership, database/RAG schemas, ingestion and retrieval strategies, pipelines, evaluation, privacy, commands, failure modes, deliberate tradeoffs, current state, and roadmap changes are documentation-relevant. Test-only or behavior-preserving changes may be a no-op unless they change a documented invariant, module map, command, or troubleshooting path.
+
+Read before writing, pass the adapter's SHA-256 optimistic-lock value, and read every changed note back through Obsidian CLI. Keep implemented code capability, generated-state snapshots, currently running services, and planned direction explicitly separate. Never copy secrets, corpus text, extracted chunks, prompts, answers, Phoenix payloads, eval outputs, auth rows, or chat transcripts into notes. If final checks cause another code change, repeat the documentation-impact assessment.
+
+In the final handoff, list updated note titles or state `Obsidian docs: no durable documentation impact` with a short reason. If Obsidian is closed or the vault check fails, the code commit may proceed, but prominently report `Obsidian docs: pending`, the CLI error, and the candidate notes that still need synchronization.
+
 ## Log Inspection Guidelines
 
 When diagnosing a runtime, UI, ingestion, eval, or service issue, check the live logs before guessing from code. In the Compose stack, the app emits structured JSON logs to stderr and Docker stores them with the `json-file` driver and rotation from `compose.yaml`. Start with `docker compose ps`, then inspect the relevant service with `docker compose logs --tail=200 app` or `docker compose logs --tail=200 <service>`; use `-f` only when actively watching a repro. If you need the underlying log file path, run `container_id=$(docker compose ps -q app) && docker inspect --format='{{.LogPath}}' "$container_id"` and read that returned Docker `LogPath`; the usual Docker path shape is `/var/lib/docker/containers/<container-id>/<container-id>-json.log`, which may live inside Docker Desktop's VM on macOS.
