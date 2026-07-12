@@ -46,6 +46,8 @@ Searchable event logs are optional and separate from the stderr/Docker log strea
 
 ## Commit & Pull Request Guidelines
 
+Before any code-changing task, run `git fetch origin --prune` and compare the current branch with its configured upstream. If the worktree is clean and the branch is strictly behind its upstream, update it with `git pull --ff-only` before editing. If the branch is ahead, diverged, has no upstream, or the worktree contains local changes, do not pull, rebase, reset, or overwrite local work; preserve the current state and either report the condition or start a fresh branch/worktree from the latest `origin/main` when that is within the task scope.
+
 Use short imperative commit subjects, optionally Conventional Commit style such as `feat: add phoenix tracing` or `fix: preserve citation sources`. Before editing code, capture `git status --short` as the session baseline. After every code-changing task or checkpoint, run the relevant tests or checks, inspect `git status --short` and `git diff`, then create a commit containing only the changes made by the agent in the current session. Stage only files or hunks changed by the current agent session; avoid `git add .`. Do not commit pre-existing user changes, unrelated generated artifacts, secrets, corpus artifacts, or local state. If a file contains mixed user and session edits that cannot be safely separated, stop and ask before committing. PRs should describe the change, list test commands run, note corpus/config impacts, and include screenshots for UI changes.
 
 ## Security & Configuration Tips
