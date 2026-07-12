@@ -1,6 +1,6 @@
 # Loop Budget - Imperial RAG
 
-Status: active for L1 report-only loops.
+Status: active for L1 report-only loops and opt-in L2 assisted publish tasks.
 Kill switch: inactive.
 
 ## Daily Caps
@@ -8,7 +8,7 @@ Kill switch: inactive.
 | Level | Max tokens/day | Max sub-agents/run | Allowed action |
 | --- | ---: | ---: | --- |
 | L1 report-only | 100k | 0 | Triage, summarize, update state/logs |
-| L2 assisted fixes | 500k | 2 | Draft minimal fixes in isolated worktrees after approval |
+| L2 assisted fixes | 500k | 2 | Implement, verify, commit, push a task branch, and create/update a draft PR after per-task approval |
 | L3 unattended | Not approved | 0 | Not allowed |
 
 ## Runtime Rules
