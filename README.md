@@ -187,6 +187,12 @@ uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial
 # Rebuild keyword artifacts and vector index
 uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --index-vectors
 
+# Build a fully isolated candidate (artifacts, manifest, OCR cache, Elasticsearch, and Qdrant)
+uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --enable-ocr --index-vectors --shadow-run migration-v1
+
+# Validate the candidate and switch active Elasticsearch/Qdrant aliases plus the local pointer
+uv run python scripts/promote_ingestion.py migration-v1 --workspace-root /Users/danil/Public/imperial
+
 # Query processed state
 uv run python scripts/query.py "question text"
 
@@ -205,10 +211,14 @@ uv run python scripts/run_all_evals.py
 | Phoenix | `http://localhost:6006` | Optional traces and eval experiments |
 | `.imperial_rag/manifest.sqlite3` | local file | Corpus manifest and per-file status |
 | `.imperial_rag/extracted/` | local directory | Extracted text, chunks, ledger, and lineage |
+| `.imperial_rag/shadow-runs/<id>/` | local directory | Isolated candidate artifacts, manifest, OCR cache, and run descriptor |
+| `.imperial_rag/active-ingestion.json` | local file | Atomically replaced pointer to the promoted artifacts and search aliases |
 | `.imperial_rag/auth.sqlite3` | local file | Streamlit auth and approval state |
 | `.imperial_rag/chat_history.sqlite3` | local file | Local chat history |
 
 Use the live files, database tables, and service health checks as source of truth for generated state. Snapshot counts in documentation drift quickly after corpus rebuilds.
+
+Document authority overrides live in `docs/document-authority.json`. Each optional row is keyed by `relative_path` and may define `department`, `document_type`, `status` (`active`, `draft`, or `archived`), effective dates, `owner`, `authoritative_rank`, `supersedes`, and `version_group`. Exact-file duplicates are indexed once; every original path remains in the canonical chunk's `provenance_paths` metadata.
 
 ## Configuration
 

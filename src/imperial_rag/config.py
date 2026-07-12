@@ -114,6 +114,8 @@ class Settings(BaseSettings):
     baseline_extraction_root: Path | None = None
     manifest_db_path_override: Path | None = None
     recreate_qdrant_collection: bool = False
+    authority_catalog_path_override: Path | None = None
+    shadow_run_id: str | None = None
 
     @field_validator("*", mode="before")
     @classmethod
@@ -162,3 +164,26 @@ class Settings(BaseSettings):
         if self.extraction_root_override is not None:
             return self.extraction_root_override
         return self.processed_root / "extracted"
+
+    @property
+    def authority_catalog_path(self) -> Path:
+        if self.authority_catalog_path_override is not None:
+            return self.authority_catalog_path_override
+        return self.workspace_root / "docs" / "document-authority.json"
+
+
+def apply_active_index_pointer(settings: Settings) -> Settings:
+    path = settings.processed_root / "active-ingestion.json"
+    if not path.exists():
+        return settings
+    import json
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    updates = {
+        "elasticsearch_index": str(payload["keyword_alias"]),
+        "qdrant_collection": str(payload["qdrant_alias"]),
+        "extraction_root_override": Path(payload["artifact_root"]),
+        "manifest_db_path_override": Path(payload["manifest_db_path"]),
+        "shadow_run_id": str(payload["shadow_run_id"]),
+    }
+    return settings.model_copy(update=updates)

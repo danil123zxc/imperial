@@ -22,9 +22,12 @@ def _annotate_retrieval_documents(documents: list[Document], *, rank_key: str) -
     annotated: list[Document] = []
     for rank, document in enumerate(documents):
         metadata = dict(document.metadata or {})
+        citation_text = metadata.pop("citation_text", None)
+        page_content = str(citation_text) if citation_text is not None else document.page_content
         metadata.setdefault(rank_key, rank)
-        metadata.setdefault("_retrieval_id", _retrieval_id(document))
-        annotated.append(Document(page_content=document.page_content, metadata=metadata))
+        identity_document = Document(page_content=page_content, metadata=metadata)
+        metadata.setdefault("_retrieval_id", _retrieval_id(identity_document))
+        annotated.append(Document(page_content=page_content, metadata=metadata))
     return annotated
 
 

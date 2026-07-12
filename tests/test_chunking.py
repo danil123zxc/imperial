@@ -11,8 +11,8 @@ def test_build_chunks_defaults_to_structure_token_budget_and_overlap():
 
     chunks = build_chunks([source])
 
-    assert len(chunks) == 2
-    assert all(chunk.metadata["body_token_count"] <= 650 for chunk in chunks)
+    assert len(chunks) == 3
+    assert all(chunk.metadata["body_token_count"] <= 400 for chunk in chunks)
     assert all(chunk.metadata["body_start_index"] >= 0 for chunk in chunks)
     assert chunks[0].metadata["chunk_index"] == 0
     assert chunks[1].metadata["chunk_index"] == 1
@@ -45,7 +45,7 @@ def test_build_chunks_preserves_citation_metadata_and_adds_citation_id():
         assert isinstance(chunk.metadata["body_start_index"], int)
         assert chunk.metadata["body_token_count"] > 0
         assert chunk.metadata["citation_id"] == (
-            f"reglament.pdf#pdf_page:page-3:start-{chunk.metadata['body_start_index']}:chunk-{index}"
+            f"reglament.pdf#pdf_page:page-3-chunk-{index}:start-{chunk.metadata['body_start_index']}:chunk-{index}"
         )
 
 
@@ -64,7 +64,28 @@ def test_build_chunks_uses_sheet_name_in_citation_identity():
     chunks = build_chunks(documents)
 
     assert [chunk.metadata["citation_id"] for chunk in chunks] == [
-        "book.xlsx#sheet:sheet-Склад:start-0:chunk-0",
-        "book.xlsx#sheet:sheet-Продажи:start-0:chunk-0",
+        "book.xlsx#sheet:sheet-Склад-chunk-0:start-0:chunk-0",
+        "book.xlsx#sheet:sheet-Продажи-chunk-0:start-0:chunk-0",
     ]
     assert chunks[0].metadata["chunk_id"] != chunks[1].metadata["chunk_id"]
+
+
+def test_build_chunks_repeats_table_header_and_tracks_exact_row_ranges():
+    source = Document(
+        page_content="Header A | Header B\n" + "\n".join(f"row-{index} | value-{index}" for index in range(1, 15)),
+        metadata={
+            "file_id": "table-file",
+            "relative_path": "table.docx",
+            "source_type": "table",
+            "source_locator": "table:1:rows:1-15",
+        },
+    )
+
+    chunks = build_chunks([source], chunk_size=24, chunk_overlap=0)
+
+    assert len(chunks) > 1
+    assert all(chunk.page_content.startswith("Header A | Header B") for chunk in chunks)
+    assert all(chunk.metadata["header_row"] == 1 for chunk in chunks)
+    assert all(":header:1:rows:" in chunk.metadata["base_source_locator"] for chunk in chunks)
+    assert len({chunk.metadata["source_locator"] for chunk in chunks}) == len(chunks)
+    assert all(chunk.metadata["embedding_text"].endswith(chunk.page_content) for chunk in chunks)

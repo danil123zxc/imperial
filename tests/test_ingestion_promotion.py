@@ -306,3 +306,57 @@ def test_check_promotion_gates_reports_invalid_optional_reviewed_drops(tmp_path)
         "optional artifact is not valid JSON" in error and "reviewed-drops.json" in error
         for error in result.errors
     )
+
+
+def test_check_promotion_gates_enforces_strict_chunk_and_index_parity(tmp_path):
+    baseline = tmp_path / "baseline"
+    shadow = tmp_path / "shadow"
+    baseline.mkdir()
+    shadow.mkdir()
+    _write_jsonl(baseline / "corpus-ledger.jsonl", [{"file_id": "file-a", "status": "indexed", "chunk_count": 1}])
+    _write_jsonl(
+        shadow / "corpus-ledger.jsonl",
+        [{"file_id": "file-a", "status": "indexed", "chunk_count": 1, "locator_coverage": 1.0}],
+    )
+    _write_chunks(
+        baseline / "chunks.jsonl",
+        [{"page_content": "same", "metadata": {"file_id": "file-a", "chunk_id": "old"}}],
+    )
+    _write_chunks(
+        shadow / "chunks.jsonl",
+        [
+            {
+                "page_content": "same",
+                "metadata": {
+                    "file_id": "file-a",
+                    "chunk_id": "new",
+                    "citation_id": "citation-new",
+                    "source_locator": "body:1:chunk:0",
+                },
+            }
+        ],
+    )
+    (shadow / "old-to-new-id-map.json").write_text(
+        json.dumps({"rows": [{"old_chunk_id": "old", "new_chunk_id": "new"}]}),
+        encoding="utf-8",
+    )
+    lineage = {
+        "ingest_run_id": "run",
+        "corpus_version": "corpus",
+        "index_version": "index",
+        "keyword_index": "keyword-shadow",
+        "qdrant_collection": "qdrant-shadow",
+        "keyword_indexed": True,
+        "vector_indexed": True,
+        "chunk_count": 1,
+        "keyword_document_count": 2,
+        "vector_document_count": 1,
+    }
+    (shadow / "index-lineage.json").write_text(json.dumps(lineage), encoding="utf-8")
+    questions = tmp_path / "questions.jsonl"
+    _write_jsonl(questions, [])
+
+    result = check_promotion_gates(baseline, shadow, questions_path=questions)
+
+    assert result.passed is False
+    assert "lineage keyword document count mismatch: 2 != 1" in result.errors

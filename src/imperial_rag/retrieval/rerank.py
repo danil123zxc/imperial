@@ -53,8 +53,15 @@ class FallbackRanker:
         score += self._term_boost(tokens, path_text, per_term=0.6, all_terms=0.9)
 
         score += self._SOURCE_TYPE_BOOSTS.get(str(metadata.get("source_type", "")), 0.0)
+        score += self._authority_boost(metadata)
         score -= self._duplicate_penalty(metadata)
         return score
+
+    def _authority_boost(self, metadata: dict[str, Any]) -> float:
+        status = str(metadata.get("authority_status") or "active").casefold()
+        status_score = {"active": 0.3, "draft": -0.2, "archived": -0.5}.get(status, 0.0)
+        rank = self._number(metadata.get("authoritative_rank"))
+        return status_score + (0.0 if rank is None else self._clamp(rank * 0.02, lower=-0.2, upper=0.4))
 
     def _rank_boost(self, value: Any, weight: float) -> float:
         numeric = self._number(value)

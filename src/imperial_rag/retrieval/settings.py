@@ -8,8 +8,8 @@ from imperial_rag.config import env_float, env_int, env_str
 
 @dataclass(frozen=True)
 class RetrievalSettings:
-    chunk_size: int = 650
-    chunk_overlap: int = 80
+    chunk_size: int = 400
+    chunk_overlap: int = 50
     vector_fetch_k: int = 70
     vector_k: int = 70
     keyword_limit: int = 30

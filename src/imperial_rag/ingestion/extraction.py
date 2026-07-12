@@ -18,11 +18,16 @@ from openpyxl import load_workbook
 from striprtf.striprtf import rtf_to_text
 
 from imperial_rag.ingestion.manifest import FileRecord, FileStatus
-from imperial_rag.ingestion.ocr import OcrCache, OcrResult
+from imperial_rag.ingestion.ocr import OCR_RECIPE_SCHEMA, OcrCache, OcrResult, ocr_recipe_hash
 
 
 ARCHIVE_EXTENSIONS = {".rar", ".zip", ".7z"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+_CANNED_OCR_PATTERNS = (
+    re.compile(r"\bno\s+(?:visible|readable|recognizable)\s+text\b", re.IGNORECASE),
+    re.compile(r"\b(?:there is|i can(?:not|'t))\s+(?:no\s+)?(?:visible\s+)?text\b", re.IGNORECASE),
+    re.compile(r"\bтекст\s+(?:не\s+виден|не\s+обнаружен|отсутствует)\b", re.IGNORECASE),
+)
 
 
 class SupportsOcr(Protocol):
@@ -72,7 +77,13 @@ def _ocr_image(
     warnings: list[str] | None = None,
     empty_label: str | None = None,
 ) -> list[Document]:
-    ocr_result = ocr_cache.lookup(record.sha256, image_id) if ocr_cache is not None else None
+    preprocessing = {
+        key: value
+        for key, value in metadata.items()
+        if key in {"render_dpi", "page_rotation", "layout_route", "image_width", "image_height"}
+    }
+    recipe_hash = ocr_recipe_hash(ocr_client, preprocessing)
+    ocr_result = ocr_cache.lookup(record.sha256, image_id, recipe_hash) if ocr_cache is not None else None
     if ocr_result is None:
         if ocr_client is None:
             if warnings is not None and empty_label:
@@ -80,16 +91,54 @@ def _ocr_image(
             return []
         ocr_result = ocr_client.extract_image_text(image_path)
         if ocr_cache is not None and ocr_result.text:
-            ocr_cache.store(record.sha256, image_id, ocr_result)
+            ocr_cache.store(record.sha256, image_id, ocr_result, recipe_hash)
     if not ocr_result.text:
         if warnings is not None and empty_label:
             warnings.append(f"OCR returned empty text for {empty_label}")
         return []
+    admission_reason = _ocr_admission_rejection(
+        ocr_result.text,
+        source_type=source_type,
+        method=ocr_result.method,
+    )
+    if admission_reason is not None:
+        if warnings is not None and empty_label:
+            warnings.append(f"OCR output rejected for {empty_label}: {admission_reason}")
+        return []
     merged_metadata = _base_metadata(record, source_type)
     merged_metadata.update(metadata)
+    merged_metadata["layout_route"] = _ocr_layout_route(
+        ocr_result.text,
+        file_name=record.filename,
+        configured=str(merged_metadata.get("layout_route") or ""),
+    )
     merged_metadata["ocr_method"] = ocr_result.method
     merged_metadata["ocr_cached"] = ocr_result.cached
+    merged_metadata["ocr_recipe_hash"] = recipe_hash
+    merged_metadata["ocr_recipe_schema"] = OCR_RECIPE_SCHEMA
+    merged_metadata["ocr_admission"] = "accepted"
     return [Document(page_content=ocr_result.text, metadata=merged_metadata)]
+
+
+def _ocr_layout_route(text: str, *, file_name: str, configured: str = "") -> str:
+    normalized = text.casefold()
+    lines = [line for line in text.splitlines() if line.strip()]
+    pipe_lines = sum(1 for line in lines if line.count("|") >= 2)
+    if pipe_lines >= 2:
+        return "table"
+    if any(marker in f"{file_name.casefold()} {normalized}" for marker in ("схема", "diagram", "flowchart")):
+        return "rotated_diagram" if configured == "rotated_page" else "diagram"
+    return configured or "flat_text"
+
+
+def _ocr_admission_rejection(text: str, *, source_type: str, method: str) -> str | None:
+    normalized = text.strip()
+    if any(pattern.search(normalized) for pattern in _CANNED_OCR_PATTERNS):
+        return "canned_no_text_response"
+    token_count = len(re.findall(r"\w+", normalized, flags=re.UNICODE))
+    if source_type == "embedded_image" and method.startswith("dashscope") and token_count < 25:
+        return f"decorative_or_too_short:{token_count}_tokens"
+    return None
 
 
 def _docx_blocks(docx) -> list[Paragraph | Table]:
@@ -104,7 +153,12 @@ def _docx_blocks(docx) -> list[Paragraph | Table]:
 
 def _is_heading(paragraph: Paragraph) -> bool:
     style_name = str(getattr(getattr(paragraph, "style", None), "name", "") or "")
-    return style_name.casefold().startswith("heading")
+    if style_name.casefold().startswith("heading"):
+        return True
+    text = paragraph.text.strip()
+    if not text or len(text) > 140 or text.endswith((".", ";", ",")):
+        return False
+    return bool(re.match(r"^(?:\d+(?:\.\d+){0,4}[.)]?|[IVXLC]+[.)])\s+\S", text, re.IGNORECASE))
 
 
 def _locator_slug(text: str) -> str:
@@ -162,20 +216,22 @@ def _extract_docx(
     documents: list[Document] = []
     body_lines: list[str] = []
     body_index = 0
+    element_ordinal = 0
     table_index = 0
     section_heading: str | None = None
     section_index = 0
     section_slug = ""
 
     def flush_body() -> None:
-        nonlocal body_lines, body_index
+        nonlocal body_lines, body_index, element_ordinal
         body_text = "\n".join(line for line in body_lines if line.strip()).strip()
         body_lines = []
         if not body_text:
             return
         body_index += 1
+        element_ordinal += 1
         if section_heading:
-            source_locator = f"section:{section_index}:{section_slug}"
+            source_locator = f"section:{section_index}:{section_slug}:element:{element_ordinal}"
             parent_id = _section_parent_id(record, section_index, section_slug)
         else:
             source_locator = f"body:{body_index}"
@@ -191,6 +247,7 @@ def _extract_docx(
                     parent_id=parent_id,
                     section_heading=section_heading,
                     element_index=body_index,
+                    element_ordinal=element_ordinal,
                 ),
             )
         )
@@ -216,14 +273,18 @@ def _extract_docx(
         if not lines:
             continue
         table_index += 1
+        element_ordinal += 1
         table_text = "\n".join(lines)
         row_start = 1
         row_end = len(lines)
         if section_heading:
-            source_locator = f"section:{section_index}:{section_slug}:table:{table_index}:rows:{row_start}-{row_end}"
+            source_locator = (
+                f"section:{section_index}:{section_slug}:element:{element_ordinal}:"
+                f"table:{table_index}:rows:{row_start}-{row_end}"
+            )
             parent_id = _section_parent_id(record, section_index, section_slug)
         else:
-            source_locator = f"table:{table_index}:rows:{row_start}-{row_end}"
+            source_locator = f"element:{element_ordinal}:table:{table_index}:rows:{row_start}-{row_end}"
             parent_id = record.file_id
         documents.append(
             Document(
@@ -238,6 +299,7 @@ def _extract_docx(
                     table_index=table_index,
                     row_start=row_start,
                     row_end=row_end,
+                    element_ordinal=element_ordinal,
                 ),
             )
         )
@@ -285,11 +347,16 @@ def _extract_pdf(
         for zero_based_page_index in range(pdf.page_count):
             page_index = zero_based_page_index + 1
             page = pdf.load_page(zero_based_page_index)
+            page_rotation = int(page.rotation or 0)
+            layout_route = "rotated_page" if page_rotation % 360 else "page"
             raw_text = page.get_text("text")
             text = raw_text.strip() if isinstance(raw_text, str) else str(raw_text).strip()
             if text:
                 metadata = _base_metadata(record, "pdf_page")
                 metadata["page_number"] = page_index
+                metadata["source_locator"] = f"page:{page_index}"
+                metadata["page_rotation"] = page_rotation
+                metadata["layout_route"] = layout_route
                 documents.append(Document(page_content=text, metadata=metadata))
                 continue
             image_path = target_dir / f"{record.absolute_path.stem}-page-{page_index}.jpg"
@@ -301,7 +368,13 @@ def _extract_pdf(
                     image_path,
                     "pdf_page",
                     ocr_client,
-                    {"page_number": page_index, "render_dpi": 200},
+                    {
+                        "page_number": page_index,
+                        "source_locator": f"page:{page_index}",
+                        "render_dpi": 200,
+                        "page_rotation": page_rotation,
+                        "layout_route": layout_route,
+                    },
                     ocr_cache=ocr_cache,
                     image_id=f"page-{page_index}",
                     warnings=warnings,
@@ -314,7 +387,7 @@ def _extract_pdf(
 def _extract_xlsx(record: FileRecord) -> list[Document]:
     workbook = load_workbook(record.absolute_path, data_only=True, read_only=True)
     documents: list[Document] = []
-    for sheet in workbook.worksheets:
+    for sheet_index, sheet in enumerate(workbook.worksheets, start=1):
         lines: list[str] = []
         for row in sheet.iter_rows(values_only=True):
             cells = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
@@ -323,6 +396,9 @@ def _extract_xlsx(record: FileRecord) -> list[Document]:
         if lines:
             metadata = _base_metadata(record, "sheet")
             metadata["sheet_name"] = sheet.title
+            metadata["source_locator"] = f"sheet:{sheet_index}:{_locator_slug(sheet.title)}:rows:1-{len(lines)}"
+            metadata["row_start"] = 1
+            metadata["row_end"] = len(lines)
             documents.append(Document(page_content="\n".join(lines), metadata=metadata))
     return documents
 
@@ -331,7 +407,10 @@ def _extract_rtf(record: FileRecord) -> list[Document]:
     text = rtf_to_text(record.absolute_path.read_text(encoding="utf-8", errors="ignore")).strip()
     if not text:
         return []
-    return [Document(page_content=text, metadata=_base_metadata(record, "body"))]
+    metadata = _base_metadata(record, "body")
+    metadata["source_locator"] = "body:1:element:1"
+    metadata["element_id"] = f"{record.file_id}:body:1:{_element_hash(text)[:12]}"
+    return [Document(page_content=text, metadata=metadata)]
 
 
 def extract_file(

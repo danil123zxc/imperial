@@ -59,6 +59,14 @@ def build_status_summary(total_files: int, indexed_files: int, failed_files: int
     )
 
 
+def _settings_with_active_pointer(settings: Any) -> Any:
+    try:
+        from imperial_rag.config import apply_active_index_pointer
+    except ImportError:
+        return settings
+    return apply_active_index_pointer(settings)
+
+
 def load_status_summary(settings: Any | None = None) -> str:
     try:
         from imperial_rag.config import Settings
@@ -66,7 +74,7 @@ def load_status_summary(settings: Any | None = None) -> str:
     except ImportError:
         return build_status_summary(total_files=0, indexed_files=0, failed_files=0)
 
-    resolved_settings = settings or Settings()
+    resolved_settings = settings or _settings_with_active_pointer(Settings())
     if not hasattr(resolved_settings, "manifest_db_path"):
         return build_status_summary(total_files=0, indexed_files=0, failed_files=0)
     manifest_path = Path(resolved_settings.manifest_db_path)
@@ -230,7 +238,7 @@ def main() -> None:
 
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    settings = Settings()
+    settings = _settings_with_active_pointer(Settings())
     from imperial_rag.observability import configure_observability
     from imperial_rag.observability.phoenix import configure_phoenix_tracing
 
