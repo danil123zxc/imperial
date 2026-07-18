@@ -106,6 +106,8 @@ rollback_running_app() {
     audit "$failed_sha" rollback failed_health
     return 1
   fi
+  printf '%s\n' "$previous_sha" > "$last_good_file"
+  chmod 600 "$last_good_file"
   audit "$failed_sha" rollback restored
   return 0
 }
@@ -113,6 +115,9 @@ rollback_running_app() {
 deploy_commit() {
   local target_sha=$1
   local require_remote_head=$2
+  local checkout_sha
+  local last_good_sha=""
+  local previous_good_sha=""
   local previous_sha
   local remote_sha
 
@@ -122,8 +127,16 @@ deploy_commit() {
   cd "$deploy_root"
 
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "deployment worktree has tracked changes"
-  previous_sha=$(git rev-parse HEAD)
-  validate_sha "$previous_sha"
+  checkout_sha=$(git rev-parse HEAD)
+  validate_sha "$checkout_sha"
+  previous_sha=$checkout_sha
+
+  if [[ -f "$last_good_file" ]]; then
+    last_good_sha=$(tr -d '\n' < "$last_good_file")
+    validate_sha "$last_good_sha"
+    git cat-file -e "$last_good_sha^{commit}" 2>/dev/null || die "recorded healthy commit is unavailable"
+    previous_sha=$last_good_sha
+  fi
 
   if [[ "$require_remote_head" == "1" ]]; then
     info "Fetching production branch..."
@@ -138,10 +151,19 @@ deploy_commit() {
   fi
 
   git cat-file -e "$target_sha^{commit}" 2>/dev/null || die "requested commit is unavailable"
-  if [[ "$target_sha" == "$previous_sha" ]]; then
-    audit "$target_sha" deploy already_current
-    info "Production already runs the requested commit."
-    return 0
+  if [[ "$target_sha" == "$last_good_sha" && -f "$previous_good_file" ]]; then
+    previous_good_sha=$(tr -d '\n' < "$previous_good_file")
+    validate_sha "$previous_good_sha"
+    git cat-file -e "$previous_good_sha^{commit}" 2>/dev/null || die "recorded previous healthy commit is unavailable"
+    previous_sha=$previous_good_sha
+  fi
+  if [[ "$target_sha" == "$checkout_sha" && "$target_sha" == "$last_good_sha" ]]; then
+    if app_is_healthy; then
+      audit "$target_sha" deploy already_current
+      info "Production already runs the requested commit and is healthy."
+      return 0
+    fi
+    info "The requested commit is checked out but the application is unhealthy; rebuilding it."
   fi
 
   audit "$target_sha" checkout started
@@ -149,7 +171,7 @@ deploy_commit() {
 
   info "Building the application image..."
   if ! compose build app >/dev/null; then
-    restore_after_failed_build "$previous_sha"
+    restore_after_failed_build "$checkout_sha"
     audit "$target_sha" build failed
     die "application image build failed; the running container was not replaced"
   fi

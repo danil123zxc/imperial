@@ -29,6 +29,7 @@ def _fake_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]
     fake_state.mkdir()
     (deploy_root / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
     (fake_state / "current_sha").write_text(f"{OLD_SHA}\n", encoding="utf-8")
+    (fake_state / "running_sha").write_text(f"{OLD_SHA}\n", encoding="utf-8")
 
     _write_executable(
         fake_bin / "git",
@@ -67,20 +68,26 @@ esac
         """#!/usr/bin/env bash
 set -euo pipefail
 printf 'docker %s\n' "$*" >> "$FAKE_STATE_DIR/commands.log"
-current_sha=$(tr -d '\n' < "$FAKE_STATE_DIR/current_sha")
+checkout_sha=$(tr -d '\n' < "$FAKE_STATE_DIR/current_sha")
+running_sha=$(tr -d '\n' < "$FAKE_STATE_DIR/running_sha")
 if [[ "${1:-}" == "compose" ]]; then
   case "${2:-}" in
     build)
-      if [[ "${FAKE_BUILD_FAIL_SHA:-}" == "$current_sha" ]]; then
+      if [[ "${FAKE_BUILD_FAIL_SHA:-}" == "$checkout_sha" ]]; then
         exit 1
       fi
       ;;
     up)
-      if [[ "${FAKE_UP_FAIL_SHA:-}" == "$current_sha" ]]; then
+      if [[ "${FAKE_UP_FAIL_SHA:-}" == "$checkout_sha" ]]; then
         exit 1
       fi
+      printf '%s\n' "$checkout_sha" > "$FAKE_STATE_DIR/running_sha"
+      touch "$FAKE_STATE_DIR/container_started"
       ;;
     ps)
+      if [[ "${FAKE_NO_CONTAINER:-0}" == "1" && ! -f "$FAKE_STATE_DIR/container_started" ]]; then
+        exit 0
+      fi
       printf 'fake-app-container\n'
       ;;
     logs)
@@ -91,7 +98,7 @@ if [[ "${1:-}" == "compose" ]]; then
       ;;
   esac
 elif [[ "${1:-}" == "inspect" ]]; then
-  if [[ "${FAKE_HEALTH_FAIL_ALL:-0}" == "1" || "${FAKE_UNHEALTHY_SHA:-}" == "$current_sha" ]]; then
+  if [[ "${FAKE_HEALTH_FAIL_ALL:-0}" == "1" || "${FAKE_UNHEALTHY_SHA:-}" == "$running_sha" ]]; then
     printf 'unhealthy\n'
   else
     printf 'healthy\n'
@@ -106,8 +113,8 @@ exit 0
         fake_bin / "curl",
         """#!/usr/bin/env bash
 set -euo pipefail
-current_sha=$(tr -d '\n' < "$FAKE_STATE_DIR/current_sha")
-if [[ "${FAKE_HEALTH_FAIL_ALL:-0}" == "1" || "${FAKE_UNHEALTHY_SHA:-}" == "$current_sha" ]]; then
+running_sha=$(tr -d '\n' < "$FAKE_STATE_DIR/running_sha")
+if [[ "${FAKE_HEALTH_FAIL_ALL:-0}" == "1" || "${FAKE_UNHEALTHY_SHA:-}" == "$running_sha" ]]; then
   exit 22
 fi
 """,
@@ -218,6 +225,55 @@ def test_successful_deploy_replaces_only_the_app(tmp_path: Path) -> None:
     assert (state_dir / "last_good_sha").read_text(encoding="utf-8").strip() == NEW_SHA
     assert (state_dir / "previous_good_sha").read_text(encoding="utf-8").strip() == OLD_SHA
     assert "result=healthy" in (state_dir / "deployments.log").read_text(encoding="utf-8")
+
+
+def test_interrupted_checkout_redeploys_and_preserves_the_last_healthy_rollback(tmp_path: Path) -> None:
+    env, _, state_dir, fake_state = _fake_environment(tmp_path)
+    (fake_state / "current_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (state_dir / "last_good_sha").write_text(f"{OLD_SHA}\n", encoding="utf-8")
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    commands = _commands(fake_state)
+    assert "docker compose build app" in commands
+    assert "docker compose up -d --no-deps app" in commands
+    assert (fake_state / "running_sha").read_text(encoding="utf-8").strip() == NEW_SHA
+    assert (state_dir / "previous_good_sha").read_text(encoding="utf-8").strip() == OLD_SHA
+
+
+def test_stopped_current_application_is_rebuilt_instead_of_reported_healthy(tmp_path: Path) -> None:
+    env, _, state_dir, fake_state = _fake_environment(tmp_path)
+    (fake_state / "current_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (fake_state / "running_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (state_dir / "last_good_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (state_dir / "previous_good_sha").write_text(f"{OLD_SHA}\n", encoding="utf-8")
+    env["FAKE_NO_CONTAINER"] = "1"
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert "already runs" not in result.stdout
+    assert "rebuilding it" in result.stdout
+    assert "docker compose build app" in _commands(fake_state)
+    assert (state_dir / "previous_good_sha").read_text(encoding="utf-8").strip() == OLD_SHA
+
+
+def test_failed_current_sha_repair_rolls_back_to_the_older_healthy_sha(tmp_path: Path) -> None:
+    env, _, state_dir, fake_state = _fake_environment(tmp_path)
+    (fake_state / "current_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (fake_state / "running_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (state_dir / "last_good_sha").write_text(f"{NEW_SHA}\n", encoding="utf-8")
+    (state_dir / "previous_good_sha").write_text(f"{OLD_SHA}\n", encoding="utf-8")
+    env["FAKE_UNHEALTHY_SHA"] = NEW_SHA
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "production was restored" in result.stderr
+    assert _current_sha(fake_state) == OLD_SHA
+    assert (fake_state / "running_sha").read_text(encoding="utf-8").strip() == OLD_SHA
+    assert (state_dir / "last_good_sha").read_text(encoding="utf-8").strip() == OLD_SHA
 
 
 def test_build_failure_restores_checkout_without_replacing_app(tmp_path: Path) -> None:
