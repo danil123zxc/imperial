@@ -86,11 +86,75 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
       - name: Deploy the tested main commit
+        id: production_deploy
         run: |
-          ssh \
+          deployment_output=$(ssh \
             -i ~/.ssh/imperial_deploy \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "deploy $GITHUB_SHA"
+            "deploy $GITHUB_SHA")
+          printf '%s\n' "$deployment_output"
+          case "$deployment_output" in
+            *"superseded"*)
+              printf 'result=superseded\n' >> "$GITHUB_OUTPUT"
+              ;;
+            *"already runs"*)
+              printf 'result=already_current\n' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              printf 'result=deployed\n' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Notify Telegram
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEPLOY_OUTCOME: ${{ steps.production_deploy.outcome }}
+          DEPLOY_RESULT: ${{ steps.production_deploy.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+            printf '::warning::Telegram deployment notifications are not configured.\n'
+            exit 0
+          fi
+
+          case "$DEPLOY_OUTCOME:$DEPLOY_RESULT" in
+            success:deployed)
+              headline='✅ Production updated'
+              ;;
+            success:already_current)
+              headline='ℹ️ Production was already healthy'
+              ;;
+            success:superseded)
+              headline='⏭️ Deployment superseded by a newer main commit'
+              ;;
+            *)
+              headline='❌ Production deployment failed'
+              ;;
+          esac
+
+          short_sha=${GITHUB_SHA:0:7}
+          message=$(printf '%s\n\nRepository: %s\nServer: %s\nCommit: %s\nTriggered by: @%s\nRun: %s' \
+            "$headline" \
+            "$GITHUB_REPOSITORY" \
+            "$DEPLOY_HOST" \
+            "$short_sha" \
+            "$GITHUB_ACTOR" \
+            "$RUN_URL")
+
+          curl \
+            --connect-timeout 5 \
+            --fail \
+            --max-time 15 \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${message}"
