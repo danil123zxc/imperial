@@ -156,6 +156,29 @@ Run ingestion inside Compose when documents change:
 docker compose --profile ingest up ingest
 ```
 
+### Automatic application deployment
+
+A successful GitHub Actions `Quality` job for a push to protected `main` deploys that exact commit to the production host over Tailscale and command-restricted SSH. The deployment rebuilds and replaces only the `app` service:
+
+```bash
+docker compose build app
+docker compose up -d --no-deps app
+```
+
+The deploy command waits for the container health check and `http://127.0.0.1:8501/_stcore/health`. A failed build leaves the existing container running. A failed startup or health check restores the previously healthy commit and reports a failed GitHub deployment.
+
+Automatic deployment does not run ingestion, restart Qdrant, Elasticsearch, Kibana, or Phoenix, or modify `.env`, `documents/`, `.imperial_rag/`, or persistent volumes. Apply corpus ingestion and dependency-service configuration changes explicitly as separate operator actions.
+
+The production GitHub environment owns `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE`, `DEPLOY_SSH_KEY`, and `DEPLOY_KNOWN_HOSTS`. The Tailscale identity uses `tag:github-ci` and may reach only SSH on the production node. Deployment audit records and failure logs stay private on the server under `/home/server1/.local/state/imperial-deploy/`.
+
+From a normal operator SSH session, roll back to the recorded previous healthy commit with:
+
+```bash
+/home/server1/.local/bin/imperial-deploy rollback
+```
+
+The CI-only SSH key cannot invoke rollback or arbitrary shell commands.
+
 Inspect logs:
 
 ```bash
