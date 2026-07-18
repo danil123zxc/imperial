@@ -217,6 +217,11 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "Phoenix traces are private diagnostic records" in readme
     assert "Searchable event logs are optional and local-only." in readme
     assert "closed schema validation is the privacy boundary" in readme
+    assert "### Automatic application deployment" in readme
+    assert "docker compose up -d --no-deps app" in readme
+    assert "/home/server1/.local/bin/imperial-deploy rollback" in readme
+    assert "Automatic deployment does not run ingestion" in readme
+    assert "The CI-only SSH key cannot invoke rollback or arbitrary shell commands." in readme
 
 
 def test_compose_documents_local_only_unauthenticated_observability_services() -> None:
