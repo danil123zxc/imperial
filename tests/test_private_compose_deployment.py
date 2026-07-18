@@ -222,6 +222,9 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "/home/server1/.local/bin/imperial-deploy rollback" in readme
     assert "Automatic deployment does not run ingestion" in readme
     assert "The CI-only SSH key cannot invoke rollback or arbitrary shell commands." in readme
+    assert "TELEGRAM_BOT_TOKEN" in readme
+    assert "TELEGRAM_CHAT_ID" in readme
+    assert "Telegram delivery is best-effort" in readme
 
 
 def test_compose_documents_local_only_unauthenticated_observability_services() -> None:

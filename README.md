@@ -171,6 +171,8 @@ Automatic deployment does not run ingestion, restart Qdrant, Elasticsearch, Kiba
 
 The production GitHub environment owns `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE`, `DEPLOY_SSH_KEY`, and `DEPLOY_KNOWN_HOSTS`. The Tailscale identity uses `tag:github-ci` and may reach only SSH on the production node. Deployment audit records and failure logs stay private on the server under `/home/server1/.local/state/imperial-deploy/`.
 
+Telegram deployment notifications use the additional production secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. After every production attempt, the workflow reports whether the commit was deployed, already healthy, superseded by a newer `main` commit, or failed, together with the repository, server, short commit SHA, triggering actor, and Actions run link. Telegram delivery is best-effort and cannot change the deployment result.
+
 From a normal operator SSH session, roll back to the recorded previous healthy commit with:
 
 ```bash

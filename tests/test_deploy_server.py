@@ -385,4 +385,20 @@ def test_workflow_deploys_only_green_main_pushes_over_tailscale() -> None:
     assert "DEPLOY_KNOWN_HOSTS" in workflow
     assert '"$DEPLOY_USER@$DEPLOY_HOST" \\' in workflow
     assert '"deploy $GITHUB_SHA"' in workflow
+    assert "id: production_deploy" in workflow
+    assert "result=deployed" in workflow
+    assert "result=already_current" in workflow
+    assert "result=superseded" in workflow
+    assert "name: Notify Telegram" in workflow
+    assert "if: ${{ always() }}" in workflow
+    assert "continue-on-error: true" in workflow
+    assert "TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}" in workflow
+    assert "TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}" in workflow
+    assert "steps.production_deploy.outcome" in workflow
+    assert "steps.production_deploy.outputs.result" in workflow
+    assert "api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" in workflow
+    assert '--data-urlencode "chat_id=${TELEGRAM_CHAT_ID}"' in workflow
+    assert "--connect-timeout 5" in workflow
+    assert "--max-time 15" in workflow
+    assert "Production deployment failed" in workflow
     assert "workflow_run:" not in workflow
