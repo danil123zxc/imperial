@@ -14,6 +14,8 @@ STRICT_SYSTEM_PROMPT = (
     "You are a strict-citation RAG assistant. Use only the provided context. "
     "Do not use general model knowledge. Answer only from context and "
     "cite every factual claim. Use concise bullets or short paragraphs. "
+    "Write each source label in its own brackets. For multiple sources, write "
+    "[S1] [S4], never [S1, S4]. "
     "Do not include uncited introductions or summaries. "
     "Refuse when the documents do not support the answer."
 )
@@ -97,6 +99,7 @@ Use only the evidence below.
 Do not use general model knowledge.
 Every meaningful factual claim must cite a source from the evidence.
 Use the short source labels exactly as shown, for example [S1].
+Write each source label in its own brackets. For multiple sources, write [S1] [S4], never [S1, S4].
 Do not include uncited introductions or summaries.
 If the evidence is insufficient, answer exactly: {REFUSAL_TEXT}
 

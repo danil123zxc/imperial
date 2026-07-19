@@ -98,8 +98,12 @@ def test_query_workflow_default_generation_uses_lcel_prompt_chain():
         calls.append(messages)
         assert messages[0].type == "system"
         assert "strict-citation RAG assistant" in messages[0].content
+        assert "[S1] [S4]" in messages[0].content
+        assert "never [S1, S4]" in messages[0].content
         assert messages[1].type == "human"
         assert "Возврат брака оформляется актом." in messages[1].content
+        assert "[S1] [S4]" in messages[1].content
+        assert "never [S1, S4]" in messages[1].content
         return "Возврат брака оформляется актом. [S1]"
 
     workflow = build_query_workflow(
@@ -254,7 +258,7 @@ def test_query_workflow_sets_prompt_provenance_and_generator_trace_attributes(mo
         call for call in trace_calls[model_start_index + 1 :] if "attribute" in call
     ]
     prompt_attrs = {call["attribute"]: call["value"] for call in model_attribute_calls}
-    assert prompt_attrs["answer.prompt_version"] == "strict-rag-v1"
+    assert prompt_attrs["answer.prompt_version"] == "strict-rag-v2"
     assert len(prompt_attrs["answer.prompt_skeleton_hash"]) == 64
     assert prompt_attrs["answer.evidence_count"] == 1
     assert prompt_attrs["answer.citation_count"] == 1

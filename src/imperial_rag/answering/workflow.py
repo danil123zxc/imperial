@@ -22,12 +22,13 @@ from imperial_rag.retrieval.lexical import searchable_document_text
 from imperial_rag.retrieval.service import CandidateMerger
 from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_answer_step, trace_llm_step
 
-PROMPT_VERSION = "strict-rag-v1"
+PROMPT_VERSION = "strict-rag-v2"
 _EVIDENCE_PROMPT_SKELETON = """You are answering questions about internal company documents.
 Use only the evidence below.
 Do not use general model knowledge.
 Every meaningful factual claim must cite a source from the evidence.
 Use the short source labels exactly as shown, for example [S1].
+Write each source label in its own brackets. For multiple sources, write [S1] [S4], never [S1, S4].
 Do not include uncited introductions or summaries.
 If the evidence is insufficient, answer exactly: {refusal_text}
 
