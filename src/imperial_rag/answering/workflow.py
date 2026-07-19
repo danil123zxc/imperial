@@ -22,12 +22,13 @@ from imperial_rag.retrieval.lexical import searchable_document_text
 from imperial_rag.retrieval.service import CandidateMerger
 from imperial_rag.observability.phoenix import imperial_trace_attributes, trace_answer_step, trace_llm_step
 
-PROMPT_VERSION = "strict-rag-v1"
+PROMPT_VERSION = "strict-rag-v2"
 _EVIDENCE_PROMPT_SKELETON = """You are answering questions about internal company documents.
 Use only the evidence below.
 Do not use general model knowledge.
 Every meaningful factual claim must cite a source from the evidence.
 Use the short source labels exactly as shown, for example [S1].
+Write each source label in its own brackets. For multiple sources, write [S1] [S4], never [S1, S4].
 Do not include uncited introductions or summaries.
 If the evidence is insufficient, answer exactly: {refusal_text}
 
@@ -199,6 +200,33 @@ def _coerce_error(answer: Any) -> dict[str, Any] | None:
     return dict(error) if isinstance(error, Mapping) else None
 
 
+def _no_relevant_documents_update(state: QueryState, *, reason: str) -> QueryState:
+    rejected_evidence = list(state.get("evidence", []))
+    retrieval = dict(state.get("retrieval", {}))
+    retrieval.update(
+        {
+            "final_evidence": 0,
+            "rejected_evidence": len(rejected_evidence),
+            "relevance_gate": reason,
+        }
+    )
+    return {
+        "answer": REFUSAL_TEXT,
+        "citations": [],
+        "sources": [],
+        "citations_valid": True,
+        "invalid_citations": [],
+        "evidence": [],
+        "retrieved_documents": [],
+        "retrieval": retrieval,
+        "error": {
+            "type": "no_relevant_documents",
+            "message": "No relevant indexed documents were found for this question.",
+            "reason": reason,
+        },
+    }
+
+
 def build_query_workflow(
     vector_search: VectorSearch | None = None,
     keyword_search: KeywordSearch | None = None,
@@ -259,14 +287,9 @@ def build_query_workflow(
             ),
         ) as span:
             if not evidence:
-                update: QueryState = {
-                    "answer": REFUSAL_TEXT,
-                    "citations": [],
-                    "sources": [],
-                    "citations_valid": True,
-                    "invalid_citations": [],
-                }
-                _set_answer_trace_output(span, update, evidence=evidence, citations=citations, sources=sources)
+                update = _no_relevant_documents_update(state, reason="retrieval_empty")
+                span.set_attribute("answer.refusal_reason", "retrieval_empty")
+                _set_answer_trace_output(span, update, evidence=[], citations=[], sources=[])
                 return update
             with trace_llm_step(
                 "answer.call_model",
@@ -309,6 +332,11 @@ def build_query_workflow(
                     "error": model_error,
                 }
                 _set_answer_trace_output(span, update, evidence=evidence, citations=citations, sources=sources)
+                return update
+            if answer.strip() == REFUSAL_TEXT:
+                update = _no_relevant_documents_update(state, reason="insufficient_evidence")
+                span.set_attribute("answer.refusal_reason", "insufficient_evidence")
+                _set_answer_trace_output(span, update, evidence=[], citations=[], sources=[])
                 return update
             with trace_answer_step(
                 "answer.citation_check",

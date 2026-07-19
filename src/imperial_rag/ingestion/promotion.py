@@ -32,6 +32,7 @@ def check_promotion_gates(
     baseline_rows = _read_jsonl_required(baseline_root / "corpus-ledger.jsonl", errors)
     shadow_rows = _read_jsonl_required(shadow_root / "corpus-ledger.jsonl", errors)
     baseline_chunks = _read_jsonl_required(baseline_root / "chunks.jsonl", errors)
+    shadow_chunks = _read_jsonl_required(shadow_root / "chunks.jsonl", errors)
     id_map = _read_json_artifact(shadow_root / "old-to-new-id-map.json", errors, default={"rows": []}, required=True)
     shadow_lineage = _read_json_artifact(shadow_root / "index-lineage.json", errors, default={"rows": []}, required=True)
     reviewed_drops = _read_json_artifact(shadow_root / "reviewed-drops.json", errors, default={"rows": []}, required=False)
@@ -46,6 +47,13 @@ def check_promotion_gates(
     baseline_ids = {str(row.get("file_id")) for row in baseline_rows if row.get("file_id") is not None}
     shadow_ids = {str(row.get("file_id")) for row in shadow_rows if row.get("file_id") is not None}
     errors.extend(f"baseline file missing from shadow ledger: {file_id}" for file_id in sorted(baseline_ids - shadow_ids))
+    shadow_status_by_id = {str(row.get("file_id")): str(row.get("status") or "") for row in shadow_rows}
+    for row in baseline_rows:
+        file_id = str(row.get("file_id") or "")
+        if row.get("status") == "indexed" and shadow_status_by_id.get(file_id) in {"failed", "no_text"}:
+            errors.append(
+                f"previously indexed file regressed to {shadow_status_by_id[file_id]} without approval: {file_id}"
+            )
 
     baseline_indexed = sum(1 for row in baseline_rows if row.get("status") == "indexed")
     shadow_indexed = sum(1 for row in shadow_rows if row.get("status") == "indexed")
@@ -55,6 +63,11 @@ def check_promotion_gates(
     shadow_chunk_count = sum(int(row.get("chunk_count") or 0) for row in shadow_rows)
     if shadow_chunk_count == 0:
         errors.append("shadow chunk count is zero")
+
+    strict_integrity = "chunk_count" in shadow_lineage
+    if strict_integrity:
+        _check_chunk_integrity(shadow_chunks, shadow_rows, shadow_lineage, errors)
+        _check_ocr_integrity(shadow_chunks, shadow_lineage, errors)
 
     locator_rows = [row for row in shadow_rows if int(row.get("chunk_count") or 0) > 0]
     locator_coverage = _mean(float(row.get("locator_coverage") or 0.0) for row in locator_rows)
@@ -74,6 +87,8 @@ def check_promotion_gates(
         if row.get("old_citation_id") and row.get("new_citation_id")
     }
     reviewed_drop_chunk_ids, reviewed_drop_citation_ids = _reviewed_drop_ids(reviewed_drops, errors)
+    if strict_integrity:
+        _check_id_map_targets(id_map, shadow_chunks, errors)
     unmapped_old_chunk_ids = baseline_chunk_ids - mapped_old_chunk_ids - reviewed_drop_chunk_ids
     errors.extend(
         f"old chunk has no replacement or reviewed drop: {old_chunk_id}"
@@ -100,6 +115,7 @@ def check_promotion_gates(
         "shadow_indexed_files": shadow_indexed,
         "baseline_chunk_ids": len(baseline_chunk_ids),
         "shadow_chunk_count": shadow_chunk_count,
+        "shadow_chunk_rows": len(shadow_chunks),
         "shadow_locator_coverage": locator_coverage,
         "mapped_old_chunk_ids": len(mapped_old_chunk_ids),
         "reviewed_drop_chunk_ids": len(reviewed_drop_chunk_ids),
@@ -109,6 +125,92 @@ def check_promotion_gates(
         "shadow_qdrant_collection": shadow_lineage.get("qdrant_collection"),
     }
     return PromotionGateResult(passed=not errors, errors=errors, summary=summary)
+
+
+def _check_chunk_integrity(
+    chunks: list[dict],
+    ledger_rows: list[dict],
+    lineage: dict[str, Any],
+    errors: list[str],
+) -> None:
+    ledger_count = sum(int(row.get("chunk_count") or 0) for row in ledger_rows)
+    chunk_ids = _metadata_value_list(chunks, "chunk_id")
+    citation_ids = _metadata_value_list(chunks, "citation_id")
+    locators = [
+        f"{(row.get('metadata') or {}).get('file_id')}:{(row.get('metadata') or {}).get('source_locator')}"
+        for row in chunks
+    ]
+    expected_counts = {
+        "ledger chunk count": ledger_count,
+        "lineage chunk count": int(lineage.get("chunk_count") or 0),
+        "lineage keyword document count": int(lineage.get("keyword_document_count") or 0),
+    }
+    if lineage.get("vector_indexed") is True:
+        expected_counts["lineage vector document count"] = int(lineage.get("vector_document_count") or 0)
+    for label, count in expected_counts.items():
+        if count != len(chunks):
+            errors.append(f"{label} mismatch: {count} != {len(chunks)}")
+    _check_unique_complete("chunk_id", chunk_ids, len(chunks), errors)
+    _check_unique_complete("citation_id", citation_ids, len(chunks), errors)
+    _check_unique_complete("source_locator", locators, len(chunks), errors)
+
+
+def _check_unique_complete(label: str, values: list[str], row_count: int, errors: list[str]) -> None:
+    if len(values) != row_count:
+        errors.append(f"shadow {label} coverage mismatch: {len(values)} != {row_count}")
+    if len(set(values)) != len(values):
+        errors.append(f"shadow {label} values are not unique")
+
+
+def _check_ocr_integrity(chunks: list[dict], lineage: dict[str, Any], errors: list[str]) -> None:
+    expected_model = str(lineage.get("ocr_model") or "")
+    expected_schema = str(lineage.get("ocr_recipe_schema") or "")
+    for index, row in enumerate(chunks):
+        metadata = dict(row.get("metadata") or {})
+        method = str(metadata.get("ocr_method") or "")
+        if not method:
+            continue
+        if expected_model and expected_model not in method:
+            errors.append(f"OCR chunk {index} model mismatch: {method} does not contain {expected_model}")
+        if expected_schema and str(metadata.get("ocr_recipe_schema") or "") != expected_schema:
+            errors.append(f"OCR chunk {index} recipe schema mismatch")
+        if not str(metadata.get("ocr_recipe_hash") or "").startswith("sha256:"):
+            errors.append(f"OCR chunk {index} missing recipe hash")
+        text = str(row.get("page_content") or "").casefold()
+        if "no visible text" in text or "no readable text" in text or "текст не обнаружен" in text:
+            errors.append(f"OCR chunk {index} contains canned no-text output")
+
+
+def _check_id_map_targets(payload: dict, chunks: list[dict], errors: list[str]) -> None:
+    targets = {
+        str((row.get("metadata") or {}).get("chunk_id")): row
+        for row in chunks
+        if (row.get("metadata") or {}).get("chunk_id")
+    }
+    for index, mapping in enumerate(payload.get("rows", [])):
+        target_id = mapping.get("new_chunk_id")
+        if not target_id:
+            continue
+        target = targets.get(str(target_id))
+        if target is None:
+            errors.append(f"ID map row {index} target does not exist: {target_id}")
+            continue
+        expected_hash = str(mapping.get("new_content_sha256") or "")
+        if expected_hash:
+            import hashlib
+
+            actual_hash = hashlib.sha256(str(target.get("page_content") or "").encode("utf-8")).hexdigest()
+            if actual_hash != expected_hash:
+                errors.append(f"ID map row {index} target content hash mismatch")
+
+
+def _metadata_value_list(rows: list[dict], key: str) -> list[str]:
+    values: list[str] = []
+    for row in rows:
+        value = (row.get("metadata") or {}).get(key)
+        if value is not None and str(value).strip():
+            values.append(str(value))
+    return values
 
 
 def _check_shadow_lineage(

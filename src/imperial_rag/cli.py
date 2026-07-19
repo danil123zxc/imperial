@@ -25,12 +25,16 @@ def load_project_environment(workspace_root: Path | None) -> None:
     load_project_env(workspace_root)
 
 
-def build_settings(workspace_root: Path | None) -> Any:
+def build_settings(workspace_root: Path | None, *, use_active_pointer: bool = True) -> Any:
     from imperial_rag.config import Settings
 
-    if workspace_root is None:
-        return Settings()
-    return Settings(workspace_root=workspace_root)
+    try:
+        from imperial_rag.config import apply_active_index_pointer
+    except ImportError:  # Compatibility with minimal test/embedding environments.
+        apply_active_index_pointer = lambda value: value
+
+    settings = Settings() if workspace_root is None else Settings(workspace_root=workspace_root)
+    return apply_active_index_pointer(settings) if use_active_pointer else settings
 
 
 def configure_observability(settings: Any) -> None:

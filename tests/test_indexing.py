@@ -70,6 +70,25 @@ def test_index_vector_documents_accepts_explicit_ids() -> None:
     assert store.ids == ids
 
 
+def test_index_vector_documents_embeds_context_but_preserves_citation_text() -> None:
+    class FakeVectorStore:
+        def add_documents(self, documents, ids):
+            self.documents = documents
+            return ids
+
+    source = Document(
+        page_content="Citation body",
+        metadata={"citation_id": "c1", "embedding_text": "Operations | Policy\n\nCitation body"},
+    )
+    store = FakeVectorStore()
+
+    index_vector_documents([source], vector_store=store)
+
+    indexed = store.documents[0]
+    assert indexed.page_content == "Operations | Policy\n\nCitation body"
+    assert indexed.metadata["citation_text"] == "Citation body"
+
+
 def test_legacy_index_documents_uses_vector_store_without_live_qdrant() -> None:
     class FakeVectorStore:
         def add_documents(self, documents, ids):
@@ -111,6 +130,35 @@ def test_create_qdrant_vector_store_uses_settings(monkeypatch, tmp_path: Path) -
     assert created["url"] == "http://127.0.0.1:6333"
     assert created["collection_name"] == "test"
     assert created["embedding"] is embeddings
+
+
+def test_create_qdrant_vector_store_creates_missing_collection(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    class FakeClient:
+        def __init__(self, url):
+            calls.append(("init", url))
+
+        def collection_exists(self, name):
+            calls.append(("exists", name))
+            return False
+
+        def create_collection(self, **kwargs):
+            calls.append(("create", kwargs))
+
+    class FakeVectorStore:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("imperial_rag.indexing.QdrantClient", FakeClient)
+    monkeypatch.setattr("imperial_rag.indexing.QdrantVectorStore", FakeVectorStore)
+    settings = Settings(workspace_root=tmp_path, qdrant_collection="shadow")
+
+    create_qdrant_vector_store(settings, embeddings=object())
+
+    create = next(payload for name, payload in calls if name == "create")
+    assert create["collection_name"] == "shadow"
+    assert create["vectors_config"].size == 2048
 
 
 def test_create_qdrant_vector_store_uses_qwen_embeddings_by_default(monkeypatch, tmp_path: Path) -> None:

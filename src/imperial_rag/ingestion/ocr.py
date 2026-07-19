@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import mimetypes
 import sqlite3
 import time
@@ -14,6 +16,26 @@ class OcrResult:
     text: str
     method: str
     cached: bool = False
+    recipe_hash: str | None = None
+
+
+OCR_RECIPE_SCHEMA = "imperial-ocr-recipe-v1"
+
+
+def ocr_recipe_hash(ocr_client: Any | None, preprocessing: dict[str, Any] | None = None) -> str:
+    settings = getattr(ocr_client, "settings", None)
+    payload = {
+        "schema": OCR_RECIPE_SCHEMA,
+        "model": getattr(settings, "vision_model", None),
+        "task": getattr(settings, "ocr_task", None),
+        "min_pixels": getattr(settings, "ocr_min_pixels", None),
+        "max_pixels": getattr(settings, "ocr_max_pixels", None),
+        "enable_rotate": getattr(settings, "ocr_enable_rotate", None),
+        "client": None if ocr_client is None else type(ocr_client).__name__,
+        "preprocessing": dict(sorted((preprocessing or {}).items())),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 class QwenOcrClient:
@@ -169,34 +191,41 @@ class OcrCache:
         self._closed = False
         self._conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS ocr_cache (
+            CREATE TABLE IF NOT EXISTS ocr_cache_v2 (
                 file_hash TEXT NOT NULL,
                 image_id TEXT NOT NULL,
+                recipe_hash TEXT NOT NULL,
                 text TEXT NOT NULL,
                 method TEXT NOT NULL,
                 updated_ns INTEGER NOT NULL,
-                PRIMARY KEY (file_hash, image_id)
+                PRIMARY KEY (file_hash, image_id, recipe_hash)
             )
             """
         )
 
-    def lookup(self, file_hash: str, image_id: str) -> OcrResult | None:
+    def lookup(self, file_hash: str, image_id: str, recipe_hash: str = "legacy-v1") -> OcrResult | None:
         row = self._conn.execute(
-            "SELECT text, method FROM ocr_cache WHERE file_hash = ? AND image_id = ?",
-            (file_hash, image_id),
+            "SELECT text, method FROM ocr_cache_v2 WHERE file_hash = ? AND image_id = ? AND recipe_hash = ?",
+            (file_hash, image_id, recipe_hash),
         ).fetchone()
         if row is None:
             return None
-        return OcrResult(text=row[0], method=row[1], cached=True)
+        return OcrResult(text=row[0], method=row[1], cached=True, recipe_hash=recipe_hash)
 
-    def store(self, file_hash: str, image_id: str, result: OcrResult) -> None:
+    def store(
+        self,
+        file_hash: str,
+        image_id: str,
+        result: OcrResult,
+        recipe_hash: str = "legacy-v1",
+    ) -> None:
         with self._conn:
             self._conn.execute(
                 """
-                REPLACE INTO ocr_cache(file_hash, image_id, text, method, updated_ns)
-                VALUES (?, ?, ?, ?, ?)
+                REPLACE INTO ocr_cache_v2(file_hash, image_id, recipe_hash, text, method, updated_ns)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (file_hash, image_id, result.text, result.method, time.time_ns()),
+                (file_hash, image_id, recipe_hash, result.text, result.method, time.time_ns()),
             )
 
     def read(self, cache_key: str) -> OcrResult | None:

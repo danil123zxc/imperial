@@ -188,7 +188,10 @@ class RrfCandidateFusion:
     """
 
     def fuse(self, documents: list[Document], rrf_k: int) -> list[Document]:
-        normalized = [self._with_retrieval_id(document) for document in documents]
+        normalized = [
+            self._with_retrieval_id(document)
+            for document in _suppress_non_active_version_candidates(documents)
+        ]
         vector_docs, keyword_docs, unranked_docs = self._split_ranked_documents(normalized)
 
         merger = CandidateMerger()
@@ -265,3 +268,22 @@ class RrfCandidateFusion:
 
     def _score(self, positions: dict[str, list[int]], retrieval_id: str, rrf_k: int) -> float:
         return sum(1.0 / (rrf_k + position) for position in positions.get(retrieval_id, []))
+
+
+def _suppress_non_active_version_candidates(documents: list[Document]) -> list[Document]:
+    active_groups = {
+        str(group)
+        for document in documents
+        if (group := (document.metadata or {}).get("version_group"))
+        and str((document.metadata or {}).get("authority_status") or "active").casefold() == "active"
+    }
+    if not active_groups:
+        return documents
+    return [
+        document
+        for document in documents
+        if not (
+            str((document.metadata or {}).get("version_group") or "") in active_groups
+            and str((document.metadata or {}).get("authority_status") or "active").casefold() != "active"
+        )
+    ]

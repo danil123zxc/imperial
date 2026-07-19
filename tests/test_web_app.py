@@ -27,15 +27,15 @@ def test_status_summary_displays_manifest_counts():
     summary = build_status_summary(total_files=162, indexed_files=100, failed_files=3)
 
     assert APP_TITLE == "Imperial RAG"
-    assert "Total files: 162" in summary
-    assert "Indexed files: 100" in summary
-    assert "Failed files: 3" in summary
+    assert "Всего файлов: 162" in summary
+    assert "Проиндексировано: 100" in summary
+    assert "Ошибок: 3" in summary
 
 
 def test_load_status_summary_is_importable_without_manifest_stack():
     summary = load_status_summary(settings=object())
 
-    assert "Total files:" in summary
+    assert "Всего файлов:" in summary
 
 
 def test_build_retrieved_file_groups_groups_chunks_by_file_and_loads_file_preview(tmp_path):
@@ -145,6 +145,93 @@ def test_download_button_payload_disables_large_files(tmp_path, monkeypatch):
     )
 
     assert web_app._download_button_payload(group) == (b"", True)
+
+
+def test_source_count_label_uses_russian_plural_forms():
+    assert web_app._source_count_label(1) == "1 источник"
+    assert web_app._source_count_label(2) == "2 источника"
+    assert web_app._source_count_label(5) == "5 источников"
+    assert web_app._source_count_label(11) == "11 источников"
+    assert web_app._source_count_label(21) == "21 источник"
+
+
+def test_filter_retrieved_file_groups_matches_name_and_path(tmp_path):
+    first = RetrievedFileGroup(
+        file_key="logistics",
+        file_name="Регламент ЛОГИСТИКА.docx",
+        display_path="11. РЕГЛАМЕНТЫ/ЛОГИСТИКА/Регламент ЛОГИСТИКА.docx",
+        download_path=None,
+        download_name="Регламент ЛОГИСТИКА.docx",
+        download_mime="application/octet-stream",
+        preview_text="preview",
+        can_download=False,
+    )
+    second = RetrievedFileGroup(
+        file_key="warehouse",
+        file_name="Инструкция.docx",
+        display_path="12. СКЛАД/Инструкция.docx",
+        download_path=None,
+        download_name="Инструкция.docx",
+        download_mime="application/octet-stream",
+        preview_text="preview",
+        can_download=False,
+    )
+
+    assert web_app._filter_retrieved_file_groups([first, second], "логистика") == [first]
+    assert web_app._filter_retrieved_file_groups([first, second], "СКЛАД") == [second]
+    assert web_app._filter_retrieved_file_groups([first, second], "  ") == [first, second]
+    assert web_app._selected_retrieved_file_group([first, second], "warehouse") == second
+
+
+def test_retrieved_files_render_compact_summary_and_interactive_drawer():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string(
+        """
+import streamlit as st
+from imperial_rag.app.web import RetrievedFileGroup, _render_retrieved_files
+
+groups = [
+    RetrievedFileGroup(
+        file_key="logistics",
+        file_name="Регламент ЛОГИСТИКА.docx",
+        display_path="11. РЕГЛАМЕНТЫ/ЛОГИСТИКА/Регламент ЛОГИСТИКА.docx",
+        download_path=None,
+        download_name="Регламент ЛОГИСТИКА.docx",
+        download_mime="application/octet-stream",
+        preview_text="Текст предпросмотра",
+        can_download=False,
+    ),
+    RetrievedFileGroup(
+        file_key="warehouse",
+        file_name="Инструкция СКЛАД.docx",
+        display_path="12. СКЛАД/Инструкция СКЛАД.docx",
+        download_path=None,
+        download_name="Инструкция СКЛАД.docx",
+        download_mime="application/octet-stream",
+        preview_text="Текст складской инструкции",
+        can_download=False,
+    )
+]
+_render_retrieved_files(st, groups, 3)
+"""
+    ).run()
+
+    assert app.markdown[0].value == ":material/description: **2 источника**"
+    assert app.caption[0].value == "Документы, использованные в ответе"
+    app.button(key="source-drawer-open-3").click().run()
+
+    assert app.text_input[0].label == "Поиск по файлам"
+    assert app.button(key="source-drawer-select-3-0").label == "Регламент ЛОГИСТИКА.docx"
+    assert app.subheader[0].value == "Предпросмотр"
+    assert app.text[0].value == "Текст предпросмотра"
+
+    app.text_input[0].input("склад").run()
+
+    assert len(app.button) == 2
+    assert app.button(key="source-drawer-select-3-0").label == "Инструкция СКЛАД.docx"
+    assert app.text[0].value == "Текст складской инструкции"
+    assert list(app.exception) == []
 
 
 def test_build_retrieved_file_groups_groups_same_relative_path_without_matching_file_id(tmp_path):
@@ -370,7 +457,7 @@ def test_render_chat_message_surfaces_invalid_citation_warning(tmp_path):
     web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
 
     assert writes == ["Unsupported answer without valid citations."]
-    assert warnings == ["Answer citations could not be verified. Treat this response as diagnostic."]
+    assert warnings == ["Не удалось проверить ссылки в ответе. Используйте этот ответ только для диагностики."]
 
 
 def test_render_chat_message_surfaces_model_provider_error(tmp_path):
@@ -394,9 +481,42 @@ def test_render_chat_message_surfaces_model_provider_error(tmp_path):
 
     web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
 
-    assert errors == [
-        "The model provider failed while answering. Check local logs and provider credentials, then try again."
-    ]
+    assert errors == [web_app.MODEL_PROVIDER_ERROR_TEXT]
+
+
+def test_render_chat_message_surfaces_no_relevant_documents_as_error(tmp_path):
+    class ChatMessage:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    errors = []
+    streamlit = types.SimpleNamespace(
+        chat_message=lambda *args, **kwargs: ChatMessage(),
+        error=lambda message: errors.append(message),
+    )
+    message = {
+        "role": "assistant",
+        "content": "I could not find this clearly in the indexed documents.",
+        "error": {"type": "no_relevant_documents"},
+        "sources": [],
+    }
+
+    web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
+
+    assert errors == [web_app.REFUSAL_TEXT]
+
+
+def test_localizes_legacy_system_messages_and_default_chat_title():
+    assert web_app._localized_message_content(
+        {"content": "I could not find this clearly in the indexed documents."}
+    ) == web_app.REFUSAL_TEXT
+    assert web_app._localized_message_content(
+        {"content": "Something went wrong while answering. Check local logs for details."}
+    ) == web_app.QUERY_FAILURE_TEXT
+    assert web_app._conversation_button_label(SimpleNamespace(title="New chat")) == "Новый чат"
 
 
 def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
@@ -444,7 +564,7 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
         text=lambda *args, **kwargs: None,
         session_state=SessionState(),
         subheader=lambda *args, **kwargs: None,
-        radio=lambda *args, **kwargs: "Log in",
+        radio=lambda *args, **kwargs: web_app.LOGIN_MODE,
         form=lambda *args, **kwargs: Sidebar(),
         text_input=lambda *args, **kwargs: "",
         form_submit_button=lambda *args, **kwargs: False,
@@ -516,7 +636,7 @@ def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_pat
         text=lambda *args, **kwargs: None,
         session_state=SessionState(),
         subheader=lambda *args, **kwargs: None,
-        radio=lambda *args, **kwargs: "Log in",
+        radio=lambda *args, **kwargs: web_app.LOGIN_MODE,
         form=lambda *args, **kwargs: Form(),
         text_input=lambda *args, **kwargs: "",
         form_submit_button=lambda *args, **kwargs: False,
@@ -603,7 +723,7 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
 
     web_app.main()
 
-    assert warnings == ["1 pending access request"]
+    assert warnings == ["Запросы на доступ: 1"]
 
 
 def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
@@ -654,7 +774,7 @@ def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
         title=lambda *args, **kwargs: None,
         session_state=SessionState(),
         subheader=lambda *args, **kwargs: None,
-        radio=lambda *args, **kwargs: "Sign up",
+        radio=lambda *args, **kwargs: web_app.SIGNUP_MODE,
         form=lambda *args, **kwargs: Context(),
         text_input=lambda *args, **kwargs: values[kwargs["key"]],
         text_area=lambda *args, **kwargs: values[kwargs["key"]],
@@ -845,7 +965,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
         }
     ]
     assert streamlit_module.session_state.auth_user_email not in str(trace_contexts)
-    assert errors == ["Something went wrong while answering. Check local logs for details."]
+    assert errors == [web_app.QUERY_FAILURE_TEXT]
 
 
 def test_main_bootstraps_src_path_for_streamlit_script_launch():
@@ -885,7 +1005,7 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
             text=lambda *args, **kwargs: None,
             session_state=SessionState(),
             subheader=lambda *args, **kwargs: None,
-            radio=lambda *args, **kwargs: "Log in",
+            radio=lambda *args, **kwargs: namespace['LOGIN_MODE'],
             form=lambda *args, **kwargs: Sidebar(),
             text_input=lambda *args, **kwargs: "",
             form_submit_button=lambda *args, **kwargs: False,

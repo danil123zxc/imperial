@@ -39,6 +39,11 @@ class EmptyOcrClient:
         return OcrResult(text="", method="fake_ocr")
 
 
+class CannedDashScopeOcrClient:
+    def extract_image_text(self, image_path: Path) -> OcrResult:
+        return OcrResult(text="No visible text in this image.", method="dashscope:qwen-vl-ocr-test")
+
+
 def _record_for(path: Path):
     for record in scan_files(path.parent):
         if record.absolute_path == path.resolve():
@@ -113,7 +118,7 @@ def test_docx_preserves_section_and_table_source_locators(tmp_path):
     assert [document.metadata["source_type"] for document in result.documents] == ["body", "table", "body"]
     first_body, table_doc, second_body = result.documents
     assert first_body.metadata["section_heading"] == "Возврат брака"
-    assert first_body.metadata["source_locator"] == "section:1:возврат-брака"
+    assert first_body.metadata["source_locator"] == "section:1:возврат-брака:element:1"
     assert first_body.metadata["source_doc_id"].startswith(f"{record.file_id}:body:section:1")
     assert first_body.metadata["element_id"]
     assert first_body.metadata["element_hash"]
@@ -124,12 +129,25 @@ def test_docx_preserves_section_and_table_source_locators(tmp_path):
     assert table_doc.metadata["table_index"] == 1
     assert table_doc.metadata["row_start"] == 1
     assert table_doc.metadata["row_end"] == 2
-    assert table_doc.metadata["source_locator"] == "section:1:возврат-брака:table:1:rows:1-2"
+    assert table_doc.metadata["source_locator"] == "section:1:возврат-брака:element:2:table:1:rows:1-2"
     assert "Ответственный | Склад" in table_doc.page_content
 
     assert second_body.metadata["section_heading"] == "Отгрузка"
-    assert second_body.metadata["source_locator"] == "section:2:отгрузка"
+    assert second_body.metadata["source_locator"] == "section:2:отгрузка:element:3"
     assert "Водитель получает маршрутный лист." in second_body.page_content
+
+
+def test_docx_detects_conservative_numbered_manual_heading(tmp_path):
+    path = tmp_path / "manual-heading.docx"
+    docx = DocxDocument()
+    docx.add_paragraph("1. Область применения")
+    docx.add_paragraph("Правило применяется ко всем складам.")
+    docx.save(path)
+
+    result = extract_file(_record_for(path))
+
+    assert result.documents[0].metadata["section_heading"] == "1. Область применения"
+    assert result.documents[0].metadata["element_ordinal"] == 1
 
 
 def test_docx_without_text_is_no_text(tmp_path):
@@ -203,6 +221,49 @@ def test_standalone_image_uses_ocr_client_and_cache(tmp_path):
     assert second.documents[0].metadata["ocr_cached"] is True
     assert second_client.calls == []
     assert (tmp_path / "processed" / "ocr_cache.sqlite3").exists()
+
+
+def test_ocr_cache_recipe_change_invalidates_cached_result(tmp_path):
+    path = tmp_path / "scan.jpg"
+    _make_image(path)
+    record = _record_for(path)
+
+    class ConfiguredFake(FakeOcrClient):
+        def __init__(self, model: str) -> None:
+            super().__init__(prefix=model)
+            self.settings = type("Settings", (), {"vision_model": model, "ocr_task": "text_extraction"})()
+
+    with OcrCache(tmp_path / "processed") as cache:
+        first_client = ConfiguredFake("model-v1")
+        second_client = ConfiguredFake("model-v2")
+        first = extract_file(record, ocr_client=first_client, ocr_cache=cache)
+        second = extract_file(record, ocr_client=second_client, ocr_cache=cache)
+
+    assert first.documents[0].page_content.startswith("model-v1")
+    assert second.documents[0].page_content.startswith("model-v2")
+    assert len(first_client.calls) == 1
+    assert len(second_client.calls) == 1
+    assert first.documents[0].metadata["ocr_recipe_hash"] != second.documents[0].metadata["ocr_recipe_hash"]
+
+
+def test_canned_ocr_response_is_rejected_before_indexing(tmp_path):
+    path = tmp_path / "scan.jpg"
+    _make_image(path)
+
+    result = extract_file(_record_for(path), ocr_client=CannedDashScopeOcrClient())
+
+    assert result.status == FileStatus.NO_TEXT
+    assert result.documents == []
+    assert "canned_no_text_response" in result.message
+
+
+def test_ocr_routes_named_scheme_as_diagram(tmp_path):
+    path = tmp_path / "СХЕМА ВОЗВРАТА.jpg"
+    _make_image(path)
+
+    result = extract_file(_record_for(path), ocr_client=FakeOcrClient(prefix="diagram text with enough context"))
+
+    assert result.documents[0].metadata["layout_route"] == "diagram"
 
 
 def test_ocr_cache_context_manager_closes_connection(tmp_path):

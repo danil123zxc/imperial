@@ -55,6 +55,12 @@ def test_ingestion_promotion_script_imports_and_defines_main():
     assert hasattr(module, "main")
 
 
+def test_shadow_promotion_script_imports_and_defines_main():
+    module = _load_script("scripts/promote_ingestion.py", "promote_ingestion_script")
+
+    assert hasattr(module, "main")
+
+
 def test_script_bootstrap_adds_repo_src_once(monkeypatch):
     module = _load_script("scripts/_bootstrap.py", "script_bootstrap")
     src_path = str(Path("src").resolve())
@@ -91,6 +97,7 @@ def test_ingest_script_exposes_shadow_index_suffix_and_artifact_root_flags():
     assert "--baseline-artifact-root" in source
     assert "--manifest-db-path" in source
     assert "--recreate-qdrant-collection" in source
+    assert "--shadow-run" in source
     assert "_settings_with_shadow_targets" in source
 
 
@@ -103,11 +110,40 @@ def test_ingest_shadow_suffix_requests_qdrant_collection_recreate(tmp_path):
         elasticsearch_index: str = "keyword"
         qdrant_collection: str = "vectors"
         recreate_qdrant_collection: bool = False
+        shadow_run_id: str | None = None
+        extraction_root_override: Path | None = None
+        baseline_extraction_root: Path | None = None
+        manifest_db_path_override: Path | None = None
 
     settings = module._settings_with_shadow_targets(FakeSettings(tmp_path), "migration v2", None, None)
 
     assert settings.elasticsearch_index == "keyword_migration_v2"
     assert settings.qdrant_collection == "vectors_migration_v2"
+    assert settings.recreate_qdrant_collection is True
+
+
+def test_ingest_shadow_run_isolates_all_mutable_targets(tmp_path):
+    module = _load_script("scripts/ingest.py", "ingest_script_unified_shadow")
+
+    @dataclass(frozen=True)
+    class FakeSettings:
+        workspace_root: Path
+        elasticsearch_index: str = "keyword"
+        qdrant_collection: str = "vectors"
+        recreate_qdrant_collection: bool = False
+        shadow_run_id: str | None = None
+        extraction_root_override: Path | None = None
+        baseline_extraction_root: Path | None = None
+        manifest_db_path_override: Path | None = None
+
+    settings = module._settings_with_shadow_run(FakeSettings(tmp_path), "migration-v3")
+
+    run_root = tmp_path / ".imperial_rag" / "shadow-runs" / "migration-v3"
+    assert settings.extraction_root_override == run_root / "extracted"
+    assert settings.manifest_db_path_override == run_root / "manifest.sqlite3"
+    assert settings.baseline_extraction_root == tmp_path / ".imperial_rag" / "extracted"
+    assert settings.elasticsearch_index == "keyword__shadow__migration-v3"
+    assert settings.qdrant_collection == "vectors__shadow__migration-v3"
     assert settings.recreate_qdrant_collection is True
 
 
@@ -336,6 +372,20 @@ def test_query_script_logs_safe_completion_fields(monkeypatch, capsys):
     assert events[0][1]["fallback_count"] == 1
     assert "question" not in events[0][1]
     assert "file_name" not in events[0][1]
+
+
+def test_query_script_logs_no_relevant_documents_error_type():
+    module = _load_script("scripts/query.py", "query_script_no_relevant_documents")
+
+    fields = module._query_log_fields(
+        {
+            "answer": "I could not find this clearly in the indexed documents.",
+            "error": {"type": "no_relevant_documents", "reason": "insufficient_evidence"},
+            "retrieval": {"final_evidence": 0},
+        }
+    )
+
+    assert fields == {"error_type": "no_relevant_documents", "final_evidence": 0}
 
 
 def test_ingest_script_logs_failed_file_completion(monkeypatch, capsys):

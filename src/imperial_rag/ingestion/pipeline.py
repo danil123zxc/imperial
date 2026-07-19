@@ -195,6 +195,14 @@ def _run(
                 )
 
             retrieval_settings = deps["RetrievalSettings"].from_env()
+            authority_catalog_path = Path(
+                getattr(settings, "authority_catalog_path", Path(settings.workspace_root) / "docs" / "document-authority.json")
+            )
+            authority_catalog = deps["load_authority_catalog"](authority_catalog_path)
+            extracted_documents = deps["apply_authority_and_exact_deduplication"](
+                extracted_documents,
+                authority_catalog,
+            )
             with trace_pipeline_step(
                 "ingest.build_chunks",
                 "corpus",
@@ -346,6 +354,9 @@ def _run(
                 keyword_indexed=keyword_indexed,
                 vector_indexed=vector_indexed,
                 embedding_model=embedding_model if vector_indexed else None,
+                chunk_count=len(chunks),
+                vector_document_count=len(vector_added_ids),
+                ocr_client=ocr_client,
             )
             _write_index_lineage(extraction_root, lineage)
             corpus_span.set_attribute("imperial.corpus_version", corpus_version)
@@ -363,6 +374,7 @@ def _run(
 
 
 def _load_dependencies() -> dict[str, Any]:
+    from imperial_rag.ingestion.authority import apply_authority_and_exact_deduplication, load_authority_catalog
     from imperial_rag.ingestion.chunking import build_chunks
     from imperial_rag.config import Settings
     from imperial_rag.retrieval.elasticsearch import ElasticsearchKeywordIndex
@@ -395,6 +407,8 @@ def _load_dependencies() -> dict[str, Any]:
         "ManifestStore": ManifestStore,
         "assign_duplicate_groups": assign_duplicate_groups,
         "scan_files": scan_files,
+        "apply_authority_and_exact_deduplication": apply_authority_and_exact_deduplication,
+        "load_authority_catalog": load_authority_catalog,
     }
 
 
@@ -581,7 +595,13 @@ def _index_lineage_payload(
     keyword_indexed: bool,
     vector_indexed: bool,
     embedding_model: str | None,
+    chunk_count: int,
+    vector_document_count: int,
+    ocr_client: Any | None,
 ) -> dict[str, Any]:
+    from imperial_rag.ingestion.ocr import OCR_RECIPE_SCHEMA, ocr_recipe_hash
+
+    ocr_settings = getattr(ocr_client, "settings", None)
     return {
         "ingest_run_id": ingest_run_id,
         "corpus_version": corpus_version,
@@ -591,6 +611,12 @@ def _index_lineage_payload(
         "embedding_model": embedding_model,
         "keyword_indexed": keyword_indexed,
         "vector_indexed": vector_indexed,
+        "chunk_count": chunk_count,
+        "keyword_document_count": chunk_count if keyword_indexed else 0,
+        "vector_document_count": vector_document_count if vector_indexed else 0,
+        "ocr_model": getattr(ocr_settings, "vision_model", None),
+        "ocr_recipe_hash": None if ocr_client is None else ocr_recipe_hash(ocr_client),
+        "ocr_recipe_schema": None if ocr_client is None else OCR_RECIPE_SCHEMA,
     }
 
 
@@ -721,19 +747,21 @@ def _read_existing_chunks(path: Path) -> list[dict[str, Any]]:
 
 
 def _write_old_to_new_id_map(extraction_root: Path, old_rows: list[dict[str, Any]], chunks: list[Any]) -> None:
-    new_by_file: dict[str, list[dict[str, Any]]] = {}
+    new_rows: list[dict[str, Any]] = []
     for chunk in chunks:
         metadata = dict(getattr(chunk, "metadata", {}) or {})
-        file_id = metadata.get("file_id")
-        if file_id is not None:
-            new_by_file.setdefault(str(file_id), []).append(metadata)
+        content = str(getattr(chunk, "page_content", ""))
+        new_rows.append({"metadata": metadata, "content_sha256": _content_sha256(content), "used": False})
 
     rows: list[dict[str, Any]] = []
     for row in old_rows:
         old = dict(row.get("metadata") or {})
         file_id = str(old.get("file_id") or "")
-        new_candidates = new_by_file.get(file_id, [])
-        new = new_candidates.pop(0) if new_candidates else {}
+        old_content_hash = _content_sha256(str(row.get("page_content") or ""))
+        match, strategy = _match_new_chunk(old, old_content_hash, new_rows)
+        new = dict(match.get("metadata") or {}) if match is not None else {}
+        if match is not None:
+            match["used"] = True
         rows.append(
             {
                 "file_id": file_id,
@@ -742,27 +770,80 @@ def _write_old_to_new_id_map(extraction_root: Path, old_rows: list[dict[str, Any
                 "new_chunk_id": new.get("chunk_id"),
                 "new_citation_id": new.get("citation_id"),
                 "source_locator": new.get("source_locator"),
+                "old_source_locator": old.get("source_locator"),
+                "old_content_sha256": old_content_hash,
+                "new_content_sha256": None if match is None else match["content_sha256"],
+                "match_strategy": strategy,
                 "status": "mapped" if new.get("chunk_id") else "unmapped",
             }
         )
 
-    for file_id, remaining in sorted(new_by_file.items()):
-        for new in remaining:
-            rows.append(
-                {
-                    "file_id": file_id,
-                    "old_chunk_id": None,
-                    "old_citation_id": None,
-                    "new_chunk_id": new.get("chunk_id"),
-                    "new_citation_id": new.get("citation_id"),
-                    "source_locator": new.get("source_locator"),
-                    "status": "new_only",
-                }
-            )
+    for entry in new_rows:
+        if entry["used"]:
+            continue
+        new = dict(entry["metadata"])
+        rows.append(
+            {
+                "file_id": str(new.get("file_id") or ""),
+                "old_chunk_id": None,
+                "old_citation_id": None,
+                "new_chunk_id": new.get("chunk_id"),
+                "new_citation_id": new.get("citation_id"),
+                "source_locator": new.get("source_locator"),
+                "new_content_sha256": entry["content_sha256"],
+                "match_strategy": "new_only",
+                "status": "new_only",
+            }
+        )
 
-    payload = {"schema_version": "old-to-new-id-map-v1", "rows": rows}
+    payload = {"schema_version": "old-to-new-id-map-v2", "rows": rows}
     target = _safe_artifact_path(extraction_root, "old-to-new-id-map.json")
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _match_new_chunk(
+    old: dict[str, Any],
+    old_content_hash: str,
+    candidates: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    unused = [candidate for candidate in candidates if not candidate["used"]]
+    old_file = str(old.get("file_id") or "")
+    old_locator = str(old.get("base_source_locator") or old.get("source_locator") or "")
+
+    def metadata(candidate: dict[str, Any]) -> dict[str, Any]:
+        return dict(candidate.get("metadata") or {})
+
+    exact = [
+        candidate
+        for candidate in unused
+        if str(metadata(candidate).get("file_id") or "") == old_file
+        and str(metadata(candidate).get("base_source_locator") or metadata(candidate).get("source_locator") or "")
+        == old_locator
+        and candidate["content_sha256"] == old_content_hash
+    ]
+    if exact:
+        return exact[0], "file_locator_content"
+    same_file_content = [
+        candidate
+        for candidate in unused
+        if str(metadata(candidate).get("file_id") or "") == old_file
+        and candidate["content_sha256"] == old_content_hash
+    ]
+    if same_file_content:
+        return same_file_content[0], "file_content"
+    provenance_content = [
+        candidate
+        for candidate in unused
+        if candidate["content_sha256"] == old_content_hash
+        and str(old.get("relative_path") or "") in list(metadata(candidate).get("provenance_paths") or [])
+    ]
+    if provenance_content:
+        return provenance_content[0], "duplicate_provenance_content"
+    return None, "unmapped"
+
+
+def _content_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _safe_artifact_path(root: Path, filename: str) -> Path:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Imperial Obsidian Docs"
+  short_description: "Keep Imperial architecture notes aligned"
+  default_prompt: "Use $sync-imperial-obsidian-docs to assess this Imperial code change and update the affected Obsidian notes."

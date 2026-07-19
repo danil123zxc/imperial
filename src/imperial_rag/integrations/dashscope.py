@@ -167,6 +167,8 @@ def configure_dashscope_sdk(settings: QwenProviderSettings | None = None) -> Non
 
 
 def vector_metadata_path(settings: Any) -> Path:
+    if getattr(settings, "shadow_run_id", None) and getattr(settings, "extraction_root", None) is not None:
+        return Path(settings.extraction_root).parent / "vector_provider.json"
     return Path(settings.processed_root) / "vector_provider.json"
 
 

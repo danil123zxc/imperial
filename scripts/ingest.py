@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -31,6 +33,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--enable-ocr", action="store_true", help="Use the configured paid OCR client.")
     parser.add_argument("--index-vectors", action="store_true", help="Index chunks into the configured vector store.")
     parser.add_argument(
+        "--shadow-run",
+        help="Run a fully isolated ingestion under .imperial_rag/shadow-runs/<id> with shadow search targets.",
+    )
+    parser.add_argument(
         "--index-suffix",
         help="Append a suffix to Elasticsearch index and Qdrant collection names for shadow ingestion.",
     )
@@ -58,6 +64,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--trace-session-id", help="Phoenix session.id for grouping traces.")
     args = parser.parse_args(argv)
 
+    if args.shadow_run and any((args.index_suffix, args.artifact_root, args.manifest_db_path)):
+        parser.error("--shadow-run cannot be combined with --index-suffix, --artifact-root, or --manifest-db-path")
+
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     settings = _settings_with_shadow_targets(
@@ -68,6 +77,8 @@ def main(argv: list[str] | None = None) -> None:
         args.manifest_db_path,
         args.recreate_qdrant_collection,
     )
+    if args.shadow_run:
+        settings = _settings_with_shadow_run(settings, args.shadow_run)
     _configure_observability(settings)
     _configure_tracing(settings, trace_phoenix=args.trace_phoenix)
     trace_session_id = _trace_session_id(args.trace_session_id)
@@ -86,6 +97,8 @@ def main(argv: list[str] | None = None) -> None:
             session_id=trace_session_id,
         )
         raise
+    if args.shadow_run:
+        _write_shadow_run_manifest(settings, summary)
     _log_ingest_completion(
         summary,
         started_at,
@@ -233,6 +246,43 @@ def _settings_with_shadow_targets(
     if hasattr(settings, "model_copy"):
         return settings.model_copy(update=updates)
     return replace(settings, **updates)
+
+
+def _settings_with_shadow_run(settings: Any, run_id: str) -> Any:
+    clean = run_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", clean):
+        raise SystemExit("--shadow-run must be 1-64 characters using letters, digits, dot, underscore, or hyphen")
+    shadow_root = Path(settings.workspace_root) / ".imperial_rag" / "shadow-runs" / clean
+    updates = {
+        "shadow_run_id": clean,
+        "extraction_root_override": shadow_root / "extracted",
+        "baseline_extraction_root": Path(settings.workspace_root) / ".imperial_rag" / "extracted",
+        "manifest_db_path_override": shadow_root / "manifest.sqlite3",
+        "elasticsearch_index": f"{settings.elasticsearch_index}__shadow__{clean}",
+        "qdrant_collection": f"{settings.qdrant_collection}__shadow__{clean}",
+        "recreate_qdrant_collection": True,
+    }
+    if hasattr(settings, "model_copy"):
+        return settings.model_copy(update=updates)
+    return replace(settings, **updates)
+
+
+def _write_shadow_run_manifest(settings: Any, summary: Any) -> None:
+    root = Path(settings.extraction_root).parent
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "imperial-shadow-run-v1",
+        "shadow_run_id": settings.shadow_run_id,
+        "artifact_root": str(settings.extraction_root),
+        "manifest_db_path": str(settings.manifest_db_path),
+        "keyword_index": settings.elasticsearch_index,
+        "qdrant_collection": settings.qdrant_collection,
+        "summary": summary.to_dict() if hasattr(summary, "to_dict") else dict(summary),
+    }
+    target = root / "shadow-run.json"
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(target)
 
 
 def _resolve_workspace_path(settings: Any, path: Path) -> Path:

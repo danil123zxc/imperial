@@ -12,13 +12,18 @@ import uuid
 
 
 APP_TITLE = "Imperial RAG"
-PREVIEW_UNAVAILABLE_TEXT = "Preview is unavailable for this file."
+PREVIEW_UNAVAILABLE_TEXT = "Предпросмотр этого файла недоступен."
 AUTH_SESSION_EMAIL_KEY = "auth_user_email"
 CHAT_HISTORY_USER_KEY = "chat_history_user_email"
 ACTIVE_CONVERSATION_ID_KEY = "active_conversation_id"
 PENDING_CHAT_TURN_KEY = "pending_chat_turn"
-QUERY_FAILURE_TEXT = "Something went wrong while answering. Check local logs for details."
-INCOMPLETE_ANSWER_TEXT = "The previous answer was not saved. Ask again to regenerate it."
+QUERY_FAILURE_TEXT = "Не удалось подготовить ответ. Подробности доступны в локальных журналах."
+INCOMPLETE_ANSWER_TEXT = "Предыдущий ответ не был сохранён. Задайте вопрос ещё раз, чтобы получить новый ответ."
+MODEL_PROVIDER_ERROR_TEXT = "Не удалось получить ответ от модели. Проверьте локальные журналы и настройки доступа, затем повторите попытку."
+REFUSAL_TEXT = "Мне не удалось найти однозначный ответ в проиндексированных документах."
+LOGIN_MODE = "Войти"
+SIGNUP_MODE = "Зарегистрироваться"
+SOURCE_DRAWER_SELECTED_KEY_PREFIX = "source_drawer_selected"
 FILE_PREVIEW_CHAR_LIMIT = 12_000
 FILE_DOWNLOAD_BYTE_LIMIT = 50 * 1024 * 1024
 _RUNTIME_CACHE_WRAPPER: Any | None = None
@@ -52,11 +57,19 @@ class CompletedChatTurn:
 def build_status_summary(total_files: int, indexed_files: int, failed_files: int) -> str:
     return "\n".join(
         [
-            f"Total files: {total_files}",
-            f"Indexed files: {indexed_files}",
-            f"Failed files: {failed_files}",
+            f"Всего файлов: {total_files}",
+            f"Проиндексировано: {indexed_files}",
+            f"Ошибок: {failed_files}",
         ]
     )
+
+
+def _settings_with_active_pointer(settings: Any) -> Any:
+    try:
+        from imperial_rag.config import apply_active_index_pointer
+    except ImportError:
+        return settings
+    return apply_active_index_pointer(settings)
 
 
 def load_status_summary(settings: Any | None = None) -> str:
@@ -66,7 +79,7 @@ def load_status_summary(settings: Any | None = None) -> str:
     except ImportError:
         return build_status_summary(total_files=0, indexed_files=0, failed_files=0)
 
-    resolved_settings = settings or Settings()
+    resolved_settings = settings or _settings_with_active_pointer(Settings())
     if not hasattr(resolved_settings, "manifest_db_path"):
         return build_status_summary(total_files=0, indexed_files=0, failed_files=0)
     manifest_path = Path(resolved_settings.manifest_db_path)
@@ -230,7 +243,8 @@ def main() -> None:
 
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    settings = Settings()
+    _render_source_drawer_styles(st)
+    settings = _settings_with_active_pointer(Settings())
     from imperial_rag.observability import configure_observability
     from imperial_rag.observability.phoenix import configure_phoenix_tracing
 
@@ -249,8 +263,8 @@ def main() -> None:
 
     with st.sidebar:
         _render_chat_history_sidebar(st, chat_store, current_user.email)
-        st.caption(f"Signed in as {current_user.email}")
-        if st.button("Log out", key="auth-logout", icon=":material/logout:"):
+        st.caption(f"Вы вошли как {current_user.email}")
+        if st.button("Выйти", key="auth-logout", icon=":material/logout:"):
             st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
             st.session_state.pop(CHAT_HISTORY_USER_KEY, None)
             st.session_state.pop(ACTIVE_CONVERSATION_ID_KEY, None)
@@ -261,7 +275,7 @@ def main() -> None:
             return
         if current_user.is_admin:
             _render_admin_access_panel(st, auth_store, current_user)
-        st.header("Ingestion status")
+        st.header("Статус индексации")
         st.text(load_status_summary(settings))
 
     st.session_state.setdefault("messages", [])
@@ -270,7 +284,7 @@ def main() -> None:
     for message_index, message in enumerate(st.session_state.messages):
         _render_chat_message(st, message, message_index, settings)
 
-    question = st.chat_input("Ask about the indexed documents")
+    question = st.chat_input("Задайте вопрос по проиндексированным документам")
     if not question:
         return
 
@@ -357,8 +371,8 @@ def _sync_chat_history_state(st: Any, chat_store: Any, user_email: str) -> None:
 
 
 def _render_chat_history_sidebar(st: Any, chat_store: Any, user_email: str) -> None:
-    st.header("Chats")
-    if st.button("New chat", key="chat-history-new", icon=":material/add:", width="stretch"):
+    st.header("Чаты")
+    if st.button("Новый чат", key="chat-history-new", icon=":material/add:", width="stretch"):
         _start_new_chat_state(st, user_email)
         _rerun(st)
         return
@@ -618,13 +632,16 @@ def _has_assistant_after_user_message(
 
 
 def _conversation_button_label(conversation: Any) -> str:
-    title = " ".join(str(getattr(conversation, "title", "") or "New chat").split())
-    return title[:60] or "New chat"
+    raw_title = str(getattr(conversation, "title", "") or "Новый чат")
+    title = " ".join(raw_title.split())
+    if title == "New chat":
+        title = "Новый чат"
+    return title[:60] or "Новый чат"
 
 
 def _chat_title_from_question(question: str) -> str:
     title = " ".join(str(question or "").split())
-    return title[:80] or "New chat"
+    return title[:80] or "Новый чат"
 
 
 def _current_authenticated_user(st: Any, auth_store: Any) -> Any | None:
@@ -641,51 +658,51 @@ def _current_authenticated_user(st: Any, auth_store: Any) -> Any | None:
 def _render_auth_gate(st: Any, auth_store: Any) -> None:
     from imperial_rag.app.auth import AuthenticationStatus
 
-    st.subheader("Access required")
-    mode = st.radio("Account action", ["Log in", "Sign up"], horizontal=True, key="auth-mode")
+    st.subheader("Требуется доступ")
+    mode = st.radio("Действие с аккаунтом", [LOGIN_MODE, SIGNUP_MODE], horizontal=True, key="auth-mode")
 
-    if mode == "Log in":
+    if mode == LOGIN_MODE:
         with st.form("auth-login-form"):
-            email = st.text_input("Email", key="auth-login-email")
-            password = st.text_input("Password", type="password", key="auth-login-password")
-            submitted = st.form_submit_button("Log in", icon=":material/login:")
+            email = st.text_input("Электронная почта", key="auth-login-email")
+            password = st.text_input("Пароль", type="password", key="auth-login-password")
+            submitted = st.form_submit_button("Войти", icon=":material/login:")
         if not submitted:
             return
         try:
             result = auth_store.authenticate(email, password)
         except ValueError as exc:
-            st.error(str(exc))
+            st.error(_localized_auth_error(exc))
             return
         if result.status == AuthenticationStatus.AUTHENTICATED and result.user is not None:
             st.session_state[AUTH_SESSION_EMAIL_KEY] = result.user.email
             _rerun(st)
             return
         if result.status == AuthenticationStatus.PENDING_APPROVAL:
-            st.warning("Your access request is waiting for admin approval.")
+            st.warning("Ваш запрос на доступ ожидает одобрения администратора.")
             return
         if result.status == AuthenticationStatus.REJECTED:
-            st.error("This access request was rejected.")
+            st.error("Ваш запрос на доступ был отклонён.")
             return
-        st.error("Invalid email or password.")
+        st.error("Неверный адрес электронной почты или пароль.")
         return
 
     with st.form("auth-signup-form"):
-        full_name = st.text_input("Full name", key="auth-signup-full-name")
-        email = st.text_input("Email", key="auth-signup-email")
-        password = st.text_input("Password", type="password", key="auth-signup-password")
-        reason = st.text_area("Access reason", key="auth-signup-reason")
-        submitted = st.form_submit_button("Request access", icon=":material/how_to_reg:")
+        full_name = st.text_input("Имя", key="auth-signup-full-name")
+        email = st.text_input("Электронная почта", key="auth-signup-email")
+        password = st.text_input("Пароль", type="password", key="auth-signup-password")
+        reason = st.text_area("Причина запроса доступа", key="auth-signup-reason")
+        submitted = st.form_submit_button("Запросить доступ", icon=":material/how_to_reg:")
     if not submitted:
         return
     try:
         user = auth_store.register_user(email=email, password=password, full_name=full_name, reason=reason)
     except ValueError as exc:
-        st.error(str(exc))
+        st.error(_localized_auth_error(exc))
         return
     if user.status == "approved":
-        st.info("This account already has access. Log in to continue.")
+        st.info("У этой учётной записи уже есть доступ. Войдите, чтобы продолжить.")
         return
-    st.success("Registration submitted. An admin can grant access from the access requests panel.")
+    st.success("Запрос отправлен. Администратор сможет предоставить доступ в панели запросов.")
 
 
 def _render_admin_access_panel(st: Any, auth_store: Any, current_user: Any) -> None:
@@ -693,10 +710,7 @@ def _render_admin_access_panel(st: Any, auth_store: Any, current_user: Any) -> N
     if not pending_users:
         return
 
-    request_label = (
-        "1 pending access request" if len(pending_users) == 1 else f"{len(pending_users)} pending access requests"
-    )
-    st.warning(request_label)
+    st.warning(f"Запросы на доступ: {len(pending_users)}")
     for pending_user in pending_users:
         with st.container(border=True):
             st.markdown(f"**{pending_user.full_name or pending_user.email}**")
@@ -704,14 +718,21 @@ def _render_admin_access_panel(st: Any, auth_store: Any, current_user: Any) -> N
             if pending_user.reason:
                 st.caption(pending_user.reason)
             if st.button(
-                "Grant access",
+                "Предоставить доступ",
                 key=f"auth-approve-{pending_user.email}",
                 icon=":material/check:",
                 width="stretch",
             ):
                 auth_store.approve_user(current_user.email, pending_user.email)
-                st.success(f"Granted access to {pending_user.email}")
+                st.success(f"Доступ предоставлен: {pending_user.email}")
                 _rerun(st)
+
+
+def _localized_auth_error(exc: ValueError) -> str:
+    return {
+        "valid email is required": "Укажите корректный адрес электронной почты.",
+        "password must be at least 8 characters": "Пароль должен содержать не менее 8 символов.",
+    }.get(str(exc), "Проверьте введённые данные.")
 
 
 def _rerun(st: Any) -> None:
@@ -736,7 +757,7 @@ def _build_assistant_message(result: dict[str, Any], settings: Any) -> dict[str,
     answer = str(result.get("answer", ""))
     sources = result.get("sources") or result.get("citations") or []
     evidence = result.get("evidence") or result.get("retrieved_documents") or []
-    return {
+    message = {
         "role": "assistant",
         "content": answer,
         "sources": _json_safe(sources),
@@ -747,6 +768,8 @@ def _build_assistant_message(result: dict[str, Any], settings: Any) -> dict[str,
         "retrieved_documents": _retrieved_documents_payload(evidence),
         "retrieval": _json_safe(result.get("retrieval") or {}),
     }
+    message["content"] = _localized_message_content(message)
+    return message
 
 
 def _build_query_failure_message(exc: Exception) -> dict[str, Any]:
@@ -875,12 +898,13 @@ def _duration_ms(started_at: float) -> int:
 
 def _render_chat_message(st: Any, message: dict[str, Any], message_index: int, settings: Any) -> None:
     with st.chat_message(message["role"]):
+        content = _localized_message_content(message)
         if _message_has_error(message):
-            st.error(message["content"])
+            st.error(content)
         else:
-            st.write(message["content"])
+            st.write(content)
         if message.get("citations_valid") is False:
-            st.warning("Answer citations could not be verified. Treat this response as diagnostic.")
+            st.warning("Не удалось проверить ссылки в ответе. Используйте этот ответ только для диагностики.")
         retrieved_files = message.get("retrieved_files") or []
         if retrieved_files:
             _render_retrieved_files(st, normalize_retrieved_file_groups(retrieved_files, settings), message_index)
@@ -890,27 +914,186 @@ def _render_chat_message(st: Any, message: dict[str, Any], message_index: int, s
 
 
 def _render_retrieved_files(st: Any, groups: list[RetrievedFileGroup], message_index: int) -> None:
-    st.markdown("**Retrieved files**")
-    for group_index, group in enumerate(groups):
-        with st.container(border=True):
-            info_col, download_col = st.columns([5, 1])
-            with info_col:
-                st.markdown(f"**{group.file_name}**")
-                st.caption(group.display_path)
-            with download_col:
-                data, disabled = _download_button_payload(group)
-                st.download_button(
-                    "Download",
-                    data=data,
-                    file_name=group.download_name,
-                    mime=group.download_mime,
-                    key=f"download-{message_index}-{group_index}",
-                    disabled=disabled,
-                    width="stretch",
-                    icon=":material/download:",
-                )
-            with st.expander("Preview"):
-                st.text(group.preview_text)
+    open_state_key = f"source_drawer_open_{message_index}"
+    with st.container(border=True, key=f"source-summary-{message_index}"):
+        info_col, action_col = st.columns([4, 2], vertical_alignment="center")
+        with info_col:
+            st.markdown(f":material/description: **{_source_count_label(len(groups))}**")
+            st.caption("Документы, использованные в ответе")
+        with action_col:
+            st.button(
+                "Открыть источники",
+                key=f"source-drawer-open-{message_index}",
+                icon=":material/quick_reference_all:",
+                width="stretch",
+                on_click=_set_session_state_value,
+                args=(st, open_state_key, True),
+            )
+    if st.session_state.get(open_state_key, False):
+        _render_source_drawer(st, groups, message_index, open_state_key)
+
+
+def _render_source_drawer(
+    st: Any,
+    groups: list[RetrievedFileGroup],
+    message_index: int,
+    open_state_key: str,
+) -> None:
+    selected_state_key = f"{SOURCE_DRAWER_SELECTED_KEY_PREFIX}_{message_index}"
+    available_keys = {group.file_key for group in groups}
+    if st.session_state.get(selected_state_key) not in available_keys:
+        st.session_state[selected_state_key] = groups[0].file_key
+
+    def close_source_drawer() -> None:
+        st.session_state[open_state_key] = False
+
+    @st.dialog(
+        "Источники ответа",
+        width="large",
+        icon=":material/quick_reference_all:",
+        on_dismiss=close_source_drawer,
+    )
+    def source_drawer() -> None:
+        query = st.text_input(
+            "Поиск по файлам",
+            key=f"source-drawer-search-{message_index}",
+            placeholder="Поиск по файлам",
+            label_visibility="collapsed",
+            icon=":material/search:",
+        )
+        filtered_groups = _filter_retrieved_file_groups(groups, query or "")
+        if not filtered_groups:
+            st.caption("Файлы не найдены.")
+            return
+        if st.session_state.get(selected_state_key) not in {group.file_key for group in filtered_groups}:
+            st.session_state[selected_state_key] = filtered_groups[0].file_key
+
+        for group_index, group in enumerate(filtered_groups):
+            selected = group.file_key == st.session_state.get(selected_state_key)
+            with st.container(border=True, key=f"source-drawer-row-{message_index}-{group_index}"):
+                select_col, download_col = st.columns([4, 1.5], vertical_alignment="center")
+                with select_col:
+                    st.button(
+                        group.file_name,
+                        key=f"source-drawer-select-{message_index}-{group_index}",
+                        icon=":material/check_circle:" if selected else ":material/description:",
+                        type="secondary" if selected else "tertiary",
+                        width="stretch",
+                        on_click=_set_session_state_value,
+                        args=(st, selected_state_key, group.file_key),
+                    )
+                with download_col:
+                    data, disabled = _download_button_payload(group)
+                    st.download_button(
+                        "Скачать",
+                        data=data,
+                        file_name=group.download_name,
+                        mime=group.download_mime,
+                        key=f"source-drawer-download-{message_index}-{group_index}",
+                        help=f"Скачать {group.file_name}",
+                        disabled=disabled,
+                        width="stretch",
+                        icon=":material/download:",
+                        on_click="ignore",
+                    )
+
+        selected_group = _selected_retrieved_file_group(
+            filtered_groups,
+            str(st.session_state.get(selected_state_key) or ""),
+        )
+        if selected_group is None:
+            return
+        st.subheader("Предпросмотр")
+        st.markdown(f"**{selected_group.file_name}**")
+        st.caption(f"Путь: {selected_group.display_path}")
+        st.text(selected_group.preview_text)
+        st.caption("Предпросмотр показывает фрагменты документа. Полный файл доступен для скачивания.")
+
+    source_drawer()
+
+
+def _source_count_label(count: int) -> str:
+    remainder_100 = count % 100
+    remainder_10 = count % 10
+    if remainder_10 == 1 and remainder_100 != 11:
+        noun = "источник"
+    elif remainder_10 in {2, 3, 4} and remainder_100 not in {12, 13, 14}:
+        noun = "источника"
+    else:
+        noun = "источников"
+    return f"{count} {noun}"
+
+
+def _filter_retrieved_file_groups(
+    groups: list[RetrievedFileGroup],
+    query: str,
+) -> list[RetrievedFileGroup]:
+    normalized_query = " ".join(str(query or "").casefold().split())
+    if not normalized_query:
+        return groups
+    return [
+        group
+        for group in groups
+        if normalized_query in f"{group.file_name}\n{group.display_path}".casefold()
+    ]
+
+
+def _selected_retrieved_file_group(
+    groups: list[RetrievedFileGroup],
+    selected_file_key: str,
+) -> RetrievedFileGroup | None:
+    return next((group for group in groups if group.file_key == selected_file_key), groups[0] if groups else None)
+
+
+def _set_session_state_value(st: Any, key: str, value: Any) -> None:
+    st.session_state[key] = value
+
+
+def _render_source_drawer_styles(st: Any) -> None:
+    markdown = getattr(st, "markdown", None)
+    if markdown is None:
+        return
+    markdown(
+        """
+        <style>
+        @media (min-width: 768px) {
+            [data-testid="stDialog"] {
+                overflow: hidden;
+            }
+            [data-testid="stDialog"] > div:first-child {
+                align-items: stretch;
+                justify-content: flex-end;
+                min-height: 100%;
+                padding: 0;
+            }
+            [data-testid="stDialog"] [role="dialog"] {
+                width: clamp(420px, 44vw, 720px);
+                max-width: min(100vw, 720px);
+                height: 100dvh;
+                max-height: 100dvh;
+                margin: 0;
+                overflow-y: auto;
+                border-radius: 0;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _localized_message_content(message: dict[str, Any]) -> str:
+    content = str(message.get("content", ""))
+    error = message.get("error")
+    error_type = str(error.get("type") or "") if isinstance(error, dict) else ""
+    if error_type == "model_provider_error":
+        return MODEL_PROVIDER_ERROR_TEXT
+    return {
+        "I could not find this clearly in the indexed documents.": REFUSAL_TEXT,
+        "No indexed evidence was enough to answer.": REFUSAL_TEXT,
+        "Something went wrong while answering. Check local logs for details.": QUERY_FAILURE_TEXT,
+        "The previous answer was not saved. Ask again to regenerate it.": INCOMPLETE_ANSWER_TEXT,
+    }.get(content, content)
 
 
 def _download_button_payload(group: RetrievedFileGroup) -> tuple[bytes, bool]:

@@ -370,8 +370,14 @@ def test_run_ingestion_traces_lineage_and_index_metadata(tmp_path, monkeypatch):
         "keyword_index": "test_keyword_chunks",
         "qdrant_collection": "test_qdrant_chunks",
         "embedding_model": "text-embedding-v4:2048",
-        "keyword_indexed": True,
-        "vector_indexed": True,
+            "keyword_indexed": True,
+            "vector_indexed": True,
+            "chunk_count": 1,
+            "keyword_document_count": 1,
+            "vector_document_count": 1,
+            "ocr_model": None,
+            "ocr_recipe_hash": None,
+            "ocr_recipe_schema": None,
     }
 
 
@@ -421,11 +427,12 @@ def test_run_ingestion_writes_old_to_new_id_map(tmp_path, monkeypatch):
 
     id_map_path = extracted / "old-to-new-id-map.json"
     id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
-    assert id_map["schema_version"] == "old-to-new-id-map-v1"
+    assert id_map["schema_version"] == "old-to-new-id-map-v2"
     assert id_map["rows"][0]["old_chunk_id"] == "old-chunk"
     assert id_map["rows"][0]["old_citation_id"] == "old-citation"
-    assert id_map["rows"][0]["new_chunk_id"] == "file1:body:0"
-    assert id_map["rows"][0]["status"] == "mapped"
+    assert id_map["rows"][0]["new_chunk_id"] is None
+    assert id_map["rows"][0]["match_strategy"] == "unmapped"
+    assert id_map["rows"][0]["status"] == "unmapped"
 
 
 def test_run_ingestion_writes_corpus_ledger_and_summary(tmp_path, monkeypatch):

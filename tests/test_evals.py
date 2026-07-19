@@ -47,6 +47,11 @@ def test_eval_questions_are_russian_jsonl_with_expected_behavior():
     assert all(row.get("reference_context_ids") for row in rows if row["expected_behavior"] == "cite_answer")
     assert all(len(row.get("reference_context_ids") or []) >= 2 for row in rows if row["expected_behavior"] == "surface_conflict")
     assert all(not row.get("reference_context_ids") for row in rows if row["expected_behavior"] == "refuse_if_not_found")
+    for row in rows:
+        context_ids = row.get("reference_context_ids") or []
+        assert len(context_ids) == len(set(context_ids))
+        if row["expected_behavior"] != "refuse_if_not_found":
+            assert len(context_ids) <= 10
     corpus_path = _eval_corpus_chunks_path()
     assert corpus_path.exists(), f"missing eval corpus chunks: {corpus_path}"
     audit_rows = audit_eval_rows(

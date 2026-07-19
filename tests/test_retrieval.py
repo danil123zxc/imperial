@@ -148,8 +148,8 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
 
     settings = RetrievalSettings.from_env()
 
-    assert settings.chunk_size == 650
-    assert settings.chunk_overlap == 80
+    assert settings.chunk_size == 400
+    assert settings.chunk_overlap == 50
     assert settings.vector_fetch_k == 70
     assert settings.vector_k == 70
     assert settings.keyword_limit == 30
@@ -159,6 +159,33 @@ def test_retrieval_settings_defaults_match_accuracy_spec(monkeypatch):
     assert settings.rrf_k == 60
     assert settings.primary_reranker == "dashscope:qwen3-rerank"
     assert settings.fallback_reranker == "fallback:deterministic"
+
+
+def test_rrf_suppresses_draft_when_active_version_group_candidate_exists():
+    documents = [
+        Document(
+            page_content="active",
+            metadata={
+                "citation_id": "active",
+                "_vector_rank": 1,
+                "version_group": "policy-v",
+                "authority_status": "active",
+            },
+        ),
+        Document(
+            page_content="draft",
+            metadata={
+                "citation_id": "draft",
+                "_vector_rank": 0,
+                "version_group": "policy-v",
+                "authority_status": "draft",
+            },
+        ),
+    ]
+
+    fused = RrfCandidateFusion().fuse(documents, rrf_k=60)
+
+    assert [document.metadata["citation_id"] for document in fused] == ["active"]
 
 
 def test_retrieval_settings_qwen_rerank_model_sets_default_primary(monkeypatch):

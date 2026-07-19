@@ -106,6 +106,9 @@ def _result_value(result: Any, key: str, default: Any) -> Any:
 
 def _query_log_fields(result: Any) -> dict[str, Any]:
     fields: dict[str, Any] = {}
+    error = _result_value(result, "error", None)
+    if isinstance(error, dict) and error.get("type"):
+        fields["error_type"] = str(error["type"])
     retrieval = _result_value(result, "retrieval", {}) or {}
     if isinstance(retrieval, dict):
         for key in (

@@ -58,6 +58,9 @@ def test_build_strict_messages_forbids_unsupported_answers():
     assert "cite every factual claim" in rendered
     assert "Do not include uncited introductions or summaries" in rendered
     assert REFUSAL_TEXT in rendered
+    for message in messages:
+        assert "[S1] [S4]" in message["content"]
+        assert "never [S1, S4]" in message["content"]
 
 
 def test_validate_citations_rejects_unknown_ids_and_allows_refusal():
@@ -86,6 +89,16 @@ def test_validate_citations_rejects_unknown_short_source_label():
     docs = [Document(page_content="Known", metadata={"citation_id": "known"})]
 
     assert validate_citations("Fact. [S99]", docs) == (False, ["S99"])
+
+
+def test_validate_citations_requires_separate_markers_for_multiple_sources():
+    docs = [
+        Document(page_content="First fact.", metadata={"citation_id": "first"}),
+        Document(page_content="Second fact.", metadata={"citation_id": "second"}),
+    ]
+
+    assert validate_citations("Fact. [S1] [S2]", docs) == (True, [])
+    assert validate_citations("Fact. [S1, S2]", docs) == (False, [])
 
 
 def test_validate_citations_allows_uncited_structural_headings_with_cited_facts():

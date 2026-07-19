@@ -7,7 +7,7 @@ from typing import Any, Protocol, Sequence
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 
 from imperial_rag.config import Settings
 from imperial_rag.integrations.dashscope import (
@@ -61,11 +61,26 @@ def create_qdrant_vector_store(settings: Settings, embeddings: Embeddings | None
         ensure_vector_metadata_compatible(settings)
         embeddings = create_embeddings()
     client = QdrantClient(url=settings.qdrant_url)
+    _ensure_qdrant_collection(client, settings.qdrant_collection)
     return QdrantVectorStore(
         client=client,
         collection_name=settings.qdrant_collection,
         embedding=embeddings,
     )
+
+
+def _ensure_qdrant_collection(client: Any, collection_name: str) -> bool:
+    if not hasattr(client, "collection_exists") or client.collection_exists(collection_name):
+        return False
+    provider_settings = QwenProviderSettings.from_env()
+    dimensions = provider_settings.embedding_dimensions
+    if dimensions is None:
+        raise ValueError("Qdrant collection creation requires configured embedding dimensions")
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config=models.VectorParams(size=dimensions, distance=models.Distance.COSINE),
+    )
+    return True
 
 
 def reset_qdrant_collection(settings: Settings) -> bool:
@@ -111,10 +126,20 @@ def index_vector_documents(
         if settings is None:
             raise ValueError("settings is required when vector_store is not provided")
         resolved_vector_store = create_qdrant_vector_store(settings, embeddings=embeddings)
-    added_ids = list(resolved_vector_store.add_documents(documents=documents, ids=resolved_ids))
+    embedding_documents = [_embedding_document(document) for document in documents]
+    added_ids = list(resolved_vector_store.add_documents(documents=embedding_documents, ids=resolved_ids))
     if settings is not None:
         write_vector_metadata(settings, QwenProviderSettings.from_env().vector_metadata())
     return added_ids
+
+
+def _embedding_document(document: Document) -> Document:
+    metadata = dict(document.metadata or {})
+    embedding_text = str(metadata.get("embedding_text") or document.page_content)
+    if embedding_text == document.page_content:
+        return document
+    metadata["citation_text"] = document.page_content
+    return Document(page_content=embedding_text, metadata=metadata)
 
 
 def index_documents(vector_store: SupportsAddDocuments, documents: list[Document], ids: list[str] | None = None) -> list[str]:
