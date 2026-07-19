@@ -147,6 +147,93 @@ def test_download_button_payload_disables_large_files(tmp_path, monkeypatch):
     assert web_app._download_button_payload(group) == (b"", True)
 
 
+def test_source_count_label_uses_russian_plural_forms():
+    assert web_app._source_count_label(1) == "1 источник"
+    assert web_app._source_count_label(2) == "2 источника"
+    assert web_app._source_count_label(5) == "5 источников"
+    assert web_app._source_count_label(11) == "11 источников"
+    assert web_app._source_count_label(21) == "21 источник"
+
+
+def test_filter_retrieved_file_groups_matches_name_and_path(tmp_path):
+    first = RetrievedFileGroup(
+        file_key="logistics",
+        file_name="Регламент ЛОГИСТИКА.docx",
+        display_path="11. РЕГЛАМЕНТЫ/ЛОГИСТИКА/Регламент ЛОГИСТИКА.docx",
+        download_path=None,
+        download_name="Регламент ЛОГИСТИКА.docx",
+        download_mime="application/octet-stream",
+        preview_text="preview",
+        can_download=False,
+    )
+    second = RetrievedFileGroup(
+        file_key="warehouse",
+        file_name="Инструкция.docx",
+        display_path="12. СКЛАД/Инструкция.docx",
+        download_path=None,
+        download_name="Инструкция.docx",
+        download_mime="application/octet-stream",
+        preview_text="preview",
+        can_download=False,
+    )
+
+    assert web_app._filter_retrieved_file_groups([first, second], "логистика") == [first]
+    assert web_app._filter_retrieved_file_groups([first, second], "СКЛАД") == [second]
+    assert web_app._filter_retrieved_file_groups([first, second], "  ") == [first, second]
+    assert web_app._selected_retrieved_file_group([first, second], "warehouse") == second
+
+
+def test_retrieved_files_render_compact_summary_and_interactive_drawer():
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_string(
+        """
+import streamlit as st
+from imperial_rag.app.web import RetrievedFileGroup, _render_retrieved_files
+
+groups = [
+    RetrievedFileGroup(
+        file_key="logistics",
+        file_name="Регламент ЛОГИСТИКА.docx",
+        display_path="11. РЕГЛАМЕНТЫ/ЛОГИСТИКА/Регламент ЛОГИСТИКА.docx",
+        download_path=None,
+        download_name="Регламент ЛОГИСТИКА.docx",
+        download_mime="application/octet-stream",
+        preview_text="Текст предпросмотра",
+        can_download=False,
+    ),
+    RetrievedFileGroup(
+        file_key="warehouse",
+        file_name="Инструкция СКЛАД.docx",
+        display_path="12. СКЛАД/Инструкция СКЛАД.docx",
+        download_path=None,
+        download_name="Инструкция СКЛАД.docx",
+        download_mime="application/octet-stream",
+        preview_text="Текст складской инструкции",
+        can_download=False,
+    )
+]
+_render_retrieved_files(st, groups, 3)
+"""
+    ).run()
+
+    assert app.markdown[0].value == ":material/description: **2 источника**"
+    assert app.caption[0].value == "Документы, использованные в ответе"
+    app.button(key="source-drawer-open-3").click().run()
+
+    assert app.text_input[0].label == "Поиск по файлам"
+    assert app.button(key="source-drawer-select-3-0").label == "Регламент ЛОГИСТИКА.docx"
+    assert app.subheader[0].value == "Предпросмотр"
+    assert app.text[0].value == "Текст предпросмотра"
+
+    app.text_input[0].input("склад").run()
+
+    assert len(app.button) == 2
+    assert app.button(key="source-drawer-select-3-0").label == "Инструкция СКЛАД.docx"
+    assert app.text[0].value == "Текст складской инструкции"
+    assert list(app.exception) == []
+
+
 def test_build_retrieved_file_groups_groups_same_relative_path_without_matching_file_id(tmp_path):
     documents_root = tmp_path / "documents"
     source_path = documents_root / "docs" / "same.docx"
