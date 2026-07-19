@@ -484,6 +484,31 @@ def test_render_chat_message_surfaces_model_provider_error(tmp_path):
     assert errors == [web_app.MODEL_PROVIDER_ERROR_TEXT]
 
 
+def test_render_chat_message_surfaces_no_relevant_documents_as_error(tmp_path):
+    class ChatMessage:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    errors = []
+    streamlit = types.SimpleNamespace(
+        chat_message=lambda *args, **kwargs: ChatMessage(),
+        error=lambda message: errors.append(message),
+    )
+    message = {
+        "role": "assistant",
+        "content": "I could not find this clearly in the indexed documents.",
+        "error": {"type": "no_relevant_documents"},
+        "sources": [],
+    }
+
+    web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
+
+    assert errors == [web_app.REFUSAL_TEXT]
+
+
 def test_localizes_legacy_system_messages_and_default_chat_title():
     assert web_app._localized_message_content(
         {"content": "I could not find this clearly in the indexed documents."}

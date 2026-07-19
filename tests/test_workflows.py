@@ -22,6 +22,14 @@ def test_query_workflow_smoke_refuses_without_docs():
 
     assert result["retrieved_documents"] == []
     assert result["answer"] == REFUSAL_TEXT
+    assert result["error"] == {
+        "type": "no_relevant_documents",
+        "message": "No relevant indexed documents were found for this question.",
+        "reason": "retrieval_empty",
+    }
+    assert result["retrieval"]["final_evidence"] == 0
+    assert result["retrieval"]["rejected_evidence"] == 0
+    assert result["retrieval"]["relevance_gate"] == "retrieval_empty"
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
 
@@ -628,7 +636,7 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
     ]
 
 
-def test_query_workflow_preserves_generated_refusal_text_with_evidence():
+def test_query_workflow_turns_generated_refusal_into_no_relevant_documents_error():
     docs = [Document(page_content="Known fact.", metadata={"citation_id": "known"})]
 
     workflow = build_query_workflow(
@@ -639,6 +647,20 @@ def test_query_workflow_preserves_generated_refusal_text_with_evidence():
     result = workflow.invoke({"question": "What is known?"})
 
     assert result["answer"] == REFUSAL_TEXT
+    assert result["error"] == {
+        "type": "no_relevant_documents",
+        "message": "No relevant indexed documents were found for this question.",
+        "reason": "insufficient_evidence",
+    }
+    assert result["evidence"] == []
+    assert result["retrieved_documents"] == []
+    assert result["citations"] == []
+    assert result["sources"] == []
+    assert result["retrieval"] == {
+        "final_evidence": 0,
+        "rejected_evidence": 1,
+        "relevance_gate": "insufficient_evidence",
+    }
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
 

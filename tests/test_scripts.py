@@ -374,6 +374,20 @@ def test_query_script_logs_safe_completion_fields(monkeypatch, capsys):
     assert "file_name" not in events[0][1]
 
 
+def test_query_script_logs_no_relevant_documents_error_type():
+    module = _load_script("scripts/query.py", "query_script_no_relevant_documents")
+
+    fields = module._query_log_fields(
+        {
+            "answer": "I could not find this clearly in the indexed documents.",
+            "error": {"type": "no_relevant_documents", "reason": "insufficient_evidence"},
+            "retrieval": {"final_evidence": 0},
+        }
+    )
+
+    assert fields == {"error_type": "no_relevant_documents", "final_evidence": 0}
+
+
 def test_ingest_script_logs_failed_file_completion(monkeypatch, capsys):
     module = _load_script("scripts/ingest.py", "ingest_script_logging")
     events = []

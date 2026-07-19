@@ -257,6 +257,9 @@ def _query_trace_output(result: Any) -> dict[str, Any]:
         "citations_valid": result.get("citations_valid"),
         "evidence_count": len(result.get("evidence") or result.get("retrieved_documents") or []),
     }
+    error = result.get("error")
+    if isinstance(error, dict) and error.get("type"):
+        output["error_type"] = str(error["type"])
     retrieval = result.get("retrieval")
     if isinstance(retrieval, dict):
         output["retrieval"] = {

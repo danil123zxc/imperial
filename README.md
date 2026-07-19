@@ -13,6 +13,7 @@ The project is designed to run on one trusted machine. Source files stay in the 
 - Optionally indexes chunks into Qdrant for semantic vector retrieval.
 - Uses DashScope/Qwen by default for chat, embeddings, OCR, and reranking when `DASHSCOPE_API_KEY` is configured.
 - Produces strict citation-based answers through a CLI and a local Streamlit chat UI.
+- Returns a structured `no_relevant_documents` error without source links when retrieval is empty or the strict answer model rejects the retrieved evidence as insufficient.
 - Supports deterministic evals, optional Ragas metrics, local structured logs, and Phoenix traces.
 
 ## Architecture
@@ -82,6 +83,8 @@ Ask a question:
 ```bash
 uv run python scripts/query.py "question text"
 ```
+
+Questions that are unrelated to the indexed corpus, or whose retrieved chunks do not support an answer, return the strict refusal text. The result carries `error.type=no_relevant_documents`, reports `retrieval.final_evidence=0`, and omits citations and retrieved-file links so weak matches are not presented as sources.
 
 Run the local UI:
 
