@@ -8,12 +8,18 @@ from pathlib import Path
 import sys
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
 import uuid
-
 
 APP_TITLE = "Imperial RAG"
 PREVIEW_UNAVAILABLE_TEXT = "Предпросмотр этого файла недоступен."
+AUTH_COOKIE_NAME = "imperial_rag_session_v1"
+AUTH_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 AUTH_SESSION_EMAIL_KEY = "auth_user_email"
+AUTH_SESSION_TOKEN_KEY = "auth_session_token"
+PENDING_AUTH_COOKIE_KEY = "pending_auth_cookie"
+AUTH_COOKIE_COMPONENT_KEY = "auth-cookie-sync"
+AUTH_COOKIE_ERROR_KEY = "auth_cookie_error"
 CHAT_HISTORY_USER_KEY = "chat_history_user_email"
 ACTIVE_CONVERSATION_ID_KEY = "active_conversation_id"
 PENDING_CHAT_TURN_KEY = "pending_chat_turn"
@@ -252,6 +258,8 @@ def main() -> None:
     configure_phoenix_tracing(settings)
 
     auth_store = _prepare_auth_store(settings)
+    if not _complete_pending_auth_cookie_operation(st, auth_store):
+        return
     current_user = _current_authenticated_user(st, auth_store)
     if current_user is None:
         _render_auth_gate(st, auth_store)
@@ -265,12 +273,7 @@ def main() -> None:
         _render_chat_history_sidebar(st, chat_store, current_user.email)
         st.caption(f"Вы вошли как {current_user.email}")
         if st.button("Выйти", key="auth-logout", icon=":material/logout:"):
-            st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
-            st.session_state.pop(CHAT_HISTORY_USER_KEY, None)
-            st.session_state.pop(ACTIVE_CONVERSATION_ID_KEY, None)
-            st.session_state.pop(PENDING_CHAT_TURN_KEY, None)
-            st.session_state.pop("messages", None)
-            st.session_state.pop("phoenix_trace_session_id", None)
+            _begin_logout(st, auth_store)
             _rerun(st)
             return
         if current_user.is_admin:
@@ -645,19 +648,25 @@ def _chat_title_from_question(question: str) -> str:
 
 
 def _current_authenticated_user(st: Any, auth_store: Any) -> Any | None:
-    email = st.session_state.get(AUTH_SESSION_EMAIL_KEY)
-    if not email:
-        return None
-    user = auth_store.get_user(str(email))
-    if user is None or user.status != "approved":
+    token = st.session_state.get(AUTH_SESSION_TOKEN_KEY) or _auth_cookie_from_context(st)
+    if not token:
         st.session_state.pop(AUTH_SESSION_EMAIL_KEY, None)
         return None
+    user = auth_store.authenticate_session(str(token))
+    if user is None:
+        _clear_auth_session_state(st)
+        return None
+    st.session_state[AUTH_SESSION_EMAIL_KEY] = user.email
+    st.session_state[AUTH_SESSION_TOKEN_KEY] = str(token)
     return user
 
 
 def _render_auth_gate(st: Any, auth_store: Any) -> None:
     from imperial_rag.app.auth import AuthenticationStatus
 
+    cookie_error = st.session_state.pop(AUTH_COOKIE_ERROR_KEY, None)
+    if cookie_error:
+        st.error(str(cookie_error))
     st.subheader("Требуется доступ")
     mode = st.radio("Действие с аккаунтом", [LOGIN_MODE, SIGNUP_MODE], horizontal=True, key="auth-mode")
 
@@ -674,7 +683,10 @@ def _render_auth_gate(st: Any, auth_store: Any) -> None:
             st.error(_localized_auth_error(exc))
             return
         if result.status == AuthenticationStatus.AUTHENTICATED and result.user is not None:
+            token = auth_store.create_session(result.user.email, AUTH_COOKIE_MAX_AGE_SECONDS)
             st.session_state[AUTH_SESSION_EMAIL_KEY] = result.user.email
+            st.session_state[AUTH_SESSION_TOKEN_KEY] = token
+            _queue_auth_cookie_operation(st, action="set", token=token)
             _rerun(st)
             return
         if result.status == AuthenticationStatus.PENDING_APPROVAL:
@@ -703,6 +715,99 @@ def _render_auth_gate(st: Any, auth_store: Any) -> None:
         st.info("У этой учётной записи уже есть доступ. Войдите, чтобы продолжить.")
         return
     st.success("Запрос отправлен. Администратор сможет предоставить доступ в панели запросов.")
+
+
+def _complete_pending_auth_cookie_operation(st: Any, auth_store: Any) -> bool:
+    pending = st.session_state.get(PENDING_AUTH_COOKIE_KEY)
+    if not isinstance(pending, dict):
+        return True
+
+    action = str(pending.get("action") or "")
+    operation_id = str(pending.get("operation_id") or "")
+    token = str(pending.get("token") or "")
+    if action not in {"set", "delete"} or not operation_id:
+        st.session_state.pop(PENDING_AUTH_COOKIE_KEY, None)
+        return True
+
+    from imperial_rag.app.auth_cookie import render_cookie_operation
+
+    result = render_cookie_operation(
+        st,
+        action=action,
+        operation_id=operation_id,
+        token=token,
+        cookie_name=AUTH_COOKIE_NAME,
+        max_age_seconds=AUTH_COOKIE_MAX_AGE_SECONDS,
+        secure=bool(pending.get("secure")),
+        key=AUTH_COOKIE_COMPONENT_KEY,
+    )
+    acknowledged = getattr(result, "acknowledged", None)
+    if not isinstance(acknowledged, dict) or acknowledged.get("operation_id") != operation_id:
+        return False
+
+    st.session_state.pop(PENDING_AUTH_COOKIE_KEY, None)
+    if bool(acknowledged.get("success")):
+        return True
+
+    if action == "set":
+        auth_store.revoke_session(token)
+        _clear_auth_session_state(st)
+        st.session_state[AUTH_COOKIE_ERROR_KEY] = (
+            "Не удалось сохранить вход в браузере. Разрешите cookie для этого сайта и войдите снова."
+        )
+    else:
+        st.session_state[AUTH_COOKIE_ERROR_KEY] = (
+            "Вы вышли из системы, но браузер не подтвердил удаление cookie. Сохранённый сеанс уже отозван."
+        )
+    return True
+
+
+def _queue_auth_cookie_operation(st: Any, *, action: str, token: str = "") -> None:
+    st.session_state.pop(AUTH_COOKIE_COMPONENT_KEY, None)
+    st.session_state[PENDING_AUTH_COOKIE_KEY] = {
+        "action": action,
+        "operation_id": uuid.uuid4().hex,
+        "token": token,
+        "secure": _uses_secure_cookie(st),
+    }
+
+
+def _begin_logout(st: Any, auth_store: Any) -> None:
+    token = st.session_state.get(AUTH_SESSION_TOKEN_KEY) or _auth_cookie_from_context(st)
+    if token:
+        auth_store.revoke_session(str(token))
+    _clear_auth_session_state(st)
+    _queue_auth_cookie_operation(st, action="delete")
+
+
+def _clear_auth_session_state(st: Any) -> None:
+    for key in (
+        AUTH_SESSION_EMAIL_KEY,
+        AUTH_SESSION_TOKEN_KEY,
+        CHAT_HISTORY_USER_KEY,
+        ACTIVE_CONVERSATION_ID_KEY,
+        PENDING_CHAT_TURN_KEY,
+        "messages",
+        "phoenix_trace_session_id",
+    ):
+        st.session_state.pop(key, None)
+
+
+def _auth_cookie_from_context(st: Any) -> str:
+    context = getattr(st, "context", None)
+    cookies = getattr(context, "cookies", None) if context is not None else None
+    if cookies is None:
+        return ""
+    getter = getattr(cookies, "get", None)
+    if getter is None:
+        return ""
+    return str(getter(AUTH_COOKIE_NAME, "") or "")
+
+
+def _uses_secure_cookie(st: Any) -> bool:
+    context = getattr(st, "context", None)
+    url = getattr(context, "url", "") if context is not None else ""
+    return urlsplit(str(url or "")).scheme.casefold() == "https"
 
 
 def _render_admin_access_panel(st: Any, auth_store: Any, current_user: Any) -> None:
