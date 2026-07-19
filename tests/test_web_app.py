@@ -27,15 +27,15 @@ def test_status_summary_displays_manifest_counts():
     summary = build_status_summary(total_files=162, indexed_files=100, failed_files=3)
 
     assert APP_TITLE == "Imperial RAG"
-    assert "Total files: 162" in summary
-    assert "Indexed files: 100" in summary
-    assert "Failed files: 3" in summary
+    assert "Всего файлов: 162" in summary
+    assert "Проиндексировано: 100" in summary
+    assert "Ошибок: 3" in summary
 
 
 def test_load_status_summary_is_importable_without_manifest_stack():
     summary = load_status_summary(settings=object())
 
-    assert "Total files:" in summary
+    assert "Всего файлов:" in summary
 
 
 def test_build_retrieved_file_groups_groups_chunks_by_file_and_loads_file_preview(tmp_path):
@@ -370,7 +370,7 @@ def test_render_chat_message_surfaces_invalid_citation_warning(tmp_path):
     web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
 
     assert writes == ["Unsupported answer without valid citations."]
-    assert warnings == ["Answer citations could not be verified. Treat this response as diagnostic."]
+    assert warnings == ["Не удалось проверить ссылки в ответе. Используйте этот ответ только для диагностики."]
 
 
 def test_render_chat_message_surfaces_model_provider_error(tmp_path):
@@ -394,9 +394,17 @@ def test_render_chat_message_surfaces_model_provider_error(tmp_path):
 
     web_app._render_chat_message(streamlit, message, 0, SimpleNamespace(documents_root=tmp_path))
 
-    assert errors == [
-        "The model provider failed while answering. Check local logs and provider credentials, then try again."
-    ]
+    assert errors == [web_app.MODEL_PROVIDER_ERROR_TEXT]
+
+
+def test_localizes_legacy_system_messages_and_default_chat_title():
+    assert web_app._localized_message_content(
+        {"content": "I could not find this clearly in the indexed documents."}
+    ) == web_app.REFUSAL_TEXT
+    assert web_app._localized_message_content(
+        {"content": "Something went wrong while answering. Check local logs for details."}
+    ) == web_app.QUERY_FAILURE_TEXT
+    assert web_app._conversation_button_label(SimpleNamespace(title="New chat")) == "Новый чат"
 
 
 def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
@@ -444,7 +452,7 @@ def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
         text=lambda *args, **kwargs: None,
         session_state=SessionState(),
         subheader=lambda *args, **kwargs: None,
-        radio=lambda *args, **kwargs: "Log in",
+        radio=lambda *args, **kwargs: web_app.LOGIN_MODE,
         form=lambda *args, **kwargs: Sidebar(),
         text_input=lambda *args, **kwargs: "",
         form_submit_button=lambda *args, **kwargs: False,
@@ -516,7 +524,7 @@ def test_main_requires_authenticated_user_before_chat_input(monkeypatch, tmp_pat
         text=lambda *args, **kwargs: None,
         session_state=SessionState(),
         subheader=lambda *args, **kwargs: None,
-        radio=lambda *args, **kwargs: "Log in",
+        radio=lambda *args, **kwargs: web_app.LOGIN_MODE,
         form=lambda *args, **kwargs: Form(),
         text_input=lambda *args, **kwargs: "",
         form_submit_button=lambda *args, **kwargs: False,
@@ -603,7 +611,7 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
 
     web_app.main()
 
-    assert warnings == ["1 pending access request"]
+    assert warnings == ["Запросы на доступ: 1"]
 
 
 def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
@@ -654,7 +662,7 @@ def test_main_signup_form_creates_pending_access_request(monkeypatch, tmp_path):
         title=lambda *args, **kwargs: None,
         session_state=SessionState(),
         subheader=lambda *args, **kwargs: None,
-        radio=lambda *args, **kwargs: "Sign up",
+        radio=lambda *args, **kwargs: web_app.SIGNUP_MODE,
         form=lambda *args, **kwargs: Context(),
         text_input=lambda *args, **kwargs: values[kwargs["key"]],
         text_area=lambda *args, **kwargs: values[kwargs["key"]],
@@ -845,7 +853,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
         }
     ]
     assert streamlit_module.session_state.auth_user_email not in str(trace_contexts)
-    assert errors == ["Something went wrong while answering. Check local logs for details."]
+    assert errors == [web_app.QUERY_FAILURE_TEXT]
 
 
 def test_main_bootstraps_src_path_for_streamlit_script_launch():
@@ -885,7 +893,7 @@ def test_main_bootstraps_src_path_for_streamlit_script_launch():
             text=lambda *args, **kwargs: None,
             session_state=SessionState(),
             subheader=lambda *args, **kwargs: None,
-            radio=lambda *args, **kwargs: "Log in",
+            radio=lambda *args, **kwargs: namespace['LOGIN_MODE'],
             form=lambda *args, **kwargs: Sidebar(),
             text_input=lambda *args, **kwargs: "",
             form_submit_button=lambda *args, **kwargs: False,

@@ -172,7 +172,7 @@ def test_chat_history_state_loads_only_signed_in_users_latest_chat(tmp_path):
         {"role": "user", "content": "Latest question"},
         {
             "role": "assistant",
-            "content": "The previous answer was not saved. Ask again to regenerate it.",
+            "content": web_app.INCOMPLETE_ANSWER_TEXT,
             "error": {"type": "incomplete_assistant_turn"},
         },
     ]
@@ -581,12 +581,12 @@ def test_main_persists_assistant_error_when_signed_in_query_fails(monkeypatch, t
     assert len(conversations) == 1
     messages = history.list_messages("user@example.com", conversations[0].id)
     assert [message.role for message in messages] == ["user", "assistant"]
-    assert messages[1].content == "Something went wrong while answering. Check local logs for details."
+    assert messages[1].content == web_app.QUERY_FAILURE_TEXT
     assert messages[1].to_chat_message()["error"] == {
         "type": "web_query_error",
         "exception_type": "RuntimeError",
     }
-    assert errors == ["Something went wrong while answering. Check local logs for details."]
+    assert errors == [web_app.QUERY_FAILURE_TEXT]
 
 
 @contextmanager
