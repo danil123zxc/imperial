@@ -50,6 +50,17 @@ Before any code-changing task, run `git fetch origin --prune` and compare the cu
 
 Use short imperative commit subjects, optionally Conventional Commit style such as `feat: add phoenix tracing` or `fix: preserve citation sources`. Before editing code, capture `git status --short` as the session baseline. After every code-changing task or checkpoint, run the relevant tests or checks, inspect `git status --short` and `git diff`, then create a commit containing only the changes made by the agent in the current session. Stage only files or hunks changed by the current agent session; avoid `git add .`. Do not commit pre-existing user changes, unrelated generated artifacts, secrets, corpus artifacts, or local state. If a file contains mixed user and session edits that cannot be safely separated, stop and ask before committing. PRs should describe the change, list test commands run, note corpus/config impacts, and include screenshots for UI changes.
 
+### Assisted Publish Workflow
+
+The exact task marker `Publish: draft-pr` authorizes an L2 assisted publish for that task. It authorizes the agent to commit its scoped changes, push its task branch, and create or update a draft pull request after all gates pass. It does not authorize auto-merge, protected-data changes, high-risk path changes, dependency upgrades, provider-backed operations, or unrelated cleanup.
+
+- Start from a fresh `origin/main` branch in an isolated worktree named `codex/<task>`; never reuse a branch whose pull request is merged or closed.
+- Preserve the initial dirty baseline and stage explicit agent-owned paths only.
+- Run `./scripts/check.sh`, then obtain an independent `loop-verifier` `APPROVE` verdict before publishing.
+- Run `scripts/publish_agent_pr.sh --verifier-approved` only after the commit exists and the independent verdict is `APPROVE`. The script must remain the final push/draft-PR boundary.
+- If any safety, scope, verification, authentication, or branch-state gate fails, stop without pushing.
+- Merging is always a human action.
+
 ## Security & Configuration Tips
 
 Treat `documents/`, `.imperial_rag/`, eval outputs, and Phoenix traces as private. Do not commit secrets or generated corpus artifacts. Configure services with environment variables such as `QDRANT_URL`, `QDRANT_COLLECTION`, `PHOENIX_CLIENT_ENDPOINT`, and OCR/OpenAI keys only in local environment files or shell state. Keep Qdrant bound to localhost.

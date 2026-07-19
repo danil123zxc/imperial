@@ -4,7 +4,8 @@ The `loop-constraints` skill must read this file at the start of every loop run.
 
 ## Mode
 
-- Week one is L1 report-only.
+- Recurring loops remain L1 report-only.
+- L2 assisted publishing is allowed only for a task containing the exact `Publish: draft-pr` marker or an equivalent explicit push-and-draft-PR request in the active thread.
 - Report-only loops may update `STATE.md` and `loop-run-log.md`.
 - Do not implement fixes, rewrite files, run formatters, stage changes, commit, push, open PRs, or restart services unless the human explicitly asks in the active thread.
 
@@ -18,8 +19,11 @@ The `loop-constraints` skill must read this file at the start of every loop run.
 ## Push & Merge
 
 - Never auto-merge.
-- Never push without telling the human first and receiving approval.
-- Draft PRs are allowed only after the project has graduated to L2 assisted fixes.
+- Never push without per-task human approval. The exact `Publish: draft-pr` marker supplies that approval for the task's scoped `codex/*` branch only.
+- Before publishing, require a fresh branch based on current `origin/main`, a clean worktree, scoped commits, `./scripts/check.sh`, a base-range whitespace check, and an independent verifier `APPROVE` verdict.
+- Refuse `main`, `dev`, detached HEADs, non-`codex/*` branches, and branches associated with merged or closed PRs.
+- Draft PR create/update is the only allowed automated GitHub write. Publishing to a ready-for-review PR or merging requires a new human action.
+- Use `scripts/publish_agent_pr.sh --verifier-approved` as the final publish boundary. The publisher always targets `main`; its base is not operator-configurable.
 
 ## Denylist Paths
 
@@ -71,6 +75,8 @@ src/imperial_rag/answering/**
 - Never disable or weaken tests to make a loop green.
 - Never increase timeouts without a root-cause note.
 - Use `./scripts/check.sh` as the default verifier gate for source changes.
+- Before an L2 push, also run `git diff --check origin/main...HEAD` and scan the complete base diff for denylisted paths.
+- More than 10 changed files or any human-gated path requires separate explicit approval; the publish marker alone does not override these gates.
 - Use focused RAG gates only when relevant and approved:
   - `uv run python scripts/audit_eval_rows.py --strict --output-path <tmp>`
   - `uv run python scripts/check_ingestion_promotion.py --baseline-root <path> --shadow-root <path>`

@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   IMPERIAL_RAG_WORKSPACE_ROOT: /Users/danil/Public/imperial
@@ -47,3 +47,114 @@ jobs:
 
       - name: Run checks
         run: ./scripts/check.sh
+
+  deploy:
+    name: Deploy production
+    needs: quality
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      DEPLOY_HOST: 100.105.60.123
+      DEPLOY_USER: server1
+
+    steps:
+      - name: Connect to the production tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:github-ci
+          ping: 100.105.60.123
+
+      - name: Configure restricted SSH identity
+        env:
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/imperial_deploy
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/imperial_deploy
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy the tested main commit
+        id: production_deploy
+        run: |
+          deployment_output=$(ssh \
+            -i ~/.ssh/imperial_deploy \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $GITHUB_SHA")
+          printf '%s\n' "$deployment_output"
+          case "$deployment_output" in
+            *"superseded"*)
+              printf 'result=superseded\n' >> "$GITHUB_OUTPUT"
+              ;;
+            *"already runs"*)
+              printf 'result=already_current\n' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              printf 'result=deployed\n' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Notify Telegram
+        if: ${{ always() }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEPLOY_OUTCOME: ${{ steps.production_deploy.outcome }}
+          DEPLOY_RESULT: ${{ steps.production_deploy.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+            printf '::warning::Telegram deployment notifications are not configured.\n'
+            exit 0
+          fi
+
+          case "$DEPLOY_OUTCOME:$DEPLOY_RESULT" in
+            success:deployed)
+              headline='✅ Production updated'
+              ;;
+            success:already_current)
+              headline='ℹ️ Production was already healthy'
+              ;;
+            success:superseded)
+              headline='⏭️ Deployment superseded by a newer main commit'
+              ;;
+            *)
+              headline='❌ Production deployment failed'
+              ;;
+          esac
+
+          short_sha=${GITHUB_SHA:0:7}
+          message=$(printf '%s\n\nRepository: %s\nServer: %s\nCommit: %s\nTriggered by: @%s\nRun: %s' \
+            "$headline" \
+            "$GITHUB_REPOSITORY" \
+            "$DEPLOY_HOST" \
+            "$short_sha" \
+            "$GITHUB_ACTOR" \
+            "$RUN_URL")
+
+          curl \
+            --connect-timeout 5 \
+            --fail \
+            --max-time 15 \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${message}"
