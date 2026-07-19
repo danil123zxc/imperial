@@ -335,6 +335,7 @@ def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkey
     auth_store.bootstrap_admin("admin@example.com", "admin-password")
     auth_store.register_user("user@example.com", "user-password", "User", "Testing")
     auth_store.approve_user("admin@example.com", "user@example.com")
+    user_token = auth_store.create_session("user@example.com", ttl_seconds=60)
 
     env_module = types.ModuleType("imperial_rag.env")
     env_module.load_project_env = lambda: None
@@ -372,7 +373,10 @@ def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkey
         sidebar=Context(),
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
-        session_state=SessionState(auth_user_email="user@example.com"),
+        session_state=SessionState(
+            auth_user_email="user@example.com",
+            auth_session_token=user_token,
+        ),
         caption=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: False,
         chat_input=lambda *args, **kwargs: "How do I expense travel?",
@@ -421,6 +425,7 @@ def test_main_persists_prompt_to_original_chat_when_sidebar_selection_changes(mo
     auth_store.bootstrap_admin("admin@example.com", "admin-password")
     auth_store.register_user("user@example.com", "user-password", "User", "Testing")
     auth_store.approve_user("admin@example.com", "user@example.com")
+    user_token = auth_store.create_session("user@example.com", ttl_seconds=60)
 
     history = ChatHistoryStore(chat_history_db_path)
     older = history.create_conversation("user@example.com", "Older chat", phoenix_session_id="trace-old")
@@ -468,6 +473,7 @@ def test_main_persists_prompt_to_original_chat_when_sidebar_selection_changes(mo
         text=lambda *args, **kwargs: None,
         session_state=SessionState(
             auth_user_email="user@example.com",
+            auth_session_token=user_token,
             chat_history_user_email="user@example.com",
             active_conversation_id=active.id,
             phoenix_trace_session_id="trace-active",
@@ -519,6 +525,7 @@ def test_main_persists_assistant_error_when_signed_in_query_fails(monkeypatch, t
     auth_store.bootstrap_admin("admin@example.com", "admin-password")
     auth_store.register_user("user@example.com", "user-password", "User", "Testing")
     auth_store.approve_user("admin@example.com", "user@example.com")
+    user_token = auth_store.create_session("user@example.com", ttl_seconds=60)
 
     env_module = types.ModuleType("imperial_rag.env")
     env_module.load_project_env = lambda: None
@@ -557,7 +564,10 @@ def test_main_persists_assistant_error_when_signed_in_query_fails(monkeypatch, t
         sidebar=Context(),
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
-        session_state=SessionState(auth_user_email="user@example.com"),
+        session_state=SessionState(
+            auth_user_email="user@example.com",
+            auth_session_token=user_token,
+        ),
         caption=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: False,
         chat_input=lambda *args, **kwargs: "How do I expense travel?",

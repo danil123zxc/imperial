@@ -18,6 +18,9 @@ APPROVED = "approved"
 PENDING = "pending"
 REJECTED = "rejected"
 PBKDF2_ITERATIONS = 390_000
+NANOSECONDS_PER_SECOND = 1_000_000_000
+SESSION_TOKEN_BYTES = 32
+SESSION_TOKEN_MAX_LENGTH = 512
 
 
 class AuthenticationStatus(str, Enum):
@@ -71,6 +74,19 @@ class AuthStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS users_status_idx ON users(status)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_email TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    FOREIGN KEY(user_email) REFERENCES users(email) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_email)")
+            conn.execute("CREATE INDEX IF NOT EXISTS auth_sessions_expiry_idx ON auth_sessions(expires_at)")
 
     def bootstrap_admin(self, email: str, password: str) -> UserRecord:
         normalized_email = normalize_user_email(email)
@@ -216,9 +232,65 @@ class AuthStore:
             ).fetchall()
         return [_row_to_user(row) for row in rows]
 
+    def create_session(self, email: str, ttl_seconds: int) -> str:
+        if ttl_seconds <= 0:
+            raise ValueError("session ttl must be positive")
+        normalized_email = normalize_user_email(email)
+        self.initialize()
+        user = self.get_user(normalized_email)
+        if user is None or user.status != APPROVED:
+            raise PermissionError("only an approved user can create a session")
+
+        token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        token_hash = _hash_session_token(token)
+        now = time.time_ns()
+        expires_at = now + ttl_seconds * NANOSECONDS_PER_SECOND
+        with self._connection() as conn:
+            conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (now,))
+            conn.execute(
+                """
+                INSERT INTO auth_sessions(token_hash, user_email, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (token_hash, normalized_email, now, expires_at),
+            )
+        return token
+
+    def authenticate_session(self, token: str) -> UserRecord | None:
+        if not _valid_session_token(token):
+            return None
+        self.initialize()
+        token_hash = _hash_session_token(token)
+        now = time.time_ns()
+        with self._connection() as conn:
+            conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (now,))
+            row = conn.execute(
+                """
+                SELECT users.*
+                FROM auth_sessions
+                JOIN users ON users.email = auth_sessions.user_email
+                WHERE auth_sessions.token_hash = ?
+                """,
+                (token_hash,),
+            ).fetchone()
+            if row is None:
+                return None
+            if str(row["status"]) != APPROVED:
+                conn.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
+                return None
+        return _row_to_user(row)
+
+    def revoke_session(self, token: str) -> None:
+        if not _valid_session_token(token):
+            return
+        self.initialize()
+        with self._connection() as conn:
+            conn.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (_hash_session_token(token),))
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     @contextmanager
@@ -250,6 +322,14 @@ def _verify_password(password: str, salt_hex: str, digest_hex: str) -> bool:
         return False
     actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
     return hmac.compare_digest(actual, expected)
+
+
+def _valid_session_token(token: str) -> bool:
+    return isinstance(token, str) and bool(token) and len(token) <= SESSION_TOKEN_MAX_LENGTH
+
+
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _row_to_user(row: sqlite3.Row) -> UserRecord:

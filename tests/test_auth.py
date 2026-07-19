@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 
 from imperial_rag.app.auth import AuthStore, AuthenticationStatus
@@ -127,3 +128,81 @@ def test_auth_store_closes_short_lived_connections(monkeypatch, tmp_path):
 
     assert opened
     assert all(connection.closed for connection in opened)
+
+
+def test_session_tokens_are_hashed_and_restore_only_approved_users(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+
+    with sqlite3.connect(store.db_path) as conn:
+        row = conn.execute("SELECT token_hash, user_email FROM auth_sessions").fetchone()
+
+    assert row == (hashlib.sha256(token.encode("utf-8")).hexdigest(), "admin@example.com")
+    assert token not in str(row)
+    assert store.authenticate_session(token).email == "admin@example.com"
+    assert store.authenticate_session(f"{token}tampered") is None
+
+
+def test_session_tokens_expire_without_sliding(monkeypatch, tmp_path):
+    now = 1_700_000_000_000_000_000
+    monkeypatch.setattr(auth_module.time, "time_ns", lambda: now)
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=30)
+
+    monkeypatch.setattr(auth_module.time, "time_ns", lambda: now + 29_000_000_000)
+    assert store.authenticate_session(token) is not None
+
+    monkeypatch.setattr(auth_module.time, "time_ns", lambda: now + 30_000_000_000)
+    assert store.authenticate_session(token) is None
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0] == 0
+
+
+def test_session_tokens_can_be_revoked_and_reject_invalid_values(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+
+    store.revoke_session(token)
+
+    assert store.authenticate_session(token) is None
+    assert store.authenticate_session("") is None
+    assert store.authenticate_session("x" * 513) is None
+    store.revoke_session("")
+
+
+def test_session_creation_and_restore_require_approved_user(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("pending@example.com", "pending-password")
+
+    try:
+        store.create_session("pending@example.com", ttl_seconds=60)
+    except PermissionError as exc:
+        assert "approved" in str(exc)
+    else:
+        raise AssertionError("pending users must not receive sessions")
+
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("UPDATE users SET status = 'rejected' WHERE email = 'admin@example.com'")
+
+    assert store.authenticate_session(token) is None
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0] == 0
+
+
+def test_deleting_user_cascades_owned_sessions(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+
+    with store._connection() as conn:
+        conn.execute("DELETE FROM users WHERE email = 'admin@example.com'")
+
+    assert store.authenticate_session(token) is None
+    with sqlite3.connect(store.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0] == 0

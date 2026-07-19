@@ -66,6 +66,8 @@ cp .env.example .env
 
 Fill in at least `DASHSCOPE_API_KEY`. To use the Streamlit UI with access control, also set `IMPERIAL_RAG_ADMIN_EMAIL` and `IMPERIAL_RAG_ADMIN_PASSWORD`; the first approved admin account is stored in `.imperial_rag/auth.sqlite3`.
 
+After an approved user signs in, the UI keeps that browser signed in for 30 days across page reloads and browser restarts. The browser stores only a revocable opaque token; SQLite stores its SHA-256 hash and expiry. Logging out revokes the current browser session. Cookies must be enabled, and public deployments should use HTTPS so the cookie receives the `Secure` attribute.
+
 Start Elasticsearch for keyword retrieval:
 
 ```bash
@@ -241,7 +243,7 @@ uv run python scripts/run_all_evals.py
 | `.imperial_rag/extracted/` | local directory | Extracted text, chunks, ledger, and lineage |
 | `.imperial_rag/shadow-runs/<id>/` | local directory | Isolated candidate artifacts, manifest, OCR cache, and run descriptor |
 | `.imperial_rag/active-ingestion.json` | local file | Atomically replaced pointer to the promoted artifacts and search aliases |
-| `.imperial_rag/auth.sqlite3` | local file | Streamlit auth and approval state |
+| `.imperial_rag/auth.sqlite3` | local file | Streamlit users, approval state, and hashed browser-session tokens |
 | `.imperial_rag/chat_history.sqlite3` | local file | Local chat history |
 
 Use the live files, database tables, and service health checks as source of truth for generated state. Snapshot counts in documentation drift quickly after corpus rebuilds.

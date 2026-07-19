@@ -519,6 +519,171 @@ def test_localizes_legacy_system_messages_and_default_chat_title():
     assert web_app._conversation_button_label(SimpleNamespace(title="New chat")) == "Новый чат"
 
 
+def test_fresh_streamlit_session_restores_user_from_cookie(tmp_path):
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+    streamlit = SimpleNamespace(
+        session_state={},
+        context=SimpleNamespace(cookies={web_app.AUTH_COOKIE_NAME: token}),
+    )
+
+    user = web_app._current_authenticated_user(streamlit, store)
+
+    assert user.email == "admin@example.com"
+    assert streamlit.session_state[web_app.AUTH_SESSION_EMAIL_KEY] == "admin@example.com"
+    assert streamlit.session_state[web_app.AUTH_SESSION_TOKEN_KEY] == token
+
+
+def test_invalid_cookie_cannot_restore_email_only_session(tmp_path):
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    streamlit = SimpleNamespace(
+        session_state={web_app.AUTH_SESSION_EMAIL_KEY: "admin@example.com"},
+        context=SimpleNamespace(cookies={web_app.AUTH_COOKIE_NAME: "tampered"}),
+    )
+
+    assert web_app._current_authenticated_user(streamlit, store) is None
+    assert web_app.AUTH_SESSION_EMAIL_KEY not in streamlit.session_state
+    assert web_app.AUTH_SESSION_TOKEN_KEY not in streamlit.session_state
+
+
+def test_cookie_write_must_be_acknowledged_before_login_continues(monkeypatch, tmp_path):
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+    pending = {
+        "action": "set",
+        "operation_id": "op-1",
+        "token": token,
+        "secure": True,
+    }
+    streamlit = SimpleNamespace(
+        session_state={
+            web_app.AUTH_SESSION_EMAIL_KEY: "admin@example.com",
+            web_app.AUTH_SESSION_TOKEN_KEY: token,
+            web_app.PENDING_AUTH_COOKIE_KEY: pending,
+        }
+    )
+    monkeypatch.setattr(
+        "imperial_rag.app.auth_cookie.render_cookie_operation",
+        lambda *args, **kwargs: SimpleNamespace(acknowledged=None),
+    )
+
+    assert web_app._complete_pending_auth_cookie_operation(streamlit, store) is False
+    assert streamlit.session_state[web_app.PENDING_AUTH_COOKIE_KEY] == pending
+
+
+def test_failed_cookie_write_revokes_new_session(monkeypatch, tmp_path):
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+    streamlit = SimpleNamespace(
+        session_state={
+            web_app.AUTH_SESSION_EMAIL_KEY: "admin@example.com",
+            web_app.AUTH_SESSION_TOKEN_KEY: token,
+            web_app.PENDING_AUTH_COOKIE_KEY: {
+                "action": "set",
+                "operation_id": "op-1",
+                "token": token,
+                "secure": False,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "imperial_rag.app.auth_cookie.render_cookie_operation",
+        lambda *args, **kwargs: SimpleNamespace(
+            acknowledged={"operation_id": "op-1", "success": False}
+        ),
+    )
+
+    assert web_app._complete_pending_auth_cookie_operation(streamlit, store) is True
+    assert store.authenticate_session(token) is None
+    assert web_app.AUTH_SESSION_EMAIL_KEY not in streamlit.session_state
+    assert web_app.AUTH_SESSION_TOKEN_KEY not in streamlit.session_state
+    assert streamlit.session_state[web_app.AUTH_COOKIE_ERROR_KEY]
+
+
+def test_successful_password_login_creates_session_and_queues_secure_cookie(tmp_path):
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+
+    class Form:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    values = {
+        "auth-login-email": "admin@example.com",
+        "auth-login-password": "admin-password",
+    }
+    reruns = []
+    streamlit = SimpleNamespace(
+        session_state={},
+        context=SimpleNamespace(url="https://rag.example.test/", cookies={}),
+        subheader=lambda *args, **kwargs: None,
+        radio=lambda *args, **kwargs: web_app.LOGIN_MODE,
+        form=lambda *args, **kwargs: Form(),
+        text_input=lambda *args, **kwargs: values[kwargs["key"]],
+        form_submit_button=lambda *args, **kwargs: True,
+        error=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        rerun=lambda: reruns.append(True),
+    )
+
+    web_app._render_auth_gate(streamlit, store)
+
+    token = streamlit.session_state[web_app.AUTH_SESSION_TOKEN_KEY]
+    assert store.authenticate_session(token).email == "admin@example.com"
+    assert streamlit.session_state[web_app.PENDING_AUTH_COOKIE_KEY] == {
+        "action": "set",
+        "operation_id": streamlit.session_state[web_app.PENDING_AUTH_COOKIE_KEY]["operation_id"],
+        "token": token,
+        "secure": True,
+    }
+    assert reruns == [True]
+
+
+def test_logout_revokes_session_clears_user_state_and_queues_cookie_delete(tmp_path):
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    token = store.create_session("admin@example.com", ttl_seconds=60)
+    streamlit = SimpleNamespace(
+        session_state={
+            web_app.AUTH_SESSION_EMAIL_KEY: "admin@example.com",
+            web_app.AUTH_SESSION_TOKEN_KEY: token,
+            web_app.CHAT_HISTORY_USER_KEY: "admin@example.com",
+            web_app.ACTIVE_CONVERSATION_ID_KEY: "conversation-1",
+            "messages": [{"role": "user", "content": "private"}],
+        },
+        context=SimpleNamespace(url="http://127.0.0.1:8501", cookies={web_app.AUTH_COOKIE_NAME: token}),
+    )
+
+    web_app._begin_logout(streamlit, store)
+
+    assert store.authenticate_session(token) is None
+    assert web_app.AUTH_SESSION_EMAIL_KEY not in streamlit.session_state
+    assert web_app.AUTH_SESSION_TOKEN_KEY not in streamlit.session_state
+    assert web_app.CHAT_HISTORY_USER_KEY not in streamlit.session_state
+    assert "messages" not in streamlit.session_state
+    assert streamlit.session_state[web_app.PENDING_AUTH_COOKIE_KEY]["action"] == "delete"
+    assert streamlit.session_state[web_app.PENDING_AUTH_COOKIE_KEY]["secure"] is False
+
+
 def test_main_loads_project_env_before_creating_settings(monkeypatch, tmp_path):
     from imperial_rag.app import web as web_app
 
@@ -667,6 +832,7 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
     store.initialize()
     store.bootstrap_admin("admin@example.com", "admin-password")
     store.register_user("user@example.com", "user-password", "Test User", "Needs access")
+    admin_token = store.create_session("admin@example.com", ttl_seconds=60)
 
     env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
@@ -706,7 +872,10 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
         sidebar=Context(),
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
-        session_state=SessionState(auth_user_email="admin@example.com"),
+        session_state=SessionState(
+            auth_user_email="admin@example.com",
+            auth_session_token=admin_token,
+        ),
         caption=lambda *args, **kwargs: None,
         warning=lambda message, *args, **kwargs: warnings.append(message),
         button=lambda *args, **kwargs: False,
@@ -806,6 +975,7 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
     store.initialize()
     store.bootstrap_admin("admin@example.com", "admin-password")
     store.register_user("user@example.com", "user-password", "Test User", "Needs access")
+    admin_token = store.create_session("admin@example.com", ttl_seconds=60)
 
     env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
@@ -844,7 +1014,10 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
         sidebar=Context(),
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
-        session_state=SessionState(auth_user_email="admin@example.com"),
+        session_state=SessionState(
+            auth_user_email="admin@example.com",
+            auth_session_token=admin_token,
+        ),
         caption=lambda *args, **kwargs: None,
         warning=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: kwargs.get("key") == "auth-approve-user@example.com",
@@ -878,6 +1051,7 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
     store.bootstrap_admin("admin@example.com", "admin-password")
     store.register_user("user@example.com", "user-password", "User", "Testing")
     store.approve_user("admin@example.com", "user@example.com")
+    user_token = store.create_session("user@example.com", ttl_seconds=60)
 
     env_module = _fake_module("imperial_rag.env")
     env_module.load_project_env = lambda: None
@@ -935,7 +1109,10 @@ def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_p
         sidebar=Sidebar(),
         header=lambda *args, **kwargs: None,
         text=lambda *args, **kwargs: None,
-        session_state=SessionState(auth_user_email="user@example.com"),
+        session_state=SessionState(
+            auth_user_email="user@example.com",
+            auth_session_token=user_token,
+        ),
         caption=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: False,
         chat_input=lambda *args, **kwargs: "private question",
