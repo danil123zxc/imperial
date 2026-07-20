@@ -52,12 +52,16 @@ Use short imperative commit subjects, optionally Conventional Commit style such 
 
 ### Assisted Publish Workflow
 
-The exact task marker `Publish: draft-pr` authorizes an L2 assisted publish for that task. It authorizes the agent to commit its scoped changes, push its task branch, and create or update a draft pull request after all gates pass. It does not authorize auto-merge, protected-data changes, high-risk path changes, dependency upgrades, provider-backed operations, or unrelated cleanup.
+Every code-changing task defaults to an L2 assisted publish. This standing repository instruction authorizes the agent to commit its scoped changes, push its task branch, and create or update a draft pull request after all gates pass. It does not authorize auto-merge, protected-data changes, high-risk path changes, dependency upgrades, provider-backed operations, or unrelated cleanup.
+
+Do not publish when the task is read-only or review-only, produces no changes, or contains the exact opt-out marker `Local-only` or `Do not publish`. In those cases, follow the requested local workflow and do not push or create a pull request.
 
 - Start from a fresh `origin/main` branch in an isolated worktree named `codex/<task>`; never reuse a branch whose pull request is merged or closed.
 - Preserve the initial dirty baseline and stage explicit agent-owned paths only.
+- Complete every repository documentation gate that applies to the change before final checks and commit.
 - Run `./scripts/check.sh`, then obtain an independent `loop-verifier` `APPROVE` verdict before publishing.
 - Run `scripts/publish_agent_pr.sh --verifier-approved` only after the commit exists and the independent verdict is `APPROVE`. The script must remain the final push/draft-PR boundary.
+- After creating a new draft PR, remove the clean linked worktree because the task is complete. Never remove the primary worktree, never use forced worktree removal, and keep the branch and PR intact. An existing draft-PR update keeps its worktree for follow-up work.
 - If any safety, scope, verification, authentication, or branch-state gate fails, stop without pushing.
 - Merging is always a human action.
 

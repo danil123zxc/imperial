@@ -60,6 +60,26 @@ def _create_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _install_fake_gh(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [[ \"$*\" == *\"--state closed\"* && \"${FAKE_GH_CLOSED:-0}\" == \"1\" ]]; then\n"
+        "  printf '7\\tMERGED\\thttps://example.test/pr/7\\n'\n"
+        "elif [[ \"$*\" == *\"pr create\"* ]]; then\n"
+        "  printf 'https://example.test/pr/8\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    return fake_bin, env
+
+
 def test_dry_run_accepts_clean_fresh_codex_branch(tmp_path: Path) -> None:
     repo = _create_repo(tmp_path)
     worktree = tmp_path / "agent-worktree"
@@ -171,20 +191,8 @@ def test_refuses_branch_with_closed_or_merged_pr(tmp_path: Path) -> None:
     _git(worktree, "add", "feature.txt")
     _git(worktree, "commit", "-m", "feat: add verified change")
 
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_gh = fake_bin / "gh"
-    fake_gh.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        "if [[ \"$*\" == *\"--state closed\"* ]]; then\n"
-        "  printf '7\\tMERGED\\thttps://example.test/pr/7\\n'\n"
-        "fi\n",
-        encoding="utf-8",
-    )
-    fake_gh.chmod(0o755)
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    _, env = _install_fake_gh(tmp_path)
+    env["FAKE_GH_CLOSED"] = "1"
 
     result = _run(
         "bash",
@@ -197,3 +205,54 @@ def test_refuses_branch_with_closed_or_merged_pr(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "branch already has a closed or merged PR" in result.stderr
+
+
+def test_new_pr_removes_clean_linked_worktree(tmp_path: Path) -> None:
+    repo = _create_repo(tmp_path)
+    worktree = tmp_path / "completed-worktree"
+    _git(
+        repo,
+        "worktree",
+        "add",
+        "-b",
+        "codex/completed-task",
+        str(worktree),
+        "origin/main",
+    )
+    (worktree / "feature.txt").write_text("verified\n", encoding="utf-8")
+    _git(worktree, "add", "feature.txt")
+    _git(worktree, "commit", "-m", "feat: add verified change")
+    _, env = _install_fake_gh(tmp_path)
+
+    result = _run(
+        "bash",
+        "scripts/publish_agent_pr.sh",
+        "--verifier-approved",
+        cwd=worktree,
+        env=env,
+    )
+
+    assert "Created draft PR: https://example.test/pr/8" in result.stdout
+    assert "Removed clean linked worktree" in result.stdout
+    assert not worktree.exists()
+    assert "codex/completed-task" in _git(repo, "branch", "--list").stdout
+
+
+def test_new_pr_never_removes_primary_worktree(tmp_path: Path) -> None:
+    repo = _create_repo(tmp_path)
+    _git(repo, "checkout", "-b", "codex/primary-task")
+    (repo / "feature.txt").write_text("verified\n", encoding="utf-8")
+    _git(repo, "add", "feature.txt")
+    _git(repo, "commit", "-m", "feat: add verified change")
+    _, env = _install_fake_gh(tmp_path)
+
+    result = _run(
+        "bash",
+        "scripts/publish_agent_pr.sh",
+        "--verifier-approved",
+        cwd=repo,
+        env=env,
+    )
+
+    assert "Primary worktree retained" in result.stdout
+    assert repo.exists()
