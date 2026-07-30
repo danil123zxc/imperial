@@ -402,3 +402,10 @@ def test_workflow_deploys_only_green_main_pushes_over_tailscale() -> None:
     assert "--max-time 15" in workflow
     assert "Production deployment failed" in workflow
     assert "workflow_run:" not in workflow
+
+
+def test_deploy_health_check_uses_telegram_readiness_endpoint() -> None:
+    script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+    assert "DEFAULT_HEALTH_URL=http://127.0.0.1:8501/healthz" in script
+    assert "/_stcore/health" not in script

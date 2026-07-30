@@ -32,6 +32,7 @@ dependencies = [
   "pillow",
   "striprtf",
   "streamlit>=1.58,<2",
+  "python-telegram-bot>=22.5,<23",
 ]
 
 [project.optional-dependencies]
