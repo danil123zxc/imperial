@@ -18,4 +18,4 @@ RUN uv sync --frozen --no-dev --no-cache
 
 EXPOSE 8501
 
-CMD ["uv", "run", "python", "-m", "streamlit", "run", "src/imperial_rag/app/web.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true"]
+CMD ["uv", "run", "python", "-m", "imperial_rag.app.telegram"]

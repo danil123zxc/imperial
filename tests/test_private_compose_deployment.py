@@ -45,7 +45,7 @@ def test_dockerignore_excludes_private_and_generated_data() -> None:
     assert ".venv/" in entries
 
 
-def test_dockerfile_builds_uv_streamlit_runtime() -> None:
+def test_dockerfile_builds_uv_telegram_runtime() -> None:
     dockerfile = _read("Dockerfile")
 
     assert "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in dockerfile
@@ -58,10 +58,7 @@ def test_dockerfile_builds_uv_streamlit_runtime() -> None:
     assert "COPY src ./src" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
     assert "EXPOSE 8501" in dockerfile
-    assert '"streamlit", "run", "src/imperial_rag/app/web.py"' in dockerfile
-    assert '"--server.address", "0.0.0.0"' in dockerfile
-    assert '"--server.port", "8501"' in dockerfile
-    assert '"--server.headless", "true"' in dockerfile
+    assert '"python", "-m", "imperial_rag.app.telegram"' in dockerfile
 
 
 def test_compose_defines_private_app_and_ingest_services() -> None:
@@ -125,6 +122,8 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     assert "logging: *imperial-json-log-options" in elasticsearch
     assert "logging: *imperial-json-log-options" in kibana
     assert '"127.0.0.1:8501:8501"' in app
+    assert "imperial_rag.app.telegram" in app
+    assert "http://127.0.0.1:8501/healthz" in app
     assert '"127.0.0.1:6333:6333"' in qdrant
     assert '"127.0.0.1:9200:9200"' in elasticsearch
     assert '"127.0.0.1:6006:6006"' in phoenix
@@ -161,6 +160,14 @@ def test_env_example_documents_compose_overrides() -> None:
     assert "QDRANT_URL=http://qdrant:6333" not in lines
     assert "PHOENIX_CLIENT_ENDPOINT=http://phoenix:6006" not in lines
     assert "PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces" not in lines
+
+
+def test_env_example_documents_private_telegram_access() -> None:
+    env_example = _read(".env.example")
+    lines = set(env_example.splitlines())
+
+    assert "TELEGRAM_BOT_TOKEN=" in lines
+    assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS=" in lines
 
 
 def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
@@ -210,7 +217,7 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "## Private Compose Deployment" in readme
     assert "docker compose up -d elasticsearch qdrant phoenix app kibana" in readme
     assert "docker compose --profile ingest up ingest" in readme
-    assert "http://127.0.0.1:8501/_stcore/health" in readme
+    assert "http://127.0.0.1:8501/healthz" in readme
     assert "http://127.0.0.1:9200" in readme
     assert "http://127.0.0.1:5601" in readme
     assert "unauthenticated by default and are safe only while bound to `127.0.0.1`" in readme
@@ -225,6 +232,7 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "TELEGRAM_BOT_TOKEN" in readme
     assert "TELEGRAM_CHAT_ID" in readme
     assert "Telegram delivery is best-effort" in readme
+    assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS" in readme
 
 
 def test_compose_documents_local_only_unauthenticated_observability_services() -> None:

@@ -38,21 +38,13 @@ services:
       - run
       - python
       - -m
-      - streamlit
-      - run
-      - src/imperial_rag/app/web.py
-      - --server.address
-      - 0.0.0.0
-      - --server.port
-      - "8501"
-      - --server.headless
-      - "true"
+      - imperial_rag.app.telegram
     healthcheck:
       test:
         - CMD
         - /app/.venv/bin/python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/healthz', timeout=2).read()"
       interval: 10s
       timeout: 3s
       retries: 12

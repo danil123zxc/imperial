@@ -3,7 +3,7 @@ set -euo pipefail
 
 DEFAULT_DEPLOY_ROOT=/home/server1/imperial-deploy
 DEFAULT_STATE_DIR=/home/server1/.local/state/imperial-deploy
-DEFAULT_HEALTH_URL=http://127.0.0.1:8501/_stcore/health
+DEFAULT_HEALTH_URL=http://127.0.0.1:8501/healthz
 
 if [[ "${IMPERIAL_DEPLOY_TEST_MODE:-0}" == "1" ]]; then
   deploy_root=${IMPERIAL_DEPLOY_ROOT:-$DEFAULT_DEPLOY_ROOT}
