@@ -3,7 +3,8 @@ set -euo pipefail
 
 DEFAULT_DEPLOY_ROOT=/home/server1/imperial-deploy
 DEFAULT_STATE_DIR=/home/server1/.local/state/imperial-deploy
-DEFAULT_HEALTH_URL=http://127.0.0.1:8501/healthz
+DEFAULT_HEALTH_URL=http://127.0.0.1:8501/_stcore/health
+deployment_services=(app telegram-api)
 
 if [[ "${IMPERIAL_DEPLOY_TEST_MODE:-0}" == "1" ]]; then
   deploy_root=${IMPERIAL_DEPLOY_ROOT:-$DEFAULT_DEPLOY_ROOT}
@@ -53,18 +54,22 @@ compose() {
   docker compose "$@"
 }
 
-app_is_healthy() {
+services_are_healthy() {
   local attempt
   local container_id
   local health_status
+  local service
 
   for ((attempt = 1; attempt <= health_attempts; attempt++)); do
-    container_id=$(compose ps -q app 2>/dev/null || true)
-    if [[ -n "$container_id" ]]; then
+    for service in "${deployment_services[@]}"; do
+      container_id=$(compose ps -q "$service" 2>/dev/null || true)
+      [[ -n "$container_id" ]] || break
       health_status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
-      if [[ "$health_status" == "healthy" ]] && curl -fsS --max-time 3 "$health_url" >/dev/null 2>&1; then
-        return 0
-      fi
+      [[ "$health_status" == "healthy" ]] || break
+    done
+    if [[ "$service" == "telegram-api" && -n "$container_id" && "$health_status" == "healthy" ]] \
+      && curl -fsS --max-time 3 "$health_url" >/dev/null 2>&1; then
+      return 0
     fi
     sleep "$health_interval"
   done
@@ -74,7 +79,7 @@ app_is_healthy() {
 capture_private_failure_logs() {
   local sha=$1
   local failure_log="$state_dir/failure-$sha.log"
-  compose logs --no-color --tail=200 app > "$failure_log" 2>&1 || true
+  compose logs --no-color --tail=200 "${deployment_services[@]}" > "$failure_log" 2>&1 || true
   chmod 600 "$failure_log"
 }
 
@@ -93,15 +98,15 @@ rollback_running_app() {
 
   capture_private_failure_logs "$failed_sha"
   checkout_commit "$previous_sha"
-  if ! compose build app >/dev/null; then
+  if ! compose build "${deployment_services[@]}" >/dev/null; then
     audit "$failed_sha" rollback failed_build
     return 1
   fi
-  if ! compose up -d --no-deps app >/dev/null; then
+  if ! compose up -d --no-deps "${deployment_services[@]}" >/dev/null; then
     audit "$failed_sha" rollback failed_start
     return 1
   fi
-  if ! app_is_healthy; then
+  if ! services_are_healthy; then
     capture_private_failure_logs "$previous_sha"
     audit "$failed_sha" rollback failed_health
     return 1
@@ -158,7 +163,7 @@ deploy_commit() {
     previous_sha=$previous_good_sha
   fi
   if [[ "$target_sha" == "$checkout_sha" && "$target_sha" == "$last_good_sha" ]]; then
-    if app_is_healthy; then
+    if services_are_healthy; then
       audit "$target_sha" deploy already_current
       info "Production already runs the requested commit and is healthy."
       return 0
@@ -170,14 +175,14 @@ deploy_commit() {
   checkout_commit "$target_sha"
 
   info "Building the application image..."
-  if ! compose build app >/dev/null; then
+  if ! compose build "${deployment_services[@]}" >/dev/null; then
     restore_after_failed_build "$checkout_sha"
     audit "$target_sha" build failed
     die "application image build failed; the running container was not replaced"
   fi
 
   info "Replacing the application container..."
-  if ! compose up -d --no-deps app >/dev/null; then
+  if ! compose up -d --no-deps "${deployment_services[@]}" >/dev/null; then
     if rollback_running_app "$target_sha" "$previous_sha"; then
       die "application start failed; production was restored to the previous commit"
     fi
@@ -185,7 +190,7 @@ deploy_commit() {
   fi
 
   info "Waiting for application health..."
-  if ! app_is_healthy; then
+  if ! services_are_healthy; then
     if rollback_running_app "$target_sha" "$previous_sha"; then
       die "application health check failed; production was restored to the previous commit"
     fi

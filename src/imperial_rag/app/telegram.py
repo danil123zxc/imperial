@@ -1,52 +1,35 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import os
-from pathlib import Path
-from threading import Event, Thread
-from time import perf_counter
-from typing import Any, Mapping
+import re
+from secrets import compare_digest
+from typing import Any, AsyncIterator
+from urllib.parse import urlsplit
 
-from telegram import Update
-from telegram.constants import ChatType
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+import httpx
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse, Response
+from starlette.routing import Route
 
-from imperial_rag.app.chat_history import ChatHistoryStore
-from imperial_rag.app.web import (
-    FILE_DOWNLOAD_BYTE_LIMIT,
-    _build_assistant_message,
-    _build_query_failure_message,
-    _chat_message_payload,
-    _query_log_fields,
-    build_retrieved_file_groups,
-)
-from imperial_rag.observability import log_event, log_failure
-from imperial_rag.observability.phoenix import phoenix_trace_context, trace_user_id_from_email
-
+MAX_HTTP_BODY_BYTES = 16 * 1024
 MAX_TELEGRAM_TEXT_LENGTH = 4096
-STATE_KEY = "imperial_rag_state"
-READY_KEY = "imperial_rag_ready"
-ACCESS_DENIED_TEXT = "Доступ к боту не предоставлен."
-WELCOME_TEXT = "Задайте вопрос по проиндексированным документам."
-SOURCE_UNAVAILABLE_TEXT = "Источник недоступен для отправки: {name}"
+ACCEPTED_TEXT = "Вопрос принят. Готовлю ответ."
 
 
 @dataclass(frozen=True)
-class TelegramBotState:
-    settings: Any
-    runtime: Any
-    chat_store: ChatHistoryStore
+class TelegramWebhookConfig:
+    bot_token: str
     allowed_user_ids: frozenset[int]
-
-
-def load_bot_configuration(environ: Mapping[str, str] | None = None) -> tuple[str, frozenset[int]]:
-    values = os.environ if environ is None else environ
-    token = values.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN is required")
-    return token, parse_allowed_user_ids(values.get("IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS"))
+    webhook_url: str
+    webhook_secret: str
+    backend_url: str
+    service_token: str
 
 
 def parse_allowed_user_ids(raw: str | None) -> frozenset[int]:
@@ -62,10 +45,27 @@ def parse_allowed_user_ids(raw: str | None) -> frozenset[int]:
     return user_ids
 
 
-def telegram_user_email(user_id: int) -> str:
-    if int(user_id) <= 0:
-        raise ValueError("Telegram user ID must be positive")
-    return f"telegram-{int(user_id)}@users.invalid"
+def load_configuration(environ: Mapping[str, str] | None = None) -> TelegramWebhookConfig:
+    if environ is None:
+        from imperial_rag.env import load_project_env
+
+        load_project_env()
+    values = os.environ if environ is None else environ
+    config = TelegramWebhookConfig(
+        bot_token=_required(values, "TELEGRAM_BOT_TOKEN"),
+        allowed_user_ids=parse_allowed_user_ids(values.get("IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS")),
+        webhook_url=_required(values, "TELEGRAM_WEBHOOK_URL").rstrip("/"),
+        webhook_secret=_validated_secret(values, "TELEGRAM_WEBHOOK_SECRET"),
+        backend_url=_required(values, "IMPERIAL_RAG_TELEGRAM_BACKEND_URL").rstrip("/"),
+        service_token=_validated_secret(values, "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN"),
+    )
+    webhook_url = _https_url(config.webhook_url, "TELEGRAM_WEBHOOK_URL")
+    backend_url = _https_url(config.backend_url, "IMPERIAL_RAG_TELEGRAM_BACKEND_URL")
+    if webhook_url.path != "/telegram/webhook":
+        raise ValueError("TELEGRAM_WEBHOOK_URL must end with /telegram/webhook")
+    if backend_url.path not in {"", "/"}:
+        raise ValueError("IMPERIAL_RAG_TELEGRAM_BACKEND_URL must be an HTTPS origin without a path")
+    return config
 
 
 def split_telegram_text(text: str, limit: int = MAX_TELEGRAM_TEXT_LENGTH) -> list[str]:
@@ -88,255 +88,237 @@ def split_telegram_text(text: str, limit: int = MAX_TELEGRAM_TEXT_LENGTH) -> lis
     return chunks
 
 
-async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_private(update):
-        return
-    message = update.effective_message
-    if message is None:
-        return
-    if not _is_allowed(update, _state(context)):
-        await message.reply_text(ACCESS_DENIED_TEXT)
-        return
-    await message.reply_text(WELCOME_TEXT)
-
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_private(update):
-        return
-    message = update.effective_message
-    user = update.effective_user
-    if message is None or user is None:
-        return
-    state = _state(context)
-    if not _is_allowed(update, state):
-        await message.reply_text(ACCESS_DENIED_TEXT)
-        return
-    question = str(message.text or "").strip()
-    if not question:
-        return
-
-    user_email = telegram_user_email(user.id)
-    conversation = _conversation_for_question(state.chat_store, user_email, question)
-    user_message = state.chat_store.add_message(user_email, conversation.id, "user", question)
-    if not state.chat_store.claim_assistant_response(user_email, conversation.id, user_message.id):
-        return
-
-    user_hash = trace_user_id_from_email(user_email)
-    started_at = perf_counter()
-    try:
-        with phoenix_trace_context(
-            conversation.phoenix_session_id,
-            user_id=user_hash,
-            metadata={"entrypoint": "telegram"},
-            tags=["imperial-rag", "telegram"],
-        ):
-            result = await asyncio.to_thread(state.runtime.query, question)
-    except Exception as exc:
-        log_failure(
-            "telegram_query",
-            exc,
-            component="telegram",
-            duration_ms=_duration_ms(started_at),
-            phoenix_session_id=conversation.phoenix_session_id,
-            session_id=conversation.phoenix_session_id,
-            user_hash=user_hash,
-        )
-        assistant_message = _build_query_failure_message(exc)
-        assistant_message["error"]["type"] = "telegram_query_error"
-        _persist_assistant_message(state.chat_store, user_email, conversation.id, assistant_message)
-        await _send_text(message, assistant_message["content"])
-        return
-
-    result = result if isinstance(result, dict) else {"answer": getattr(result, "answer", str(result))}
-    assistant_message = _build_assistant_message(result, state.settings)
-    _persist_assistant_message(state.chat_store, user_email, conversation.id, assistant_message)
-    await _send_text(message, assistant_message["content"])
-    await _send_sources(message, result.get("sources") or result.get("citations") or [])
-    await _send_documents(message, result.get("evidence") or result.get("retrieved_documents") or [], state.settings)
-    log_event(
-        "imperial_rag.telegram_query",
-        operation="telegram_query",
-        status="success",
-        component="telegram",
-        duration_ms=_duration_ms(started_at),
-        phoenix_session_id=conversation.phoenix_session_id,
-        session_id=conversation.phoenix_session_id,
-        user_hash=user_hash,
-        **_query_log_fields(result),
+def create_app(config: TelegramWebhookConfig | None = None) -> Starlette:
+    application = Starlette(
+        routes=[
+            Route("/healthz", healthz, methods=["GET"]),
+            Route("/telegram/webhook", telegram_webhook, methods=["POST"]),
+        ],
+        lifespan=_lifespan,
     )
-
-
-async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    error = context.error
-    if isinstance(error, BaseException):
-        log_failure("telegram_update", error, component="telegram")
-
-
-def create_application(
-    token: str,
-    state: TelegramBotState,
-    ready: Event,
-) -> Application[Any, Any, Any, Any, Any, Any]:
-    application = (
-        Application.builder()
-        .token(token)
-        # ponytail: sequential updates; add bounded per-user concurrency only if queue latency becomes measurable.
-        .concurrent_updates(False)
-        .post_init(_mark_ready)
-        .post_shutdown(_mark_not_ready)
-        .build()
-    )
-    application.bot_data[STATE_KEY] = state
-    application.bot_data[READY_KEY] = ready
-    application.add_handler(CommandHandler("start", handle_start))
-    application.add_handler(CommandHandler("help", handle_start))
-    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, handle_text))
-    application.add_error_handler(handle_error)
+    application.state.config = config
+    application.state.ready = False
+    application.state.backend_client = None
+    application.state.telegram_client = None
     return application
 
 
-def start_health_server(
-    ready: Event,
-    host: str = "0.0.0.0",
-    port: int = 8501,
-) -> ThreadingHTTPServer:
-    handler = _health_handler(ready)
-    server = ThreadingHTTPServer((host, port), handler)
-    Thread(target=server.serve_forever, name="telegram-health", daemon=True).start()
-    return server
+async def healthz(request: Request) -> Response:
+    return PlainTextResponse("ok\n" if request.app.state.ready else "not ready\n", status_code=200 if request.app.state.ready else 503)
 
 
-def main() -> None:
-    from imperial_rag.answering.runtime import create_runtime
-    from imperial_rag.config import Settings, apply_active_index_pointer
-    from imperial_rag.env import load_project_env
-    from imperial_rag.observability import configure_observability
-    from imperial_rag.observability.phoenix import configure_phoenix_tracing
-
-    load_project_env()
-    token, allowed_user_ids = load_bot_configuration()
-    settings = apply_active_index_pointer(Settings())
-    configure_observability(settings)
-    configure_phoenix_tracing(settings)
-    chat_store = ChatHistoryStore(Path(settings.chat_history_db_path))
-    chat_store.initialize()
-    state = TelegramBotState(
-        settings=settings,
-        runtime=create_runtime(settings),
-        chat_store=chat_store,
-        allowed_user_ids=allowed_user_ids,
-    )
-    ready = Event()
-    health_server = start_health_server(ready)
-    application = create_application(token, state, ready)
+async def telegram_webhook(request: Request) -> Response:
+    config = _config(request.app)
+    supplied_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not compare_digest(supplied_secret, config.webhook_secret):
+        return PlainTextResponse("forbidden\n", status_code=403)
     try:
-        application.run_polling(allowed_updates=["message"])
-    finally:
-        ready.clear()
-        health_server.shutdown()
-        health_server.server_close()
+        payload = await _json_body(request)
+        job = _job_from_update(payload, config.allowed_user_ids)
+    except PayloadError as exc:
+        return PlainTextResponse(f"{exc}\n", status_code=exc.status_code)
+    if job is None:
+        return PlainTextResponse("ignored\n")
 
-
-async def _mark_ready(application: Application[Any, Any, Any, Any, Any, Any]) -> None:
-    application.bot_data[READY_KEY].set()
-
-
-async def _mark_not_ready(application: Application[Any, Any, Any, Any, Any, Any]) -> None:
-    application.bot_data[READY_KEY].clear()
-
-
-def _state(context: ContextTypes.DEFAULT_TYPE) -> TelegramBotState:
-    return context.application.bot_data[STATE_KEY]
-
-
-def _is_private(update: Update) -> bool:
-    chat = update.effective_chat
-    return chat is not None and chat.type == ChatType.PRIVATE
-
-
-def _is_allowed(update: Update, state: TelegramBotState) -> bool:
-    user = update.effective_user
-    return user is not None and user.id in state.allowed_user_ids
-
-
-def _conversation_for_question(chat_store: ChatHistoryStore, user_email: str, question: str) -> Any:
-    conversations = chat_store.list_conversations(user_email)
-    if conversations:
-        return conversations[0]
-    return chat_store.create_conversation(user_email, title=question)
-
-
-def _persist_assistant_message(
-    chat_store: ChatHistoryStore,
-    user_email: str,
-    conversation_id: str,
-    message: dict[str, Any],
-) -> None:
-    chat_store.add_message(
-        user_email,
-        conversation_id,
-        "assistant",
-        str(message["content"]),
-        payload=_chat_message_payload(message),
-    )
-
-
-async def _send_text(message: Any, text: str) -> None:
-    for chunk in split_telegram_text(text) or ["Ответ отсутствует."]:
-        await message.reply_text(chunk)
-
-
-async def _send_sources(message: Any, sources: Any) -> None:
-    normalized = [str(source) for source in sources if str(source).strip()]
-    if normalized:
-        await _send_text(message, "Источники:\n" + "\n".join(normalized))
-
-
-async def _send_documents(message: Any, evidence: list[Any], settings: Any) -> None:
-    unavailable: list[str] = []
-    for index, group in enumerate(build_retrieved_file_groups(evidence, settings)):
-        path = group.download_path
-        try:
-            if not group.can_download or path is None or path.stat().st_size > FILE_DOWNLOAD_BYTE_LIMIT:
-                unavailable.append(group.display_path)
-                continue
-            with path.open("rb") as source:
-                await message.reply_document(
-                    document=source,
-                    filename=group.download_name,
-                    caption=group.display_path[:1024],
-                )
-        except Exception as exc:
-            log_failure("telegram_source_send", exc, component="telegram", source_index=index)
-            unavailable.append(group.display_path)
-    if unavailable:
-        await _send_text(
-            message,
-            "\n".join(SOURCE_UNAVAILABLE_TEXT.format(name=name) for name in unavailable),
+    client = request.app.state.backend_client
+    try:
+        response = await client.post(
+            f"{config.backend_url}/internal/telegram/jobs",
+            headers={"Authorization": f"Bearer {config.service_token}"},
+            json=job,
         )
+    except httpx.HTTPError:
+        return PlainTextResponse("backend unavailable\n", status_code=503)
+    if response.status_code not in {200, 202}:
+        return PlainTextResponse("backend rejected job\n", status_code=503)
+    if response.status_code == 202:
+        try:
+            await _telegram_request(request.app.state.telegram_client, config, "sendMessage", {"chat_id": job["user_id"], "text": ACCEPTED_TEXT})
+        except RuntimeError:
+            return PlainTextResponse("telegram unavailable\n", status_code=503)
+    return PlainTextResponse("ok\n")
 
 
-def _health_handler(ready: Event) -> type[BaseHTTPRequestHandler]:
-    class HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            if self.path != "/healthz":
-                self.send_error(404)
-                return
-            status = 200 if ready.is_set() else 503
-            self.send_response(status)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(b"ok\n" if status == 200 else b"not ready\n")
+async def deliver_once(application: Starlette) -> bool:
+    config = _config(application)
+    response = await application.state.backend_client.post(
+        f"{config.backend_url}/internal/telegram/deliveries/claim",
+        headers={"Authorization": f"Bearer {config.service_token}"},
+        json={},
+    )
+    if response.status_code == 204:
+        return False
+    if response.status_code != 200:
+        raise RuntimeError("backend delivery claim failed")
+    delivery = response.json()
+    update_id = _positive_int(delivery.get("update_id"), "update_id")
+    user_id = _positive_int(delivery.get("user_id"), "user_id")
+    messages = delivery.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise RuntimeError("backend returned an invalid delivery")
+    for message in messages:
+        if not isinstance(message, str) or not message or len(message) > MAX_TELEGRAM_TEXT_LENGTH:
+            raise RuntimeError("backend returned an invalid Telegram message")
+        await _telegram_request(
+            application.state.telegram_client,
+            config,
+            "sendMessage",
+            {"chat_id": user_id, "text": message},
+        )
+    completion = await application.state.backend_client.post(
+        f"{config.backend_url}/internal/telegram/deliveries/{update_id}/complete",
+        headers={"Authorization": f"Bearer {config.service_token}"},
+        json={},
+    )
+    if completion.status_code != 200:
+        raise RuntimeError("backend delivery completion failed")
+    return True
 
-        def log_message(self, format: str, *args: Any) -> None:
-            return
 
-    return HealthHandler
+@asynccontextmanager
+async def _lifespan(application: Starlette) -> AsyncIterator[None]:
+    application.state.config = application.state.config or load_configuration()
+    async with httpx.AsyncClient(timeout=15) as client:
+        application.state.backend_client = client
+        application.state.telegram_client = client
+        await _telegram_request(
+            client,
+            _config(application),
+            "setWebhook",
+            {
+                "url": _config(application).webhook_url,
+                "allowed_updates": ["message"],
+                "drop_pending_updates": False,
+                "secret_token": _config(application).webhook_secret,
+            },
+        )
+        application.state.ready = True
+        task = asyncio.create_task(_delivery_loop(application))
+        try:
+            yield
+        finally:
+            application.state.ready = False
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
-def _duration_ms(started_at: float) -> int:
-    return max(0, round((perf_counter() - started_at) * 1000))
+async def _delivery_loop(application: Starlette) -> None:
+    from imperial_rag.observability import log_failure
+
+    while True:
+        try:
+            await deliver_once(application)
+        except Exception as exc:
+            log_failure("telegram_delivery", exc, component="telegram-render")
+        await asyncio.sleep(2)
 
 
-if __name__ == "__main__":
-    main()
+async def _telegram_request(client: Any, config: TelegramWebhookConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        response = await client.post(f"https://api.telegram.org/bot{config.bot_token}/{method}", json=payload)
+    except httpx.HTTPError as exc:
+        raise RuntimeError("Telegram Bot API request failed") from exc
+    if response.status_code != 200:
+        raise RuntimeError("Telegram Bot API request failed")
+    data = response.json()
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        raise RuntimeError("Telegram Bot API request failed")
+    return data
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().casefold() != "application/json":
+        raise PayloadError("content type must be application/json", 415)
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            parsed_content_length = int(content_length)
+        except ValueError as exc:
+            raise PayloadError("invalid content length", 400) from exc
+        if parsed_content_length > MAX_HTTP_BODY_BYTES:
+            raise PayloadError("request body is too large", 413)
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_HTTP_BODY_BYTES:
+            raise PayloadError("request body is too large", 413)
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PayloadError("request body must be valid JSON", 400) from exc
+    if not isinstance(payload, dict):
+        raise PayloadError("request body must be a JSON object", 400)
+    return payload
+
+
+def _job_from_update(payload: dict[str, Any], allowed_user_ids: frozenset[int]) -> dict[str, Any] | None:
+    update_id = _positive_int(payload.get("update_id"), "update_id")
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        return None
+    chat = message.get("chat")
+    user = message.get("from")
+    if not isinstance(chat, dict) or chat.get("type") != "private" or not isinstance(user, dict):
+        return None
+    user_id = _positive_int(user.get("id"), "user_id")
+    if user_id not in allowed_user_ids:
+        return None
+    question = message.get("text")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    question = question.strip()
+    if len(question) > MAX_TELEGRAM_TEXT_LENGTH:
+        raise PayloadError("question is too long", 400)
+    return {"update_id": update_id, "user_id": user_id, "question": question}
+
+
+def _positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool):
+        raise PayloadError(f"{name} must be a positive integer", 400)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PayloadError(f"{name} must be a positive integer", 400) from exc
+    if parsed <= 0:
+        raise PayloadError(f"{name} must be a positive integer", 400)
+    return parsed
+
+
+def _required(values: Mapping[str, str], name: str) -> str:
+    value = values.get(name, "").strip()
+    if not value:
+        raise ValueError(f"{name} is required")
+    return value
+
+
+def _validated_secret(values: Mapping[str, str], name: str) -> str:
+    value = _required(values, name)
+    if re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value) is None:
+        raise ValueError(f"{name} must contain 32-256 URL-safe characters")
+    return value
+
+
+def _https_url(value: str, name: str) -> Any:
+    parsed = urlsplit(value)
+    if parsed.scheme.casefold() != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError(f"{name} must use HTTPS without embedded credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"{name} must not contain a query or fragment")
+    return parsed
+
+
+def _config(application: Starlette) -> TelegramWebhookConfig:
+    config = application.state.config
+    if not isinstance(config, TelegramWebhookConfig):
+        raise RuntimeError("Telegram webhook configuration is unavailable")
+    return config
+
+
+class PayloadError(ValueError):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+app = create_app()

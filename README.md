@@ -12,7 +12,7 @@ The project is designed to run on one trusted machine. Source files stay in the 
 - Builds an Elasticsearch keyword index for exact terminology and Russian/company-name matching.
 - Optionally indexes chunks into Qdrant for semantic vector retrieval.
 - Uses DashScope/Qwen by default for chat, embeddings, OCR, and reranking when `DASHSCOPE_API_KEY` is configured.
-- Produces strict citation-based answers through a CLI and a private Telegram bot.
+- Produces strict citation-based answers through a CLI, Streamlit, and a private Telegram webhook.
 - Returns a structured `no_relevant_documents` error without source links when retrieval is empty or the strict answer model rejects the retrieved evidence as insufficient.
 - Supports deterministic evals, optional Ragas metrics, local structured logs, and Phoenix traces.
 
@@ -26,7 +26,8 @@ documents/
   -> Elasticsearch keyword index
   -> optional Qdrant vector collection
   -> hybrid retrieval, reranking, and strict answer generation
-  -> scripts/query.py or Telegram bot
+  -> scripts/query.py, Streamlit, or Russian Telegram job worker
+  -> answer text and source labels through Render to Telegram
   -> optional Phoenix traces and eval experiments
 ```
 
@@ -38,7 +39,7 @@ Core code lives in `src/imperial_rag/`:
 - `answering/`: query runtime, LangGraph workflows, and strict answer formatting.
 - `integrations/`: DashScope/Qwen provider adapters and legacy provider escape hatches.
 - `observability/`: structured logs, event logs, Phoenix tracing, and privacy controls.
-- `app/`: Telegram delivery, retained Streamlit UI/auth, and local chat history.
+- `app/`: Streamlit UI/auth, the Render Telegram adapter, the Russian job API/worker, and local chat history.
 
 ## Requirements
 
@@ -64,9 +65,9 @@ Create local configuration:
 cp .env.example .env
 ```
 
-Fill in `DASHSCOPE_API_KEY`, `TELEGRAM_BOT_TOKEN`, and
-`IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`. The allowlist is a comma-separated set of trusted numeric
-Telegram user IDs. The bot ignores group chats and never runs retrieval for users outside the allowlist.
+Fill in `DASHSCOPE_API_KEY` and the Streamlit credentials. Telegram additionally needs the six variables
+listed under [Render Telegram deployment](#render-telegram-deployment). The allowlist is a comma-separated
+set of trusted numeric Telegram user IDs. Both HTTP boundaries reject groups and users outside that list.
 
 Start Elasticsearch for keyword retrieval:
 
@@ -88,23 +89,21 @@ uv run python scripts/query.py "question text"
 
 Questions that are unrelated to the indexed corpus, or whose retrieved chunks do not support an answer, return the strict refusal text. The result carries `error.type=no_relevant_documents`, reports `retrieval.final_evidence=0`, and omits citations and retrieved-file links so weak matches are not presented as sources.
 
-Run the Telegram bot:
+Run the website:
 
 ```bash
-uv run python -m imperial_rag.app.telegram
+uv run python -m streamlit run src/imperial_rag/app/web.py --server.address 127.0.0.1 --server.port 8501
 ```
 
-Verify the bot process is ready:
+Run the Russian Telegram API and sequential RAG worker:
 
 ```bash
-curl -fsS http://127.0.0.1:8501/healthz
+uv run uvicorn imperial_rag.app.telegram_backend:app --host 127.0.0.1 --port 8502
 ```
 
-Send `/start` to the bot from an allowlisted Telegram account, then send a document question. The bot
-persists the exchange in `.imperial_rag/chat_history.sqlite3`, returns citation labels, and uploads each
-unique retrieved source file that passes the existing documents-root and 50 MB checks. Those full source
-files leave the trusted host and are stored by Telegram. The former Streamlit entrypoint remains at
-`src/imperial_rag/app/web.py` for rollback but is not served by the deployed `app` service.
+The backend persists Telegram jobs and chat history in `.imperial_rag/chat_history.sqlite3`. It sends only
+answer text and textual source labels to Render; source files, retrieved chunks, documents, indexes, and
+Phoenix traces remain on the Russian host.
 
 ## Vector Search
 
@@ -128,7 +127,9 @@ uv run python scripts/ingest.py --workspace-root /Users/danil/Public/imperial --
 
 ## Private Compose Deployment
 
-The private Compose stack runs the Telegram bot, Elasticsearch, Kibana, Qdrant, and Phoenix on one host. Published ports are bound to `127.0.0.1`; the bot itself reaches the Telegram Bot API over outbound HTTPS.
+The private Compose stack runs Streamlit, the Telegram job API/worker, Elasticsearch, Kibana, Qdrant, and
+Phoenix on the Russian host. Every published port remains bound to `127.0.0.1`. Render handles Telegram
+webhooks and response delivery; it never mounts the private corpus or generated state.
 
 Elasticsearch, Kibana, and Phoenix in this stack are unauthenticated by default and are safe only while bound to `127.0.0.1` on a trusted host. Do not bind them to `0.0.0.0`, expose them through a public proxy, or share broad tunnels unless authentication and TLS are added.
 
@@ -139,18 +140,23 @@ cp .env.example .env
 mkdir -p documents .imperial_rag/qdrant_storage
 ```
 
-Fill `.env` with `DASHSCOPE_API_KEY`, `TELEGRAM_BOT_TOKEN`, `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`, and any model or tracing settings needed on that machine. Host-local commands can keep the `localhost` defaults from `.env.example`; `compose.yaml` overrides service endpoints inside containers.
+Fill `.env` with `DASHSCOPE_API_KEY`, Streamlit credentials,
+`IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`, and `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, plus any model or
+tracing settings needed on that machine. The service token must be 32–256 URL-safe letters, digits,
+underscores, or hyphens and must match Render. Host-local commands can keep the `localhost` defaults from
+`.env.example`; `compose.yaml` overrides service endpoints inside containers.
 
 Start the runtime stack:
 
 ```bash
-docker compose up -d elasticsearch qdrant phoenix app kibana
+docker compose up -d elasticsearch qdrant phoenix app telegram-api kibana
 ```
 
 Verify local endpoints:
 
 ```bash
-curl -fsS http://127.0.0.1:8501/healthz
+curl -fsS http://127.0.0.1:8501/_stcore/health
+curl -fsS -H "Authorization: Bearer $IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN" http://127.0.0.1:8502/healthz
 curl -fsS http://127.0.0.1:9200
 curl -fsS http://127.0.0.1:5601/api/status
 curl -fsS http://127.0.0.1:6333/healthz
@@ -163,18 +169,66 @@ Run ingestion inside Compose when documents change:
 docker compose --profile ingest up ingest
 ```
 
-### Automatic application deployment
+### Russian HTTPS boundary
 
-A successful GitHub Actions `Quality` job for a push to protected `main` deploys that exact commit to the production host over Tailscale and command-restricted SSH. The deployment rebuilds and replaces only the `app` service:
+Expose only `/internal/telegram/` from the existing authenticated HTTPS reverse proxy to
+`http://127.0.0.1:8502`. Keep `/healthz` local and do not proxy Qdrant, Elasticsearch, Kibana, Phoenix,
+SQLite, `documents/`, or `.imperial_rag/`. For Nginx, the application location is:
 
-```bash
-docker compose build app
-docker compose up -d --no-deps app
+```nginx
+location /internal/telegram/ {
+    proxy_pass http://127.0.0.1:8502;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+}
 ```
 
-The deploy command waits for the container health check and `http://127.0.0.1:8501/healthz`. The endpoint becomes ready only after Telegram accepts the bot token during application initialization. A failed build leaves the existing container running. A failed startup or health check restores the previously healthy commit and reports a failed GitHub deployment.
+The API independently requires `Authorization: Bearer <IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN>` on every
+endpoint and enforces JSON content type, a 16 KiB body limit, positive IDs, and the numeric allowlist.
 
-Automatic deployment does not run ingestion, restart Qdrant, Elasticsearch, Kibana, or Phoenix, or modify `.env`, `documents/`, `.imperial_rag/`, or persistent volumes. Apply corpus ingestion and dependency-service configuration changes explicitly as separate operator actions.
+### Render Telegram deployment
+
+`render.yaml` defines one paid `standard` Docker Web Service in Frankfurt, binds Uvicorn to
+`0.0.0.0:$PORT`, checks `/healthz`, and disables automatic deploys. Enter these values in Render; the
+Blueprint deliberately contains no secret values:
+
+- `TELEGRAM_BOT_TOKEN`
+- `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`
+- `TELEGRAM_WEBHOOK_URL` (the exact Render HTTPS URL ending in `/telegram/webhook`)
+- `TELEGRAM_WEBHOOK_SECRET` (32–256 URL-safe letters, digits, underscores, or hyphens)
+- `IMPERIAL_RAG_TELEGRAM_BACKEND_URL` (the Russian HTTPS origin, without the internal path)
+- `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN` (the same strong value as on the Russian host)
+
+At startup, Render registers the webhook with `allowed_updates=["message"]`,
+`drop_pending_updates=false`, and the secret-token header. Accepted updates are idempotently stored in
+Russia before Render returns `200`. The Russian worker processes jobs sequentially; Render leases completed
+responses every two seconds and acknowledges delivery after Telegram accepts all message chunks. Expired
+processing and delivery leases recover after restarts. Delivery is at least once, so a reply can rarely be
+duplicated if Telegram accepts it but the completion acknowledgement fails.
+
+Questions, answers, and source labels transit Render and Telegram. Source documents and retrieved evidence
+do not. Deploy the Russian API and HTTPS route first, then deploy Render. Production deployment and webhook
+activation require explicit operator authorization.
+
+### Automatic application deployment
+
+A successful GitHub Actions `Quality` job for a push to protected `main` deploys that exact commit to the
+production host over Tailscale and command-restricted SSH. The deployment builds and replaces Streamlit and
+the Telegram API as one rollback unit:
+
+```bash
+docker compose build app telegram-api
+docker compose up -d --no-deps app telegram-api
+```
+
+The deploy command waits for both container health checks and
+`http://127.0.0.1:8501/_stcore/health`. A failed build leaves both existing containers running. A failed
+startup or health check restores both services to the previously healthy commit and reports a failed GitHub
+deployment.
+
+Automatic deployment does not deploy Render, register the webhook, run ingestion, restart Qdrant,
+Elasticsearch, Kibana, or Phoenix, or modify `.env`, `documents/`, `.imperial_rag/`, or persistent volumes.
+Apply those operator actions explicitly.
 
 The production GitHub environment owns `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE`, `DEPLOY_SSH_KEY`, and `DEPLOY_KNOWN_HOSTS`. The Tailscale identity uses `tag:github-ci` and may reach only SSH on the production node. Deployment audit records and failure logs stay private on the server under `/home/server1/.local/state/imperial-deploy/`.
 
@@ -192,6 +246,7 @@ Inspect logs:
 
 ```bash
 docker compose logs -f app
+docker compose logs -f telegram-api
 docker compose logs -f ingest
 ```
 
@@ -236,7 +291,9 @@ uv run python scripts/run_all_evals.py
 
 | Surface | Default | Purpose |
 | --- | --- | --- |
-| Telegram bot | outbound Bot API; local `http://127.0.0.1:8501/healthz` | Private chat delivery and readiness |
+| Streamlit website | `http://127.0.0.1:8501` | Existing private website |
+| Telegram webhook | Render HTTPS `/telegram/webhook` | Stateless validation, submission, and Telegram delivery |
+| Telegram job API | local `http://127.0.0.1:8502`; proxied only at `/internal/telegram/` | Durable jobs and sequential RAG work |
 | Elasticsearch | `http://localhost:9200` | Keyword search index `imperial_keyword_chunks` |
 | Kibana | `http://127.0.0.1:5601` | Local inspection of Elasticsearch data |
 | Qdrant | `http://localhost:6333` | Optional vector collection `imperial_chunks_qwen` |
@@ -247,6 +304,7 @@ uv run python scripts/run_all_evals.py
 | `.imperial_rag/active-ingestion.json` | local file | Atomically replaced pointer to the promoted artifacts and search aliases |
 | `.imperial_rag/auth.sqlite3` | local file | Retained legacy Streamlit users and browser sessions |
 | `.imperial_rag/chat_history.sqlite3` | local file | Local chat history |
+| `telegram_jobs` | table in chat-history SQLite | Durable Telegram job, result, attempt, and lease state |
 
 Use the live files, database tables, and service health checks as source of truth for generated state. Snapshot counts in documentation drift quickly after corpus rebuilds.
 
@@ -262,7 +320,9 @@ Important settings are documented in `.env.example`.
 | `IMPERIAL_RAG_WORKSPACE_ROOT` | Workspace root; defaults to this checkout in host runs and `/app` in Compose |
 | `TELEGRAM_BOT_TOKEN` | Required Telegram Bot API token; keep only in local/server environment configuration |
 | `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` | Required comma-separated allowlist of trusted numeric Telegram user IDs |
-| `IMPERIAL_RAG_ADMIN_EMAIL` / `IMPERIAL_RAG_ADMIN_PASSWORD` | Retained legacy Streamlit admin access |
+| `TELEGRAM_WEBHOOK_URL` / `TELEGRAM_WEBHOOK_SECRET` | Exact Render webhook URL and strong Telegram secret-token value |
+| `IMPERIAL_RAG_TELEGRAM_BACKEND_URL` / `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN` | Russian HTTPS origin and shared bearer secret |
+| `IMPERIAL_RAG_ADMIN_EMAIL` / `IMPERIAL_RAG_ADMIN_PASSWORD` | Streamlit admin access |
 | `ELASTICSEARCH_URL` / `ELASTICSEARCH_INDEX` | Keyword search endpoint and index |
 | `QDRANT_URL` / `QDRANT_COLLECTION` | Optional vector search endpoint and collection |
 | `PHOENIX_CLIENT_ENDPOINT` / `PHOENIX_COLLECTOR_ENDPOINT` | Phoenix UI/client endpoint and OTLP trace collector |
@@ -380,7 +440,8 @@ evals/questions.jsonl      Evaluation questions
 docs/superpowers/          Planning and implementation notes
 documents/                 Private source corpus
 .imperial_rag/             Generated private local state
-compose.yaml               Telegram bot, Elasticsearch, Kibana, Qdrant, and Phoenix stack
+compose.yaml               Streamlit, Telegram backend, Elasticsearch, Kibana, Qdrant, and Phoenix stack
+render.yaml                Stateless Render Telegram Web Service Blueprint
 Dockerfile                 Compose app image
 pyproject.toml             Python package, dependency, and tool configuration
 ```
@@ -393,10 +454,11 @@ If vector search is unavailable, start Qdrant and rerun ingestion with `--index-
 
 If model-backed chat, OCR, embeddings, reranking, or Ragas metrics fail, confirm `DASHSCOPE_API_KEY` is present in `.env` or the process environment.
 
-If the Telegram bot is unhealthy, confirm `TELEGRAM_BOT_TOKEN` and
-`IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`, then inspect `docker compose logs --tail=200 app`. A `200`
-response from `/healthz` proves that the process initialized with Telegram; it does not prove that Qwen,
-Elasticsearch, or Qdrant will answer a new question.
+If the Telegram backend is unhealthy, confirm `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` and
+`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, then inspect `docker compose logs --tail=200 telegram-api`. An
+authenticated `200` from local port `8502` proves that the API and worker initialized; it does not prove
+that Qwen, Elasticsearch, or Qdrant will answer a new question. On Render, verify `/healthz` and Telegram
+`getWebhookInfo`, including the exact URL and an empty `last_error_message`.
 
 If Phoenix validation fails, start Phoenix, run a fresh traced query with a stable `IMPERIAL_RAG_TRACE_RUN_ID`, then validate that run ID.
 

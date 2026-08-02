@@ -209,7 +209,7 @@ def test_dirty_deployment_worktree_is_rejected(tmp_path: Path) -> None:
     assert "git fetch" not in _commands(fake_state)
 
 
-def test_successful_deploy_replaces_only_the_app(tmp_path: Path) -> None:
+def test_successful_deploy_replaces_the_website_and_telegram_api(tmp_path: Path) -> None:
     env, _, state_dir, fake_state = _fake_environment(tmp_path)
 
     result = _run(env)
@@ -218,8 +218,8 @@ def test_successful_deploy_replaces_only_the_app(tmp_path: Path) -> None:
     assert "Production deployment is healthy." in result.stdout
     assert _current_sha(fake_state) == NEW_SHA
     commands = _commands(fake_state)
-    assert "docker compose build app" in commands
-    assert "docker compose up -d --no-deps app" in commands
+    assert "docker compose build app telegram-api" in commands
+    assert "docker compose up -d --no-deps app telegram-api" in commands
     assert "docker compose down" not in commands
     assert "ingest" not in commands
     assert (state_dir / "last_good_sha").read_text(encoding="utf-8").strip() == NEW_SHA
@@ -236,8 +236,8 @@ def test_interrupted_checkout_redeploys_and_preserves_the_last_healthy_rollback(
 
     assert result.returncode == 0
     commands = _commands(fake_state)
-    assert "docker compose build app" in commands
-    assert "docker compose up -d --no-deps app" in commands
+    assert "docker compose build app telegram-api" in commands
+    assert "docker compose up -d --no-deps app telegram-api" in commands
     assert (fake_state / "running_sha").read_text(encoding="utf-8").strip() == NEW_SHA
     assert (state_dir / "previous_good_sha").read_text(encoding="utf-8").strip() == OLD_SHA
 
@@ -255,7 +255,7 @@ def test_stopped_current_application_is_rebuilt_instead_of_reported_healthy(tmp_
     assert result.returncode == 0
     assert "already runs" not in result.stdout
     assert "rebuilding it" in result.stdout
-    assert "docker compose build app" in _commands(fake_state)
+    assert "docker compose build app telegram-api" in _commands(fake_state)
     assert (state_dir / "previous_good_sha").read_text(encoding="utf-8").strip() == OLD_SHA
 
 
@@ -286,7 +286,7 @@ def test_build_failure_restores_checkout_without_replacing_app(tmp_path: Path) -
     assert "running container was not replaced" in result.stderr
     assert _current_sha(fake_state) == OLD_SHA
     commands = _commands(fake_state)
-    assert commands.count("docker compose build app") == 1
+    assert commands.count("docker compose build app telegram-api") == 1
     assert "docker compose up" not in commands
     assert "result=failed" in (state_dir / "deployments.log").read_text(encoding="utf-8")
 
@@ -303,8 +303,8 @@ def test_health_failure_rolls_back_and_keeps_private_logs_local(tmp_path: Path) 
     assert "PRIVATE CONTAINER LOG CONTENT" not in result.stderr
     assert _current_sha(fake_state) == OLD_SHA
     commands = _commands(fake_state)
-    assert commands.count("docker compose build app") == 2
-    assert commands.count("docker compose up -d --no-deps app") == 2
+    assert commands.count("docker compose build app telegram-api") == 2
+    assert commands.count("docker compose up -d --no-deps app telegram-api") == 2
     failure_log = state_dir / f"failure-{NEW_SHA}.log"
     assert "PRIVATE CONTAINER LOG CONTENT" in failure_log.read_text(encoding="utf-8")
     assert failure_log.stat().st_mode & 0o777 == 0o600
@@ -321,8 +321,8 @@ def test_start_failure_rolls_back_to_the_previous_app(tmp_path: Path) -> None:
     assert "application start failed; production was restored" in result.stderr
     assert _current_sha(fake_state) == OLD_SHA
     commands = _commands(fake_state)
-    assert commands.count("docker compose build app") == 2
-    assert commands.count("docker compose up -d --no-deps app") == 2
+    assert commands.count("docker compose build app telegram-api") == 2
+    assert commands.count("docker compose up -d --no-deps app telegram-api") == 2
     assert "result=restored" in (state_dir / "deployments.log").read_text(encoding="utf-8")
 
 
@@ -404,8 +404,8 @@ def test_workflow_deploys_only_green_main_pushes_over_tailscale() -> None:
     assert "workflow_run:" not in workflow
 
 
-def test_deploy_health_check_uses_telegram_readiness_endpoint() -> None:
+def test_deploy_health_check_requires_both_services_and_streamlit_readiness() -> None:
     script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
-    assert "DEFAULT_HEALTH_URL=http://127.0.0.1:8501/healthz" in script
-    assert "/_stcore/health" not in script
+    assert "DEFAULT_HEALTH_URL=http://127.0.0.1:8501/_stcore/health" in script
+    assert "deployment_services=(app telegram-api)" in script
