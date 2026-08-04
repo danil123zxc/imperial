@@ -46,18 +46,20 @@ def _validation_citations(documents: list[Document]) -> list[str]:
     return [*format_citations(documents), *_legacy_citations(documents)]
 
 
-def format_citations(documents: list[Document]) -> list[str]:
+def format_citations(documents: list[Document], indices: list[int] | None = None) -> list[str]:
     citations: list[str] = []
-    for index, document in enumerate(documents):
+    for index in range(len(documents)) if indices is None else indices:
+        document = documents[index]
         marker = _short_citation_marker(index)
         source_type = document.metadata.get("source_type", "unknown")
         citations.append(f"{marker} {source_type}")
     return citations
 
 
-def format_sources(documents: list[Document]) -> list[str]:
+def format_sources(documents: list[Document], indices: list[int] | None = None) -> list[str]:
     sources: list[str] = []
-    for index, document in enumerate(documents):
+    for index in range(len(documents)) if indices is None else indices:
+        document = documents[index]
         marker = _short_citation_marker(index)
         source = (
             document.metadata.get("file_path")
@@ -84,6 +86,24 @@ def format_sources(documents: list[Document]) -> list[str]:
         suffix = f" {' '.join(details)}" if details else ""
         sources.append(f"{marker} {source}{suffix}")
     return sources
+
+
+def cited_document_indices(answer: str, documents: list[Document]) -> list[int]:
+    marker_indices: dict[str, set[int]] = {}
+    for index, document in enumerate(documents):
+        markers = (_short_citation_marker(index), f"[{_doc_citation_marker(document)}]")
+        for marker in markers:
+            marker_indices.setdefault(_normalize_marker(marker), set()).add(index)
+    cited = {
+        index
+        for marker in _markers_in_text(answer)
+        for index in marker_indices.get(_normalize_marker(marker), set())
+    }
+    return sorted(cited)
+
+
+def cited_documents(answer: str, documents: list[Document]) -> list[Document]:
+    return [documents[index] for index in cited_document_indices(answer, documents)]
 
 
 def build_context(documents: list[Document]) -> str:

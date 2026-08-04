@@ -12,6 +12,8 @@ __all__ = [
     "build_evidence_prompt",
     "build_strict_answer_chain",
     "build_strict_messages",
+    "cited_document_indices",
+    "cited_documents",
     "citation_marker",
     "format_citations",
     "format_sources",

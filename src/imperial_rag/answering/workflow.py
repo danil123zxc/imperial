@@ -13,6 +13,7 @@ from imperial_rag.answering.strict import (
     STRICT_SYSTEM_PROMPT,
     build_evidence_prompt,
     build_strict_answer_chain,
+    cited_document_indices,
     format_citations,
     format_sources,
     validate_citations,
@@ -63,6 +64,7 @@ class QueryState(TypedDict, total=False):
     keyword_candidates: list[Document]
     evidence: list[Document]
     retrieved_documents: list[Document]
+    cited_documents: list[Document]
     answer: str
     citations: list[str]
     sources: list[str]
@@ -214,6 +216,7 @@ def _no_relevant_documents_update(state: QueryState, *, reason: str) -> QuerySta
         "answer": REFUSAL_TEXT,
         "citations": [],
         "sources": [],
+        "cited_documents": [],
         "citations_valid": True,
         "invalid_citations": [],
         "evidence": [],
@@ -275,15 +278,15 @@ def build_query_workflow(
     def call_model(state: QueryState) -> QueryState:
         question = str(state.get("question", ""))
         evidence = state.get("evidence", [])
-        citations = format_citations(evidence)
-        sources = format_sources(evidence)
+        available_citations = format_citations(evidence)
+        available_sources = format_sources(evidence)
         with trace_answer_step(
             "answer.generate",
             question,
             attributes=imperial_trace_attributes(
                 "answer",
                 "generate",
-                _answer_trace_attributes(evidence, citations, source_count=len(sources)),
+                _answer_trace_attributes(evidence, available_citations, source_count=len(available_sources)),
             ),
         ) as span:
             if not evidence:
@@ -297,10 +300,10 @@ def build_query_workflow(
                 attributes=imperial_trace_attributes(
                     "answer",
                     "call_model",
-                    {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+                    {"answer.evidence_count": len(evidence), "answer.citation_count": len(available_citations)},
                 ),
             ) as model_span:
-                _set_model_prompt_trace_attributes(model_span, question, evidence, citations)
+                _set_model_prompt_trace_attributes(model_span, question, evidence, available_citations)
                 if generate is not None:
                     generated = generate(question, evidence)
                     answer = _coerce_answer(generated)
@@ -319,19 +322,20 @@ def build_query_workflow(
                     {
                         "answer_chars": len(str(answer)),
                         "evidence_count": len(evidence),
-                        "citation_count": len(citations),
+                        "citation_count": len(available_citations),
                     }
                 )
             if model_error is not None:
                 update = {
                     "answer": answer,
-                    "citations": citations,
-                    "sources": sources,
+                    "citations": [],
+                    "sources": [],
+                    "cited_documents": [],
                     "citations_valid": True,
                     "invalid_citations": [],
                     "error": model_error,
                 }
-                _set_answer_trace_output(span, update, evidence=evidence, citations=citations, sources=sources)
+                _set_answer_trace_output(span, update, evidence=evidence, citations=[], sources=[])
                 return update
             if answer.strip() == REFUSAL_TEXT:
                 update = _no_relevant_documents_update(state, reason="insufficient_evidence")
@@ -344,7 +348,7 @@ def build_query_workflow(
                 attributes=imperial_trace_attributes(
                     "answer",
                     "citation_check",
-                    {"answer.evidence_count": len(evidence), "answer.citation_count": len(citations)},
+                    {"answer.evidence_count": len(evidence), "answer.citation_count": len(available_citations)},
                 ),
             ) as validation_span:
                 valid, invalid = validate_citations(answer, evidence)
@@ -353,13 +357,17 @@ def build_query_workflow(
                         "citations_valid": valid,
                         "invalid_citations": invalid,
                         "evidence_count": len(evidence),
-                        "citation_count": len(citations),
+                        "citation_count": len(available_citations),
                     }
                 )
+            cited_indices = cited_document_indices(answer, evidence)
+            citations = format_citations(evidence, cited_indices)
+            sources = format_sources(evidence, cited_indices)
             update = {
                 "answer": answer,
                 "citations": citations,
                 "sources": sources,
+                "cited_documents": [evidence[index] for index in cited_indices],
                 "citations_valid": valid,
                 "invalid_citations": invalid,
             }

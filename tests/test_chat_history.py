@@ -327,6 +327,26 @@ def test_build_assistant_message_preserves_debug_retrieval_payload(tmp_path):
     assert message["retrieval"] == {"final_evidence": 1, "reranker": "qwen"}
 
 
+def test_build_assistant_message_shows_only_cited_files_but_keeps_all_retrieved_documents(tmp_path):
+    documents_root = tmp_path / "documents"
+    documents_root.mkdir()
+    for name in ("used.docx", "unused.docx"):
+        (documents_root / name).write_bytes(name.encode())
+    settings = SimpleNamespace(documents_root=documents_root, extraction_root=tmp_path / "extracted")
+    evidence = [
+        Document(page_content="Used", metadata={"relative_path": "used.docx", "file_name": "used.docx"}),
+        Document(page_content="Unused", metadata={"relative_path": "unused.docx", "file_name": "unused.docx"}),
+    ]
+
+    message = web_app._build_assistant_message(
+        {"answer": "Use the first policy. [S1]", "sources": ["[S1] used.docx"], "evidence": evidence},
+        settings,
+    )
+
+    assert [group.file_name for group in message["retrieved_files"]] == ["used.docx"]
+    assert len(message["retrieved_documents"]) == 2
+
+
 def test_main_persists_submitted_question_to_signed_in_users_chat_history(monkeypatch, tmp_path):
     auth_db_path = tmp_path / "auth.sqlite3"
     chat_history_db_path = tmp_path / "chat_history.sqlite3"
