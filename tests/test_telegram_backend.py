@@ -7,7 +7,14 @@ from types import SimpleNamespace
 import httpx
 
 from imperial_rag.app.chat_history import ChatHistoryStore
-from imperial_rag.app.telegram import TelegramWebhookConfig, create_app as create_webhook_app, deliver_once
+from imperial_rag.app.telegram import (
+    NEW_COMMAND,
+    NEW_CONVERSATION_TEXT,
+    NEW_CONVERSATION_TITLE,
+    TelegramWebhookConfig,
+    create_app as create_webhook_app,
+    deliver_once,
+)
 from imperial_rag.app.telegram_backend import (
     TelegramBackendConfig,
     TelegramJobStore,
@@ -131,6 +138,32 @@ def test_worker_persists_answer_source_labels_and_generic_failures(tmp_path: Pat
     result = failed_store.get(2).result
     assert result and "private provider failure" not in str(result)
     assert "Не удалось подготовить ответ" in result["messages"][0]
+
+
+def test_new_command_creates_one_fresh_conversation_without_querying(tmp_path: Path) -> None:
+    runtime = FakeRuntime({"answer": "Ответ"})
+    store, worker, history = _worker(tmp_path, runtime)
+    _, created = store.create(1, 123, NEW_COMMAND)
+    _, duplicate_created = store.create(1, 123, "changed")
+
+    assert created is True and duplicate_created is False
+    assert asyncio.run(worker.process_once()) is True
+    assert asyncio.run(worker.process_once()) is False
+    assert runtime.questions == []
+    conversations = history.list_conversations(telegram_user_email(123))
+    assert len(conversations) == 1
+    assert conversations[0].title == NEW_CONVERSATION_TITLE
+    assert history.list_messages(telegram_user_email(123), conversations[0].id) == []
+    assert store.get(1).result == {"messages": [NEW_CONVERSATION_TEXT]}
+
+    store.create(2, 123, "Следующий вопрос")
+    assert asyncio.run(worker.process_once()) is True
+    assert runtime.questions == ["Следующий вопрос"]
+    assert len(history.list_conversations(telegram_user_email(123))) == 1
+    assert [message.role for message in history.list_messages(telegram_user_email(123), conversations[0].id)] == [
+        "user",
+        "assistant",
+    ]
 
 
 def test_webhook_to_durable_worker_to_delivery_integration(tmp_path: Path) -> None:

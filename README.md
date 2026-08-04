@@ -206,6 +206,10 @@ responses every two seconds and acknowledges delivery after Telegram accepts all
 processing and delivery leases recover after restarts. Delivery is at least once, so a reply can rarely be
 duplicated if Telegram accepts it but the completion acknowledgement fails.
 
+Render also registers the private-chat command menu in Russian. `/start` welcomes the user, `/help` lists
+the available commands, and `/new` creates a fresh conversation on the Russian backend without querying the
+RAG runtime. Unknown slash commands show the help text; ordinary text continues through the durable job flow.
+
 Questions, answers, and source labels transit Render and Telegram. Source documents and retrieved evidence
 do not. Deploy the Russian API and HTTPS route first, then deploy Render. Production deployment and webhook
 activation require explicit operator authorization.

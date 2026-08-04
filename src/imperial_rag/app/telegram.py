@@ -20,6 +20,18 @@ from starlette.routing import Route
 MAX_HTTP_BODY_BYTES = 16 * 1024
 MAX_TELEGRAM_TEXT_LENGTH = 4096
 ACCEPTED_TEXT = "Вопрос принят. Готовлю ответ."
+WELCOME_TEXT = "Задайте вопрос по проиндексированным документам.\n\nИспользуйте /help, чтобы посмотреть доступные команды."
+HELP_TEXT = "Команды:\n/start — начать работу\n/help — показать помощь\n/new — начать новый диалог"
+UNKNOWN_COMMAND_TEXT = f"Неизвестная команда.\n\n{HELP_TEXT}"
+NEW_COMMAND = "/new"
+NEW_CONVERSATION_TITLE = "Новый диалог"
+NEW_CONVERSATION_TEXT = "Новый диалог начат. Задайте вопрос."
+TELEGRAM_COMMANDS = [
+    {"command": "start", "description": "Начать работу"},
+    {"command": "help", "description": "Показать помощь"},
+    {"command": "new", "description": "Начать новый диалог"},
+]
+COMMAND_PATTERN = re.compile(r"^/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s|$)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -120,6 +132,29 @@ async def telegram_webhook(request: Request) -> Response:
     if job is None:
         return PlainTextResponse("ignored\n")
 
+    command = _command_from_text(job["question"])
+    if command is not None:
+        if command == "start":
+            reply = WELCOME_TEXT
+        elif command == "help":
+            reply = HELP_TEXT
+        elif command == "new":
+            job["question"] = NEW_COMMAND
+            reply = None
+        else:
+            reply = UNKNOWN_COMMAND_TEXT
+        if reply is not None:
+            try:
+                await _telegram_request(
+                    request.app.state.telegram_client,
+                    config,
+                    "sendMessage",
+                    {"chat_id": job["user_id"], "text": reply},
+                )
+            except RuntimeError:
+                return PlainTextResponse("telegram unavailable\n", status_code=503)
+            return PlainTextResponse("ok\n")
+
     client = request.app.state.backend_client
     try:
         response = await client.post(
@@ -131,7 +166,7 @@ async def telegram_webhook(request: Request) -> Response:
         return PlainTextResponse("backend unavailable\n", status_code=503)
     if response.status_code not in {200, 202}:
         return PlainTextResponse("backend rejected job\n", status_code=503)
-    if response.status_code == 202:
+    if response.status_code == 202 and command != "new":
         try:
             await _telegram_request(request.app.state.telegram_client, config, "sendMessage", {"chat_id": job["user_id"], "text": ACCEPTED_TEXT})
         except RuntimeError:
@@ -181,6 +216,12 @@ async def _lifespan(application: Starlette) -> AsyncIterator[None]:
     async with httpx.AsyncClient(timeout=15) as client:
         application.state.backend_client = client
         application.state.telegram_client = client
+        await _telegram_request(
+            client,
+            _config(application),
+            "setMyCommands",
+            {"commands": TELEGRAM_COMMANDS, "scope": {"type": "all_private_chats"}},
+        )
         await _telegram_request(
             client,
             _config(application),
@@ -283,6 +324,13 @@ def _positive_int(value: Any, name: str) -> int:
     if parsed <= 0:
         raise PayloadError(f"{name} must be a positive integer", 400)
     return parsed
+
+
+def _command_from_text(text: str) -> str | None:
+    if not text.startswith("/"):
+        return None
+    match = COMMAND_PATTERN.match(text)
+    return match.group(1).casefold() if match else ""
 
 
 def _required(values: Mapping[str, str], name: str) -> str:

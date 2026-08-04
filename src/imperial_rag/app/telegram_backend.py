@@ -20,6 +20,9 @@ from starlette.routing import Route
 from imperial_rag.app.chat_history import ChatHistoryStore
 from imperial_rag.app.telegram import (
     MAX_TELEGRAM_TEXT_LENGTH,
+    NEW_COMMAND,
+    NEW_CONVERSATION_TEXT,
+    NEW_CONVERSATION_TITLE,
     PayloadError,
     _json_body,
     _validated_secret,
@@ -248,6 +251,9 @@ class TelegramJobWorker:
 
     async def _query(self, job: TelegramJob) -> dict[str, Any]:
         user_email = telegram_user_email(job.user_id)
+        if job.question == NEW_COMMAND:
+            self.chat_store.create_conversation(user_email, title=NEW_CONVERSATION_TITLE)
+            return {"messages": [NEW_CONVERSATION_TEXT]}
         conversations = self.chat_store.list_conversations(user_email)
         conversation = conversations[0] if conversations else self.chat_store.create_conversation(user_email, title=job.question)
         user_message = self.chat_store.add_message(user_email, conversation.id, "user", job.question)

@@ -9,7 +9,12 @@ import pytest
 from imperial_rag.app import telegram
 from imperial_rag.app.telegram import (
     ACCEPTED_TEXT,
+    HELP_TEXT,
+    NEW_COMMAND,
+    TELEGRAM_COMMANDS,
     TelegramWebhookConfig,
+    UNKNOWN_COMMAND_TEXT,
+    WELCOME_TEXT,
     create_app,
     load_configuration,
     parse_allowed_user_ids,
@@ -163,6 +168,42 @@ def test_accepted_webhook_submits_job_before_acknowledging() -> None:
     assert telegram_client.calls == []
 
 
+def test_webhook_handles_commands_before_rag_submission() -> None:
+    app = create_app(_config())
+    backend = FakeClient(202)
+    telegram_client = FakeClient()
+    app.state.backend_client = backend
+    app.state.telegram_client = telegram_client
+    headers = {"X-Telegram-Bot-Api-Secret-Token": SECRET}
+
+    for update_id, text in [
+        (1, "/start@imperial_bot payload"),
+        (2, "/HELP details"),
+        (3, "/unknown argument"),
+        (4, "/invalid-command"),
+    ]:
+        response = asyncio.run(
+            _request(app, "POST", "/telegram/webhook", json=_update(update_id=update_id, text=text), headers=headers)
+        )
+        assert response.status_code == 200
+
+    assert backend.calls == []
+    assert [call[1]["json"]["text"] for call in telegram_client.calls] == [
+        WELCOME_TEXT,
+        HELP_TEXT,
+        UNKNOWN_COMMAND_TEXT,
+        UNKNOWN_COMMAND_TEXT,
+    ]
+
+    telegram_client.calls.clear()
+    response = asyncio.run(
+        _request(app, "POST", "/telegram/webhook", json=_update(update_id=5, text="/new@imperial_bot now"), headers=headers)
+    )
+    assert response.status_code == 200
+    assert backend.calls[0][1]["json"] == {"update_id": 5, "user_id": 123, "question": NEW_COMMAND}
+    assert telegram_client.calls == []
+
+
 def test_lifespan_sets_exact_webhook_and_health(monkeypatch) -> None:
     fake = FakeClient(204)
 
@@ -181,9 +222,15 @@ def test_lifespan_sets_exact_webhook_and_health(monkeypatch) -> None:
             assert app.state.ready is True
 
     asyncio.run(exercise())
-    url, call = fake.calls[0]
-    assert url.endswith("/setWebhook")
-    assert call["json"] == {
+    commands_url, commands_call = fake.calls[0]
+    assert commands_url.endswith("/setMyCommands")
+    assert commands_call["json"] == {
+        "commands": TELEGRAM_COMMANDS,
+        "scope": {"type": "all_private_chats"},
+    }
+    webhook_url, webhook_call = fake.calls[1]
+    assert webhook_url.endswith("/setWebhook")
+    assert webhook_call["json"] == {
         "url": "https://render.example/telegram/webhook",
         "allowed_updates": ["message"],
         "drop_pending_updates": False,
