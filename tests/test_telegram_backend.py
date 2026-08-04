@@ -6,8 +6,16 @@ from types import SimpleNamespace
 
 import httpx
 
+from imperial_rag.app.auth import AuthStore
 from imperial_rag.app.chat_history import ChatHistoryStore
-from imperial_rag.app.telegram import TelegramWebhookConfig, create_app as create_webhook_app, deliver_once
+from imperial_rag.app.telegram import (
+    NEW_COMMAND,
+    NEW_CONVERSATION_TEXT,
+    NEW_CONVERSATION_TITLE,
+    TelegramWebhookConfig,
+    create_app as create_webhook_app,
+    deliver_once,
+)
 from imperial_rag.app.telegram_backend import (
     TelegramBackendConfig,
     TelegramJobStore,
@@ -18,6 +26,7 @@ from imperial_rag.app.telegram_backend import (
 
 TOKEN = "t" * 32
 WEBHOOK_SECRET = "w" * 32
+PHONE_SECRET = "p" * 32
 
 
 class FakeRuntime:
@@ -57,6 +66,12 @@ def _worker(tmp_path: Path, runtime: FakeRuntime) -> tuple[TelegramJobStore, Tel
     return jobs, TelegramJobWorker(jobs, history, runtime, settings), history
 
 
+def _access_store(tmp_path: Path) -> AuthStore:
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.initialize()
+    return store
+
+
 async def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://backend.example") as client:
         return await client.request(method, path, **kwargs)
@@ -87,7 +102,11 @@ def test_duplicate_jobs_and_expired_leases_recover_after_restart(tmp_path: Path)
 
 def test_internal_api_requires_bearer_json_positive_ids_and_allowlist(tmp_path: Path) -> None:
     store, _ = _stores(tmp_path)
-    app = create_backend_app(TelegramBackendConfig(TOKEN, frozenset({123})), store)
+    app = create_backend_app(
+        TelegramBackendConfig(TOKEN, frozenset({123}), PHONE_SECRET),
+        store,
+        access_store=_access_store(tmp_path),
+    )
     headers = {"Authorization": f"Bearer {TOKEN}"}
 
     assert asyncio.run(_request(app, "GET", "/healthz")).status_code == 401
@@ -113,6 +132,81 @@ def test_internal_api_requires_bearer_json_positive_ids_and_allowlist(tmp_path: 
     assert duplicate.status_code == 200
 
 
+def test_access_api_binds_username_and_phone_then_revocation_blocks_jobs(tmp_path: Path) -> None:
+    jobs, _ = _stores(tmp_path)
+    access = _access_store(tmp_path)
+    admin = access.bootstrap_admin("admin@example.com", "admin-password")
+    username_grant = access.add_telegram_access_grant(admin.email, "@Alice_User", PHONE_SECRET)
+    phone_grant = access.add_telegram_access_grant(admin.email, "+7 999 123-45-67", PHONE_SECRET)
+    app = create_backend_app(
+        TelegramBackendConfig(TOKEN, frozenset(), PHONE_SECRET),
+        jobs,
+        access_store=access,
+    )
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+
+    username = asyncio.run(
+        _request(
+            app,
+            "POST",
+            "/internal/telegram/access",
+            json={"user_id": 101, "username": "ALICE_USER"},
+            headers=headers,
+        )
+    )
+    assert username.status_code == 200
+    assert username.json() == {"authorized": True, "newly_bound": True}
+    assert asyncio.run(
+        _request(
+            app,
+            "POST",
+            "/internal/telegram/jobs",
+            json={"update_id": 1, "user_id": 101, "question": "q"},
+            headers=headers,
+        )
+    ).status_code == 202
+
+    forwarded_contact = asyncio.run(
+        _request(
+            app,
+            "POST",
+            "/internal/telegram/access",
+            json={
+                "user_id": 202,
+                "contact": {"user_id": 999, "phone_number": "+79991234567"},
+            },
+            headers=headers,
+        )
+    )
+    assert forwarded_contact.status_code == 403
+    own_contact = asyncio.run(
+        _request(
+            app,
+            "POST",
+            "/internal/telegram/access",
+            json={
+                "user_id": 202,
+                "contact": {"user_id": 202, "phone_number": "+79991234567"},
+            },
+            headers=headers,
+        )
+    )
+    assert own_contact.status_code == 200
+    assert own_contact.json() == {"authorized": True, "newly_bound": True}
+
+    assert access.revoke_telegram_access_grant(admin.email, username_grant.id)
+    assert asyncio.run(
+        _request(
+            app,
+            "POST",
+            "/internal/telegram/jobs",
+            json={"update_id": 2, "user_id": 101, "question": "blocked"},
+            headers=headers,
+        )
+    ).status_code == 403
+    assert access.revoke_telegram_access_grant(admin.email, phone_grant.id)
+
+
 def test_worker_persists_answer_source_labels_and_generic_failures(tmp_path: Path) -> None:
     runtime = FakeRuntime({"answer": "Ответ [S1]", "sources": ["[S1] manual.pdf"], "retrieval": {"final_evidence": 1}})
     store, worker, history = _worker(tmp_path, runtime)
@@ -133,14 +227,44 @@ def test_worker_persists_answer_source_labels_and_generic_failures(tmp_path: Pat
     assert "Не удалось подготовить ответ" in result["messages"][0]
 
 
+def test_new_command_creates_one_fresh_conversation_without_querying(tmp_path: Path) -> None:
+    runtime = FakeRuntime({"answer": "Ответ"})
+    store, worker, history = _worker(tmp_path, runtime)
+    _, created = store.create(1, 123, NEW_COMMAND)
+    _, duplicate_created = store.create(1, 123, "changed")
+
+    assert created is True and duplicate_created is False
+    assert asyncio.run(worker.process_once()) is True
+    assert asyncio.run(worker.process_once()) is False
+    assert runtime.questions == []
+    conversations = history.list_conversations(telegram_user_email(123))
+    assert len(conversations) == 1
+    assert conversations[0].title == NEW_CONVERSATION_TITLE
+    assert history.list_messages(telegram_user_email(123), conversations[0].id) == []
+    assert store.get(1).result == {"messages": [NEW_CONVERSATION_TEXT]}
+
+    store.create(2, 123, "Следующий вопрос")
+    assert asyncio.run(worker.process_once()) is True
+    assert runtime.questions == ["Следующий вопрос"]
+    assert len(history.list_conversations(telegram_user_email(123))) == 1
+    assert [message.role for message in history.list_messages(telegram_user_email(123), conversations[0].id)] == [
+        "user",
+        "assistant",
+    ]
+
+
 def test_webhook_to_durable_worker_to_delivery_integration(tmp_path: Path) -> None:
     runtime = FakeRuntime({"answer": "Ответ", "sources": ["[S1] handbook.pdf"]})
     store, worker, _ = _worker(tmp_path, runtime)
-    backend_app = create_backend_app(TelegramBackendConfig(TOKEN, frozenset({123})), store, worker)
+    backend_app = create_backend_app(
+        TelegramBackendConfig(TOKEN, frozenset({123}), PHONE_SECRET),
+        store,
+        worker,
+        _access_store(tmp_path),
+    )
     webhook_app = create_webhook_app(
         TelegramWebhookConfig(
             bot_token="bot-token",
-            allowed_user_ids=frozenset({123}),
             webhook_url="https://render.example/telegram/webhook",
             webhook_secret=WEBHOOK_SECRET,
             backend_url="https://backend.example",

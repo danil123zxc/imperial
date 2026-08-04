@@ -174,6 +174,7 @@ def test_env_example_documents_private_telegram_access() -> None:
 
     assert "TELEGRAM_BOT_TOKEN=" in lines
     assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS=" in lines
+    assert "IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET=" in lines
     assert "TELEGRAM_WEBHOOK_URL=" in lines
     assert "TELEGRAM_WEBHOOK_SECRET=" in lines
     assert "IMPERIAL_RAG_TELEGRAM_BACKEND_URL=" in lines
@@ -243,7 +244,8 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "TELEGRAM_BOT_TOKEN" in readme
     assert "TELEGRAM_CHAT_ID" in readme
     assert "Telegram delivery is best-effort" in readme
-    assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS" in readme
+    assert "IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET" in readme
+    assert "telegram_access_grants" in readme
 
 
 def test_render_blueprint_keeps_secrets_out_of_version_control() -> None:
@@ -258,13 +260,14 @@ def test_render_blueprint_keeps_secrets_out_of_version_control() -> None:
     assert 'autoDeployTrigger: "off"' in blueprint
     for name in (
         "TELEGRAM_BOT_TOKEN",
-        "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS",
         "TELEGRAM_WEBHOOK_URL",
         "TELEGRAM_WEBHOOK_SECRET",
         "IMPERIAL_RAG_TELEGRAM_BACKEND_URL",
         "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN",
     ):
         assert f"key: {name}\n        sync: false" in blueprint
+    assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS" not in blueprint
+    assert "IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET" not in blueprint
 
 
 def test_compose_documents_local_only_unauthenticated_observability_services() -> None:

@@ -812,24 +812,58 @@ def _uses_secure_cookie(st: Any) -> bool:
 
 def _render_admin_access_panel(st: Any, auth_store: Any, current_user: Any) -> None:
     pending_users = auth_store.list_pending_users()
-    if not pending_users:
-        return
+    if pending_users:
+        st.warning(f"Запросы на доступ: {len(pending_users)}")
+        for pending_user in pending_users:
+            with st.container(border=True):
+                st.markdown(f"**{pending_user.full_name or pending_user.email}**")
+                st.caption(pending_user.email)
+                if pending_user.reason:
+                    st.caption(pending_user.reason)
+                if st.button(
+                    "Предоставить доступ",
+                    key=f"auth-approve-{pending_user.email}",
+                    icon=":material/check:",
+                    width="stretch",
+                ):
+                    auth_store.approve_user(current_user.email, pending_user.email)
+                    st.success(f"Доступ предоставлен: {pending_user.email}")
+                    _rerun(st)
 
-    st.warning(f"Запросы на доступ: {len(pending_users)}")
-    for pending_user in pending_users:
+    st.markdown("---")
+    st.subheader("Доступ в Telegram")
+    with st.form("telegram-access-form"):
+        identity = st.text_input(
+            "Пользователь",
+            placeholder="@username или +79991234567",
+            key="telegram-access-identity",
+        )
+        add_grant = st.form_submit_button("Добавить", width="stretch")
+    if add_grant:
+        try:
+            grant = auth_store.add_telegram_access_grant(
+                current_user.email,
+                identity,
+                os.environ.get("IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET", ""),
+            )
+        except (PermissionError, ValueError) as exc:
+            st.error(_localized_telegram_access_error(exc))
+        else:
+            st.success(f"Доступ добавлен: {grant.display_label}")
+            _rerun(st)
+
+    for grant in auth_store.list_telegram_access_grants():
         with st.container(border=True):
-            st.markdown(f"**{pending_user.full_name or pending_user.email}**")
-            st.caption(pending_user.email)
-            if pending_user.reason:
-                st.caption(pending_user.reason)
+            st.markdown(f"**{grant.display_label}**")
+            st.caption("Активирован" if grant.telegram_user_id is not None else "Ожидает первого обращения")
             if st.button(
-                "Предоставить доступ",
-                key=f"auth-approve-{pending_user.email}",
-                icon=":material/check:",
+                "Отозвать доступ",
+                key=f"telegram-access-revoke-{grant.id}",
+                icon=":material/block:",
                 width="stretch",
             ):
-                auth_store.approve_user(current_user.email, pending_user.email)
-                st.success(f"Доступ предоставлен: {pending_user.email}")
+                auth_store.revoke_telegram_access_grant(current_user.email, grant.id)
+                st.success(f"Доступ отозван: {grant.display_label}")
                 _rerun(st)
 
 
@@ -838,6 +872,16 @@ def _localized_auth_error(exc: ValueError) -> str:
         "valid email is required": "Укажите корректный адрес электронной почты.",
         "password must be at least 8 characters": "Пароль должен содержать не менее 8 символов.",
     }.get(str(exc), "Проверьте введённые данные.")
+
+
+def _localized_telegram_access_error(exc: Exception) -> str:
+    return {
+        "Telegram access must be an @username or +phone number": "Укажите @username или номер в международном формате.",
+        "Telegram username must contain 5-32 letters, digits, or underscores": "Username должен содержать 5–32 латинские буквы, цифры или подчёркивания.",
+        "Telegram phone number must use international format": "Укажите номер в международном формате, например +79991234567.",
+        "Telegram phone number must contain 8-15 international digits": "Номер должен содержать 8–15 цифр и код страны.",
+        "IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET must contain 32-256 URL-safe characters": "Секрет проверки телефонных номеров не настроен.",
+    }.get(str(exc), "Не удалось изменить доступ в Telegram.")
 
 
 def _rerun(st: Any) -> None:
