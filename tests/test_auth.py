@@ -6,6 +6,8 @@ import sqlite3
 from imperial_rag.app.auth import AuthStore, AuthenticationStatus
 from imperial_rag.app import auth as auth_module
 
+PHONE_SECRET = "p" * 32
+
 
 class TrackingConnection:
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -206,3 +208,84 @@ def test_deleting_user_cascades_owned_sessions(tmp_path):
     assert store.authenticate_session(token) is None
     with sqlite3.connect(store.db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM auth_sessions").fetchone()[0] == 0
+
+
+def test_admin_manages_private_telegram_grants_and_bindings(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    admin = store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("user@example.com", "user-password")
+
+    username = store.add_telegram_access_grant(admin.email, "@Alice_User", PHONE_SECRET)
+    duplicate = store.add_telegram_access_grant(admin.email, "@alice_user", PHONE_SECRET)
+    phone = store.add_telegram_access_grant(admin.email, "+7 (999) 123-45-67", PHONE_SECRET)
+
+    assert duplicate.id == username.id
+    assert username.display_label == "@alice_user"
+    assert phone.display_label == "+••••4567"
+    with sqlite3.connect(store.db_path) as conn:
+        phone_row = conn.execute(
+            "SELECT identity_key, display_label FROM telegram_access_grants WHERE id = ?",
+            (phone.id,),
+        ).fetchone()
+    assert phone_row is not None
+    assert phone_row[0] != "79991234567"
+    assert "79991234567" not in str(phone_row)
+
+    bound_username = store.authorize_telegram_user(101, username="ALICE_USER", phone_hash_secret=PHONE_SECRET)
+    assert bound_username.authorized and bound_username.newly_bound
+    assert store.authorize_telegram_user(101, username="renamed_user", phone_hash_secret=PHONE_SECRET).authorized
+    assert not store.authorize_telegram_user(102, username="alice_user", phone_hash_secret=PHONE_SECRET).authorized
+
+    forwarded = store.authorize_telegram_user(
+        202,
+        phone_number="+79991234567",
+        contact_user_id=999,
+        phone_hash_secret=PHONE_SECRET,
+    )
+    assert not forwarded.authorized
+    bound_phone = store.authorize_telegram_user(
+        202,
+        phone_number="79991234567",
+        contact_user_id=202,
+        phone_hash_secret=PHONE_SECRET,
+    )
+    assert bound_phone.authorized and bound_phone.newly_bound
+
+    assert store.revoke_telegram_access_grant(admin.email, username.id)
+    assert not store.authorize_telegram_user(101, phone_hash_secret=PHONE_SECRET).authorized
+    assert not store.revoke_telegram_access_grant(admin.email, username.id)
+
+
+def test_only_approved_admin_can_manage_telegram_grants(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    store.bootstrap_admin("admin@example.com", "admin-password")
+    store.register_user("user@example.com", "user-password")
+
+    try:
+        store.add_telegram_access_grant("user@example.com", "@alice_user", PHONE_SECRET)
+    except PermissionError as exc:
+        assert "admin" in str(exc)
+    else:
+        raise AssertionError("non-admin users must not manage Telegram access")
+
+
+def test_one_contact_update_binds_matching_username_and_phone_grants(tmp_path):
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    admin = store.bootstrap_admin("admin@example.com", "admin-password")
+    username = store.add_telegram_access_grant(admin.email, "@multi_user", PHONE_SECRET)
+    phone = store.add_telegram_access_grant(admin.email, "+82 10 1234 5678", PHONE_SECRET)
+
+    result = store.authorize_telegram_user(
+        303,
+        username="multi_user",
+        phone_number="+821012345678",
+        contact_user_id=303,
+        phone_hash_secret=PHONE_SECRET,
+    )
+
+    assert result.authorized and result.newly_bound
+    assert {grant.telegram_user_id for grant in store.list_telegram_access_grants()} == {303}
+    assert store.revoke_telegram_access_grant(admin.email, username.id)
+    assert store.authorize_telegram_user(303, phone_hash_secret=PHONE_SECRET).authorized
+    assert store.revoke_telegram_access_grant(admin.email, phone.id)
+    assert not store.authorize_telegram_user(303, phone_hash_secret=PHONE_SECRET).authorized

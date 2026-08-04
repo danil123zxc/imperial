@@ -140,11 +140,12 @@ cp .env.example .env
 mkdir -p documents .imperial_rag/qdrant_storage
 ```
 
-Fill `.env` with `DASHSCOPE_API_KEY`, Streamlit credentials,
-`IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`, and `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, plus any model or
-tracing settings needed on that machine. The service token must be 32–256 URL-safe letters, digits,
-underscores, or hyphens and must match Render. Host-local commands can keep the `localhost` defaults from
-`.env.example`; `compose.yaml` overrides service endpoints inside containers.
+Fill `.env` with `DASHSCOPE_API_KEY`, Streamlit credentials, `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET`,
+and `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, plus any model or tracing settings needed on that machine.
+Both secrets must be 32–256 URL-safe letters, digits, underscores, or hyphens; the service token must match
+Render, while the phone-hash secret stays only on the Russian host. Numeric IDs in
+`IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` remain an optional bootstrap fallback. Host-local commands can keep
+the `localhost` defaults from `.env.example`; `compose.yaml` overrides service endpoints inside containers.
 
 Start the runtime stack:
 
@@ -184,7 +185,9 @@ location /internal/telegram/ {
 ```
 
 The API independently requires `Authorization: Bearer <IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN>` on every
-endpoint and enforces JSON content type, a 16 KiB body limit, positive IDs, and the numeric allowlist.
+endpoint and enforces JSON content type, a 16 KiB body limit, positive IDs, and the Russian access database.
+The protected Streamlit admin panel can pre-authorize `@username` or an international `+phone`, list pending
+or bound grants, and revoke them. Phone numbers are stored only as a keyed digest and masked label.
 
 ### Render Telegram deployment
 
@@ -193,18 +196,20 @@ endpoint and enforces JSON content type, a 16 KiB body limit, positive IDs, and 
 Blueprint deliberately contains no secret values:
 
 - `TELEGRAM_BOT_TOKEN`
-- `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS`
 - `TELEGRAM_WEBHOOK_URL` (the exact Render HTTPS URL ending in `/telegram/webhook`)
 - `TELEGRAM_WEBHOOK_SECRET` (32–256 URL-safe letters, digits, underscores, or hyphens)
 - `IMPERIAL_RAG_TELEGRAM_BACKEND_URL` (the Russian HTTPS origin, without the internal path)
 - `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN` (the same strong value as on the Russian host)
 
-At startup, Render registers the webhook with `allowed_updates=["message"]`,
-`drop_pending_updates=false`, and the secret-token header. Accepted updates are idempotently stored in
-Russia before Render returns `200`. The Russian worker processes jobs sequentially; Render leases completed
-responses every two seconds and acknowledges delivery after Telegram accepts all message chunks. Expired
-processing and delivery leases recover after restarts. Delivery is at least once, so a reply can rarely be
-duplicated if Telegram accepts it but the completion acknowledgement fails.
+At startup, Render registers the webhook with `allowed_updates=["message"]`, `drop_pending_updates=false`,
+and the secret-token header. For each private message, Render first sends only the Telegram user ID,
+username, and any explicitly shared contact to the authenticated Russian access endpoint. Question text is
+submitted only after authorization succeeds. A matching username binds automatically; a phone grant binds
+only when Telegram marks the shared contact as belonging to the sender. Accepted questions are idempotently
+stored in Russia before Render returns `200`. The Russian worker processes jobs sequentially; Render leases
+completed responses every two seconds and acknowledges delivery after Telegram accepts all message chunks.
+Expired processing and delivery leases recover after restarts. Delivery is at least once, so a reply can
+rarely be duplicated if Telegram accepts it but the completion acknowledgement fails.
 
 Render also registers the private-chat command menu in Russian. `/start` welcomes the user, `/help` lists
 the available commands, and `/new` creates a fresh conversation on the Russian backend without querying the
@@ -306,9 +311,10 @@ uv run python scripts/run_all_evals.py
 | `.imperial_rag/extracted/` | local directory | Extracted text, chunks, ledger, and lineage |
 | `.imperial_rag/shadow-runs/<id>/` | local directory | Isolated candidate artifacts, manifest, OCR cache, and run descriptor |
 | `.imperial_rag/active-ingestion.json` | local file | Atomically replaced pointer to the promoted artifacts and search aliases |
-| `.imperial_rag/auth.sqlite3` | local file | Retained legacy Streamlit users and browser sessions |
+| `.imperial_rag/auth.sqlite3` | local file | Streamlit users, browser sessions, and Telegram access grants |
 | `.imperial_rag/chat_history.sqlite3` | local file | Local chat history |
 | `telegram_jobs` | table in chat-history SQLite | Durable Telegram job, result, attempt, and lease state |
+| `telegram_access_grants` | table in auth SQLite | Username/phone grants, masked labels, and bound Telegram IDs |
 
 Use the live files, database tables, and service health checks as source of truth for generated state. Snapshot counts in documentation drift quickly after corpus rebuilds.
 
@@ -323,7 +329,8 @@ Important settings are documented in `.env.example`.
 | `DASHSCOPE_API_KEY` | Required for Qwen chat, embeddings, OCR, reranking, and Ragas model-backed metrics |
 | `IMPERIAL_RAG_WORKSPACE_ROOT` | Workspace root; defaults to this checkout in host runs and `/app` in Compose |
 | `TELEGRAM_BOT_TOKEN` | Required Telegram Bot API token; keep only in local/server environment configuration |
-| `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` | Required comma-separated allowlist of trusted numeric Telegram user IDs |
+| `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` | Optional comma-separated bootstrap allowlist of trusted numeric Telegram user IDs |
+| `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET` | Required Russia-only HMAC secret for phone-number grants |
 | `TELEGRAM_WEBHOOK_URL` / `TELEGRAM_WEBHOOK_SECRET` | Exact Render webhook URL and strong Telegram secret-token value |
 | `IMPERIAL_RAG_TELEGRAM_BACKEND_URL` / `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN` | Russian HTTPS origin and shared bearer secret |
 | `IMPERIAL_RAG_ADMIN_EMAIL` / `IMPERIAL_RAG_ADMIN_PASSWORD` | Streamlit admin access |
@@ -458,11 +465,12 @@ If vector search is unavailable, start Qdrant and rerun ingestion with `--index-
 
 If model-backed chat, OCR, embeddings, reranking, or Ragas metrics fail, confirm `DASHSCOPE_API_KEY` is present in `.env` or the process environment.
 
-If the Telegram backend is unhealthy, confirm `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` and
-`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, then inspect `docker compose logs --tail=200 telegram-api`. An
-authenticated `200` from local port `8502` proves that the API and worker initialized; it does not prove
-that Qwen, Elasticsearch, or Qdrant will answer a new question. On Render, verify `/healthz` and Telegram
-`getWebhookInfo`, including the exact URL and an empty `last_error_message`.
+If the Telegram backend is unhealthy, confirm `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET` and
+`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, and ensure the optional numeric allowlist contains only integers.
+Then inspect `docker compose logs --tail=200 telegram-api`. An authenticated `200` from local port `8502`
+proves that the API and worker initialized; it does not prove that Qwen, Elasticsearch, or Qdrant will
+answer a new question. On Render, verify `/healthz` and Telegram `getWebhookInfo`, including the exact URL
+and an empty `last_error_message`.
 
 If Phoenix validation fails, start Phoenix, run a fresh traced query with a stable `IMPERIAL_RAG_TRACE_RUN_ID`, then validate that run ID.
 

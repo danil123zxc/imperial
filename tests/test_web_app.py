@@ -880,6 +880,10 @@ def test_main_notifies_admin_about_pending_access_requests(monkeypatch, tmp_path
         warning=lambda message, *args, **kwargs: warnings.append(message),
         button=lambda *args, **kwargs: False,
         markdown=lambda *args, **kwargs: None,
+        subheader=lambda *args, **kwargs: None,
+        form=lambda *args, **kwargs: Context(),
+        text_input=lambda *args, **kwargs: "",
+        form_submit_button=lambda *args, **kwargs: False,
         container=lambda *args, **kwargs: Context(),
         chat_input=lambda *args, **kwargs: None,
     )
@@ -1022,6 +1026,10 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
         warning=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: kwargs.get("key") == "auth-approve-user@example.com",
         markdown=lambda *args, **kwargs: None,
+        subheader=lambda *args, **kwargs: None,
+        form=lambda *args, **kwargs: Context(),
+        text_input=lambda *args, **kwargs: "",
+        form_submit_button=lambda *args, **kwargs: False,
         container=lambda *args, **kwargs: Context(),
         success=lambda *args, **kwargs: None,
         rerun=lambda: None,
@@ -1037,6 +1045,54 @@ def test_main_admin_grant_button_approves_user(monkeypatch, tmp_path):
     web_app.main()
 
     assert AuthStore(auth_db_path).authenticate("user@example.com", "user-password").status == AuthenticationStatus.AUTHENTICATED
+
+
+def test_admin_panel_adds_and_revokes_telegram_access(monkeypatch, tmp_path):
+    from imperial_rag.app import web as web_app
+    from imperial_rag.app.auth import AuthStore
+
+    store = AuthStore(tmp_path / "auth.sqlite3")
+    admin = store.bootstrap_admin("admin@example.com", "admin-password")
+    monkeypatch.setenv("IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET", "p" * 32)
+
+    class Context:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    base = {
+        "warning": lambda *args, **kwargs: None,
+        "markdown": lambda *args, **kwargs: None,
+        "subheader": lambda *args, **kwargs: None,
+        "form": lambda *args, **kwargs: Context(),
+        "container": lambda *args, **kwargs: Context(),
+        "caption": lambda *args, **kwargs: None,
+        "success": lambda *args, **kwargs: None,
+        "error": lambda *args, **kwargs: None,
+        "rerun": lambda: None,
+    }
+    add_ui = types.SimpleNamespace(
+        **base,
+        text_input=lambda *args, **kwargs: "@Alice_User",
+        form_submit_button=lambda *args, **kwargs: True,
+        button=lambda *args, **kwargs: False,
+    )
+
+    web_app._render_admin_access_panel(add_ui, store, admin)
+
+    grants = store.list_telegram_access_grants()
+    assert [grant.display_label for grant in grants] == ["@alice_user"]
+
+    revoke_ui = types.SimpleNamespace(
+        **base,
+        text_input=lambda *args, **kwargs: "",
+        form_submit_button=lambda *args, **kwargs: False,
+        button=lambda *args, **kwargs: kwargs.get("key") == f"telegram-access-revoke-{grants[0].id}",
+    )
+    web_app._render_admin_access_panel(revoke_ui, store, admin)
+    assert store.list_telegram_access_grants() == []
 
 
 def test_main_logs_web_query_failure_without_private_question(monkeypatch, tmp_path):

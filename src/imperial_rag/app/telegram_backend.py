@@ -17,6 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
+from imperial_rag.app.auth import AuthStore
 from imperial_rag.app.chat_history import ChatHistoryStore
 from imperial_rag.app.telegram import (
     MAX_TELEGRAM_TEXT_LENGTH,
@@ -42,6 +43,7 @@ FAILURE_TEXT = "Не удалось подготовить ответ. Подр�
 class TelegramBackendConfig:
     service_token: str
     allowed_user_ids: frozenset[int]
+    phone_hash_secret: str
 
 
 @dataclass(frozen=True)
@@ -324,6 +326,7 @@ def load_configuration(environ: Mapping[str, str] | None = None) -> TelegramBack
     return TelegramBackendConfig(
         service_token=_validated_secret(values, "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN"),
         allowed_user_ids=parse_allowed_user_ids(values.get("IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS")),
+        phone_hash_secret=_validated_secret(values, "IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET"),
     )
 
 
@@ -331,10 +334,12 @@ def create_app(
     config: TelegramBackendConfig | None = None,
     store: TelegramJobStore | None = None,
     worker: TelegramJobWorker | None = None,
+    access_store: AuthStore | None = None,
 ) -> Starlette:
     application = Starlette(
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
+            Route("/internal/telegram/access", check_access, methods=["POST"]),
             Route("/internal/telegram/jobs", create_job, methods=["POST"]),
             Route("/internal/telegram/deliveries/claim", claim_delivery, methods=["POST"]),
             Route("/internal/telegram/deliveries/{update_id:int}/complete", complete_delivery, methods=["POST"]),
@@ -344,7 +349,8 @@ def create_app(
     application.state.config = config
     application.state.store = store
     application.state.worker = worker
-    application.state.ready = bool(config and store)
+    application.state.access_store = access_store
+    application.state.ready = bool(config and store and access_store)
     return application
 
 
@@ -352,6 +358,41 @@ async def healthz(request: Request) -> Response:
     if not _authorized(request):
         return PlainTextResponse("unauthorized\n", status_code=401)
     return PlainTextResponse("ok\n" if request.app.state.ready else "not ready\n", status_code=200 if request.app.state.ready else 503)
+
+
+async def check_access(request: Request) -> Response:
+    if not _authorized(request):
+        return PlainTextResponse("unauthorized\n", status_code=401)
+    try:
+        payload = await _json_body(request)
+        user_id = _positive_int(payload.get("user_id"), "user_id")
+        username = payload.get("username")
+        if username is not None and (not isinstance(username, str) or len(username) > 32):
+            raise PayloadError("username must be a string of at most 32 characters", 400)
+        contact = payload.get("contact")
+        if contact is not None and not isinstance(contact, dict):
+            raise PayloadError("contact must be an object", 400)
+        phone_number = contact.get("phone_number") if contact else None
+        contact_user_id = contact.get("user_id") if contact else None
+        if phone_number is not None and (not isinstance(phone_number, str) or len(phone_number) > 32):
+            raise PayloadError("contact phone number must be a string of at most 32 characters", 400)
+        if contact_user_id is not None:
+            contact_user_id = _positive_int(contact_user_id, "contact user_id")
+    except PayloadError as exc:
+        return PlainTextResponse(f"{exc}\n", status_code=exc.status_code)
+
+    authorization = _access_store(request.app).authorize_telegram_user(
+        user_id,
+        username=username,
+        phone_number=phone_number,
+        contact_user_id=contact_user_id,
+        phone_hash_secret=_config(request.app).phone_hash_secret,
+    )
+    result = {
+        "authorized": authorization.authorized or user_id in _config(request.app).allowed_user_ids,
+        "newly_bound": authorization.newly_bound,
+    }
+    return JSONResponse(result, status_code=200 if result["authorized"] else 403)
 
 
 async def create_job(request: Request) -> Response:
@@ -362,7 +403,7 @@ async def create_job(request: Request) -> Response:
         update_id = _positive_int(payload.get("update_id"), "update_id")
         user_id = _positive_int(payload.get("user_id"), "user_id")
         question = payload.get("question")
-        if user_id not in _config(request.app).allowed_user_ids:
+        if not _telegram_user_allowed(request.app, user_id):
             return PlainTextResponse("forbidden\n", status_code=403)
         if not isinstance(question, str) or not question.strip():
             raise PayloadError("question must be a non-empty string", 400)
@@ -404,7 +445,12 @@ async def complete_delivery(request: Request) -> Response:
 
 @asynccontextmanager
 async def _lifespan(application: Starlette) -> AsyncIterator[None]:
-    if application.state.config is None or application.state.store is None or application.state.worker is None:
+    if (
+        application.state.config is None
+        or application.state.store is None
+        or application.state.worker is None
+        or application.state.access_store is None
+    ):
         from imperial_rag.answering.runtime import create_runtime
         from imperial_rag.config import Settings, apply_active_index_pointer
         from imperial_rag.env import load_project_env
@@ -422,6 +468,8 @@ async def _lifespan(application: Starlette) -> AsyncIterator[None]:
         chat_store.initialize()
         application.state.config = config
         application.state.store = store
+        application.state.access_store = application.state.access_store or AuthStore(Path(settings.auth_db_path))
+        application.state.access_store.initialize()
         application.state.worker = application.state.worker or TelegramJobWorker(
             store,
             chat_store,
@@ -460,6 +508,15 @@ def _authorized(request: Request) -> bool:
     supplied = request.headers.get("Authorization", "")
     expected = f"Bearer {_config(request.app).service_token}"
     return compare_digest(supplied, expected)
+
+
+def _telegram_user_allowed(application: Starlette, user_id: int) -> bool:
+    if user_id in _config(application).allowed_user_ids:
+        return True
+    return _access_store(application).authorize_telegram_user(
+        user_id,
+        phone_hash_secret=_config(application).phone_hash_secret,
+    ).authorized
 
 
 def _positive_int(value: Any, name: str) -> int:
@@ -505,6 +562,13 @@ def _store(application: Starlette) -> TelegramJobStore:
     store = application.state.store
     if not isinstance(store, TelegramJobStore):
         raise RuntimeError("Telegram job store is unavailable")
+    return store
+
+
+def _access_store(application: Starlette) -> AuthStore:
+    store = application.state.access_store
+    if not isinstance(store, AuthStore):
+        raise RuntimeError("Telegram access store is unavailable")
     return store
 
 

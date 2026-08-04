@@ -23,6 +23,12 @@ ACCEPTED_TEXT = "Вопрос принят. Готовлю ответ."
 WELCOME_TEXT = "Задайте вопрос по проиндексированным документам.\n\nИспользуйте /help, чтобы посмотреть доступные команды."
 HELP_TEXT = "Команды:\n/start — начать работу\n/help — показать помощь\n/new — начать новый диалог"
 UNKNOWN_COMMAND_TEXT = f"Неизвестная команда.\n\n{HELP_TEXT}"
+ACCESS_REQUIRED_TEXT = (
+    "Доступ не предоставлен. Если вас добавили по номеру телефона, "
+    "нажмите «Поделиться номером». Иначе обратитесь к администратору."
+)
+CONTACT_DENIED_TEXT = "Этот номер не найден в списке доступа. Обратитесь к администратору."
+ACCESS_GRANTED_TEXT = "Доступ предоставлен. Теперь вы можете задать вопрос."
 NEW_COMMAND = "/new"
 NEW_CONVERSATION_TITLE = "Новый диалог"
 NEW_CONVERSATION_TEXT = "Новый диалог начат. Задайте вопрос."
@@ -37,7 +43,6 @@ COMMAND_PATTERN = re.compile(r"^/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s|$)", re.IGNOR
 @dataclass(frozen=True)
 class TelegramWebhookConfig:
     bot_token: str
-    allowed_user_ids: frozenset[int]
     webhook_url: str
     webhook_secret: str
     backend_url: str
@@ -47,7 +52,7 @@ class TelegramWebhookConfig:
 def parse_allowed_user_ids(raw: str | None) -> frozenset[int]:
     values = [value.strip() for value in str(raw or "").split(",") if value.strip()]
     if not values:
-        raise ValueError("IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS must contain at least one numeric user ID")
+        return frozenset()
     try:
         user_ids = frozenset(int(value) for value in values)
     except ValueError as exc:
@@ -65,7 +70,6 @@ def load_configuration(environ: Mapping[str, str] | None = None) -> TelegramWebh
     values = os.environ if environ is None else environ
     config = TelegramWebhookConfig(
         bot_token=_required(values, "TELEGRAM_BOT_TOKEN"),
-        allowed_user_ids=parse_allowed_user_ids(values.get("IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS")),
         webhook_url=_required(values, "TELEGRAM_WEBHOOK_URL").rstrip("/"),
         webhook_secret=_validated_secret(values, "TELEGRAM_WEBHOOK_SECRET"),
         backend_url=_required(values, "IMPERIAL_RAG_TELEGRAM_BACKEND_URL").rstrip("/"),
@@ -126,11 +130,62 @@ async def telegram_webhook(request: Request) -> Response:
         return PlainTextResponse("forbidden\n", status_code=403)
     try:
         payload = await _json_body(request)
-        job = _job_from_update(payload, config.allowed_user_ids)
+        message = _message_from_update(payload)
     except PayloadError as exc:
         return PlainTextResponse(f"{exc}\n", status_code=exc.status_code)
-    if job is None:
+    if message is None:
         return PlainTextResponse("ignored\n")
+
+    client = request.app.state.backend_client
+    try:
+        access_response = await client.post(
+            f"{config.backend_url}/internal/telegram/access",
+            headers={"Authorization": f"Bearer {config.service_token}"},
+            json=_access_payload(message),
+        )
+    except httpx.HTTPError:
+        return PlainTextResponse("backend unavailable\n", status_code=503)
+    if access_response.status_code == 403:
+        try:
+            await _telegram_request(
+                request.app.state.telegram_client,
+                config,
+                "sendMessage",
+                {
+                    "chat_id": message["user_id"],
+                    "text": CONTACT_DENIED_TEXT if "contact" in message else ACCESS_REQUIRED_TEXT,
+                    "reply_markup": _remove_keyboard() if "contact" in message else _contact_keyboard(),
+                },
+            )
+        except RuntimeError:
+            return PlainTextResponse("telegram unavailable\n", status_code=503)
+        return PlainTextResponse("ignored\n")
+    if access_response.status_code != 200:
+        return PlainTextResponse("backend rejected access check\n", status_code=503)
+    try:
+        access_result = access_response.json()
+    except ValueError:
+        return PlainTextResponse("backend returned invalid access check\n", status_code=503)
+    if not isinstance(access_result, dict) or access_result.get("authorized") is not True:
+        return PlainTextResponse("backend returned invalid access check\n", status_code=503)
+
+    if "contact" in message:
+        try:
+            await _telegram_request(
+                request.app.state.telegram_client,
+                config,
+                "sendMessage",
+                {
+                    "chat_id": message["user_id"],
+                    "text": ACCESS_GRANTED_TEXT,
+                    "reply_markup": _remove_keyboard(),
+                },
+            )
+        except RuntimeError:
+            return PlainTextResponse("telegram unavailable\n", status_code=503)
+        return PlainTextResponse("ok\n")
+
+    job = {"update_id": message["update_id"], "user_id": message["user_id"], "question": message["question"]}
 
     command = _command_from_text(job["question"])
     if command is not None:
@@ -155,7 +210,6 @@ async def telegram_webhook(request: Request) -> Response:
                 return PlainTextResponse("telegram unavailable\n", status_code=503)
             return PlainTextResponse("ok\n")
 
-    client = request.app.state.backend_client
     try:
         response = await client.post(
             f"{config.backend_url}/internal/telegram/jobs",
@@ -293,7 +347,7 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return payload
 
 
-def _job_from_update(payload: dict[str, Any], allowed_user_ids: frozenset[int]) -> dict[str, Any] | None:
+def _message_from_update(payload: dict[str, Any]) -> dict[str, Any] | None:
     update_id = _positive_int(payload.get("update_id"), "update_id")
     message = payload.get("message")
     if not isinstance(message, dict):
@@ -303,15 +357,46 @@ def _job_from_update(payload: dict[str, Any], allowed_user_ids: frozenset[int]) 
     if not isinstance(chat, dict) or chat.get("type") != "private" or not isinstance(user, dict):
         return None
     user_id = _positive_int(user.get("id"), "user_id")
-    if user_id not in allowed_user_ids:
-        return None
+    result: dict[str, Any] = {"update_id": update_id, "user_id": user_id}
+    username = user.get("username")
+    if isinstance(username, str) and username:
+        result["username"] = username
+    contact = message.get("contact")
+    if isinstance(contact, dict):
+        result["contact"] = {
+            key: contact[key]
+            for key in ("phone_number", "user_id")
+            if key in contact
+        }
+        return result
     question = message.get("text")
     if not isinstance(question, str) or not question.strip():
         return None
     question = question.strip()
     if len(question) > MAX_TELEGRAM_TEXT_LENGTH:
         raise PayloadError("question is too long", 400)
-    return {"update_id": update_id, "user_id": user_id, "question": question}
+    result["question"] = question
+    return result
+
+
+def _access_payload(message: dict[str, Any]) -> dict[str, Any]:
+    payload = {"user_id": message["user_id"]}
+    for key in ("username", "contact"):
+        if key in message:
+            payload[key] = message[key]
+    return payload
+
+
+def _contact_keyboard() -> dict[str, Any]:
+    return {
+        "keyboard": [[{"text": "Поделиться номером", "request_contact": True}]],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+    }
+
+
+def _remove_keyboard() -> dict[str, bool]:
+    return {"remove_keyboard": True}
 
 
 def _positive_int(value: Any, name: str) -> int:
