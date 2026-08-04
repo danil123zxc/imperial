@@ -1,0 +1,24 @@
+services:
+  - type: web
+    runtime: docker
+    name: imperial-telegram
+    region: frankfurt
+    plan: standard
+    numInstances: 1
+    dockerfilePath: ./Dockerfile
+    dockerCommand: uv run uvicorn imperial_rag.app.telegram:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeployTrigger: "off"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS
+        sync: false
+      - key: TELEGRAM_WEBHOOK_URL
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: IMPERIAL_RAG_TELEGRAM_BACKEND_URL
+        sync: false
+      - key: IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN
+        sync: false

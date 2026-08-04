@@ -45,7 +45,7 @@ def test_dockerignore_excludes_private_and_generated_data() -> None:
     assert ".venv/" in entries
 
 
-def test_dockerfile_builds_uv_telegram_runtime() -> None:
+def test_dockerfile_builds_uv_runtime() -> None:
     dockerfile = _read("Dockerfile")
 
     assert "FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in dockerfile
@@ -57,14 +57,15 @@ def test_dockerfile_builds_uv_telegram_runtime() -> None:
     assert "COPY pyproject.toml uv.lock ./" in dockerfile
     assert "COPY src ./src" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
-    assert "EXPOSE 8501" in dockerfile
-    assert '"python", "-m", "imperial_rag.app.telegram"' in dockerfile
+    assert "EXPOSE 8501 8502" in dockerfile
+    assert '"python", "-m", "streamlit"' in dockerfile
 
 
 def test_compose_defines_private_app_and_ingest_services() -> None:
     compose = _read("compose.yaml")
     app_base = compose.split("services:", maxsplit=1)[0]
     app = _service_block(compose, "app")
+    telegram_api = _service_block(compose, "telegram-api")
     ingest = _service_block(compose, "ingest")
     phoenix = _service_block(compose, "phoenix")
     qdrant = _service_block(compose, "qdrant")
@@ -84,6 +85,7 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
         "required: false",
         'profiles: ["ingest"]',
         '"127.0.0.1:8501:8501"',
+        '"127.0.0.1:8502:8502"',
         '"127.0.0.1:6006:6006"',
         '"127.0.0.1:4317:4317"',
         '"127.0.0.1:6333:6333"',
@@ -122,8 +124,12 @@ def test_compose_defines_private_app_and_ingest_services() -> None:
     assert "logging: *imperial-json-log-options" in elasticsearch
     assert "logging: *imperial-json-log-options" in kibana
     assert '"127.0.0.1:8501:8501"' in app
-    assert "imperial_rag.app.telegram" in app
-    assert "http://127.0.0.1:8501/healthz" in app
+    assert "streamlit" in app
+    assert "http://127.0.0.1:8501/_stcore/health" in app
+    assert '"127.0.0.1:8502:8502"' in telegram_api
+    assert "imperial_rag.app.telegram_backend:app" in telegram_api
+    assert "http://127.0.0.1:8502/healthz" in telegram_api
+    assert "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN" in telegram_api
     assert '"127.0.0.1:6333:6333"' in qdrant
     assert '"127.0.0.1:9200:9200"' in elasticsearch
     assert '"127.0.0.1:6006:6006"' in phoenix
@@ -168,6 +174,10 @@ def test_env_example_documents_private_telegram_access() -> None:
 
     assert "TELEGRAM_BOT_TOKEN=" in lines
     assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS=" in lines
+    assert "TELEGRAM_WEBHOOK_URL=" in lines
+    assert "TELEGRAM_WEBHOOK_SECRET=" in lines
+    assert "IMPERIAL_RAG_TELEGRAM_BACKEND_URL=" in lines
+    assert "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN=" in lines
 
 
 def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
@@ -215,9 +225,10 @@ def test_readme_documents_private_compose_deployment() -> None:
     readme = _read("README.md")
 
     assert "## Private Compose Deployment" in readme
-    assert "docker compose up -d elasticsearch qdrant phoenix app kibana" in readme
+    assert "docker compose up -d elasticsearch qdrant phoenix app telegram-api kibana" in readme
     assert "docker compose --profile ingest up ingest" in readme
-    assert "http://127.0.0.1:8501/healthz" in readme
+    assert "http://127.0.0.1:8501/_stcore/health" in readme
+    assert "http://127.0.0.1:8502/healthz" in readme
     assert "http://127.0.0.1:9200" in readme
     assert "http://127.0.0.1:5601" in readme
     assert "unauthenticated by default and are safe only while bound to `127.0.0.1`" in readme
@@ -227,12 +238,33 @@ def test_readme_documents_private_compose_deployment() -> None:
     assert "### Automatic application deployment" in readme
     assert "docker compose up -d --no-deps app" in readme
     assert "/home/server1/.local/bin/imperial-deploy rollback" in readme
-    assert "Automatic deployment does not run ingestion" in readme
+    assert "Automatic deployment does not deploy Render" in readme
     assert "The CI-only SSH key cannot invoke rollback or arbitrary shell commands." in readme
     assert "TELEGRAM_BOT_TOKEN" in readme
     assert "TELEGRAM_CHAT_ID" in readme
     assert "Telegram delivery is best-effort" in readme
     assert "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS" in readme
+
+
+def test_render_blueprint_keeps_secrets_out_of_version_control() -> None:
+    blueprint = _read("render.yaml")
+
+    assert "runtime: docker" in blueprint
+    assert "region: frankfurt" in blueprint
+    assert "plan: standard" in blueprint
+    assert "numInstances: 1" in blueprint
+    assert "--host 0.0.0.0 --port $PORT" in blueprint
+    assert "healthCheckPath: /healthz" in blueprint
+    assert 'autoDeployTrigger: "off"' in blueprint
+    for name in (
+        "TELEGRAM_BOT_TOKEN",
+        "IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS",
+        "TELEGRAM_WEBHOOK_URL",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "IMPERIAL_RAG_TELEGRAM_BACKEND_URL",
+        "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN",
+    ):
+        assert f"key: {name}\n        sync: false" in blueprint
 
 
 def test_compose_documents_local_only_unauthenticated_observability_services() -> None:

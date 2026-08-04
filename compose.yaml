@@ -38,13 +38,44 @@ services:
       - run
       - python
       - -m
-      - imperial_rag.app.telegram
+      - streamlit
+      - run
+      - src/imperial_rag/app/web.py
+      - --server.address
+      - 0.0.0.0
+      - --server.port
+      - "8501"
     healthcheck:
       test:
         - CMD
         - /app/.venv/bin/python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/healthz', timeout=2).read()"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2).read()"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  telegram-api:
+    <<: *imperial-app-base
+    ports:
+      - "127.0.0.1:8502:8502"
+    command:
+      - uv
+      - run
+      - uvicorn
+      - imperial_rag.app.telegram_backend:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8502"
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import os, urllib.request; r=urllib.request.Request('http://127.0.0.1:8502/healthz', headers={'Authorization': 'Bearer '+os.environ['IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN']}); urllib.request.urlopen(r, timeout=2).read()"
       interval: 10s
       timeout: 3s
       retries: 12
