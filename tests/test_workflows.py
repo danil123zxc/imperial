@@ -58,8 +58,32 @@ def test_query_workflow_with_injected_retrieval_and_generator_happy_path():
     assert result["answer"] == "Возврат брака оформляется актом. [S1]"
     assert result["citations"] == ["[S1] unknown"]
     assert result["sources"] == ["[S1] unknown"]
+    assert result["cited_documents"] == docs
     assert result["citations_valid"] is True
     assert result["invalid_citations"] == []
+
+
+def test_query_workflow_exposes_only_cited_sources_but_preserves_all_evidence():
+    docs = [
+        Document(
+            page_content=f"Fact {index}",
+            metadata={"citation_id": f"chunk-{index}", "file_path": f"/docs/{index}.docx", "source_type": "body"},
+        )
+        for index in range(1, 6)
+    ]
+    workflow = build_query_workflow(
+        retrieve=lambda question: docs,
+        generate=lambda question, retrieved_docs: "First. [S1]\nFifth. [S5]",
+    )
+
+    result = workflow.invoke({"question": "Which facts?"})
+
+    assert result["evidence"] == docs
+    assert result["retrieved_documents"] == docs
+    assert result["cited_documents"] == [docs[0], docs[4]]
+    assert result["citations"] == ["[S1] body", "[S5] body"]
+    assert result["sources"] == ["[S1] /docs/1.docx body", "[S5] /docs/5.docx body"]
+    assert result["citations_valid"] is True
 
 
 def test_query_workflow_preserves_model_provider_error_without_citation_warning():
@@ -627,9 +651,9 @@ def test_query_workflow_traces_invalid_generated_answer_without_refusal(monkeypa
                 "invalid_citations": ["missing"],
                 "refused": False,
                 "evidence_count": 1,
-                "citation_count": 1,
+                "citation_count": 0,
                 "citation_ids": ["known"],
-                "source_count": 1,
+                "source_count": 0,
                 "context_chars": 11,
             }
         },

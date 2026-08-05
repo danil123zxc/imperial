@@ -5,6 +5,8 @@ from imperial_rag.answering import (
     answer_has_required_citations,
     build_context,
     build_strict_messages,
+    cited_document_indices,
+    cited_documents,
     format_citations,
     format_sources,
     refuse_message,
@@ -34,6 +36,25 @@ def test_format_sources_uses_short_labels_and_preserves_paths():
     ]
 
     assert format_sources(docs) == ["[S1] /docs/return.docx body"]
+
+
+def test_cited_documents_preserve_original_labels_and_ignore_other_brackets():
+    docs = [
+        Document(page_content=f"Fact {index}", metadata={"citation_id": f"chunk-{index}"})
+        for index in range(1, 6)
+    ]
+    answer = "Заполните [поле]. Первый факт. [S1] Пятый факт. [S5] [S1]"
+
+    assert cited_document_indices(answer, docs) == [0, 4]
+    assert cited_documents(answer, docs) == [docs[0], docs[4]]
+    assert format_citations(docs, [0, 4]) == ["[S1] unknown", "[S5] unknown"]
+    assert format_sources(docs, [0, 4]) == ["[S1] unknown", "[S5] unknown"]
+
+
+def test_cited_documents_support_legacy_markers_and_ignore_unknown_sources():
+    docs = [Document(page_content="Known", metadata={"citation_id": "known-chunk"})]
+
+    assert cited_document_indices("Known. [known-chunk] [S99]", docs) == [0]
 
 
 def test_build_context_includes_short_source_labels_and_content():

@@ -903,9 +903,14 @@ def _coerce_result(result: Any) -> dict[str, Any]:
 
 
 def _build_assistant_message(result: dict[str, Any], settings: Any) -> dict[str, Any]:
+    from imperial_rag.answering import cited_documents
+
     answer = str(result.get("answer", ""))
     sources = result.get("sources") or result.get("citations") or []
     evidence = result.get("evidence") or result.get("retrieved_documents") or []
+    cited_evidence = result.get("cited_documents")
+    if cited_evidence is None:
+        cited_evidence = cited_documents(answer, evidence)
     message = {
         "role": "assistant",
         "content": answer,
@@ -913,7 +918,7 @@ def _build_assistant_message(result: dict[str, Any], settings: Any) -> dict[str,
         "error": _json_safe(result.get("error")),
         "citations_valid": result.get("citations_valid"),
         "invalid_citations": _json_safe(result.get("invalid_citations") or []),
-        "retrieved_files": build_retrieved_file_groups(evidence, settings),
+        "retrieved_files": build_retrieved_file_groups(cited_evidence, settings),
         "retrieved_documents": _retrieved_documents_payload(evidence),
         "retrieval": _json_safe(result.get("retrieval") or {}),
     }
