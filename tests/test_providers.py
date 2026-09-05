@@ -162,9 +162,10 @@ def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
     created = {}
 
     class FakeChatQwen:
-        def __init__(self, model, temperature, api_key, base_url):
+        def __init__(self, model, temperature, enable_thinking, api_key, base_url):
             created["model"] = model
             created["temperature"] = temperature
+            created["enable_thinking"] = enable_thinking
             created["api_key"] = api_key
             created["base_url"] = base_url
 
@@ -178,6 +179,7 @@ def test_qwen_chat_factory_uses_chatqwen(monkeypatch):
     assert created == {
         "model": "qwen3.7-plus",
         "temperature": 0,
+        "enable_thinking": False,
         "api_key": "dashscope-test-key",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     }
@@ -188,9 +190,10 @@ def test_qwen_chat_factory_uses_explicit_key_and_compat_base_url(monkeypatch):
     created = {}
 
     class FakeChatQwen:
-        def __init__(self, model, temperature, api_key, base_url):
+        def __init__(self, model, temperature, enable_thinking, api_key, base_url):
             created["model"] = model
             created["temperature"] = temperature
+            created["enable_thinking"] = enable_thinking
             created["api_key"] = api_key
             created["base_url"] = base_url
 
@@ -208,6 +211,7 @@ def test_qwen_chat_factory_uses_explicit_key_and_compat_base_url(monkeypatch):
     assert created == {
         "model": "qwen3.7-plus",
         "temperature": 0,
+        "enable_thinking": False,
         "api_key": "explicit-key",
         "base_url": "https://example.com/compatible-mode/v1",
     }

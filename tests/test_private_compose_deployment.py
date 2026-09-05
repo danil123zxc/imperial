@@ -201,7 +201,7 @@ def test_env_example_documents_phoenix_privacy_and_batching_knobs() -> None:
     assert "IMPERIAL_RAG_TRACE_FULL_METADATA=false" in lines
     assert "IMPERIAL_RAG_TRACE_MODE=compact" in lines
     assert "IMPERIAL_RAG_TRACE_CANDIDATE_DOCUMENTS=false" in lines
-    assert "IMPERIAL_RAG_TRACE_BATCH=false" in lines
+    assert "IMPERIAL_RAG_TRACE_BATCH=true" in lines
     assert "IMPERIAL_RAG_TRACE_AUTO_INSTRUMENT=false" in lines
     assert "IMPERIAL_RAG_TRACE_SUPPRESS_INTERNALS=true" in lines
     assert "IMPERIAL_RAG_TRACE_DOCUMENT_LIMIT=" in lines
