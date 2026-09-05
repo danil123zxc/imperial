@@ -402,6 +402,8 @@ Both evidence inputs are required; corrected questions alone do not enable a run
 See [the evidence evaluation guide](docs/evidence-evaluation.md) to prepare them.
 This runner scores source evidence at k=1/3/5/10 and budgets 1000/2000/4000, using
 ranked retrieval before answer packing. ID-based checks appear as `legacy_*` diagnostics.
+The separate `chunk_recall` evaluator and its chunk hit/precision metrics are removed;
+`id_recall` and optional Ragas `id_context_recall` remain available.
 Invalid source mappings or degraded retrieval fail the run; existing indexes may need
 rebuilding to carry valid `source_spans`. `--ragas-metrics none` disables Ragas judges,
 but the query still uses the answer model when context is available.

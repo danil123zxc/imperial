@@ -160,7 +160,7 @@ def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, sc
     assert len(evidence_scores) == 14
     expected_score = None if invalid or scenario == "refusal" else 0 if scenario == "empty" else 1
     assert set(evidence_scores.values()) == {expected_score}
-    assert "legacy_chunk_recall" in scores and "chunk_recall" not in scores
+    assert "legacy_chunk_recall" not in scores and "chunk_recall" not in scores
     assert "legacy_citation_grounding_behavior" in scores
     assert "legacy_conflict_behavior" in scores
     if scenario == "packed":

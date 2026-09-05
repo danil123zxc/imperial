@@ -37,7 +37,6 @@ DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
 DEFAULT_PHOENIX_CONCURRENCY = 3
 DEFAULT_RETRIEVAL_METRIC_K = 5
-CHUNK_RECALL_METRIC_K = 10
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
 VALID_LANES = {
     "indexed_answerability",
@@ -362,14 +361,6 @@ def phoenix_id_retrieval_relevance(
     return id_retrieval_metrics(input or {}, output or {}, expected)
 
 
-def phoenix_chunk_recall(
-    output: dict[str, Any],
-    expected: dict[str, Any] | None = None,
-    input: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return chunk_recall_metrics(input or {}, output or {}, expected)
-
-
 def phoenix_retrieval_relevance_for_k(k: int) -> Any:
     retrieval_k = positive_int(k)
     if retrieval_k == DEFAULT_RETRIEVAL_METRIC_K:
@@ -515,8 +506,6 @@ def run_local_eval(
         retrieval_metadata = retrieval_metrics.get("metadata", {})
         id_metrics = id_retrieval_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
         id_metadata = id_metrics.get("metadata", {})
-        chunk_metrics = chunk_recall_metrics(inputs, outputs, reference_outputs)
-        chunk_metadata = chunk_metrics.get("metadata", {})
         citation_grounding = citation_grounding_behavior(inputs, outputs, reference_outputs)
         conflict = conflict_behavior(inputs, outputs, reference_outputs)
         rows.append(
@@ -529,7 +518,6 @@ def run_local_eval(
                 **_deterministic_retrieval_values(
                     retrieval_metadata,
                     id_metadata,
-                    chunk_metadata,
                     retrieval_k=retrieval_k,
                 ),
             }
@@ -702,7 +690,7 @@ async def run_phoenix_experiment_async(
             "dataset_hash": digest({"schema_version": "imperial-evidence-benchmark-v1",
                                     "snapshot_hash": evidence_snapshot["snapshot_hash"], "examples": examples}),
         }
-        legacy_names = {"id_retrieval_relevance", "chunk_recall", "citation_grounding_behavior",
+        legacy_names = {"id_retrieval_relevance", "citation_grounding_behavior",
                         "conflict_behavior", "ragas_id_context_recall"}
         evaluators = {f"legacy_{name}" if name in legacy_names else name: evaluator
                       for name, evaluator in evaluators.items()}
@@ -844,7 +832,6 @@ def _phoenix_evaluators(
         "conflict_behavior": phoenix_conflict_behavior,
         "retrieval_relevance": phoenix_retrieval_relevance_for_k(retrieval_k),
         "id_retrieval_relevance": phoenix_id_retrieval_relevance_for_k(retrieval_k),
-        "chunk_recall": phoenix_chunk_recall,
     }
     if "faithfulness" in metric_names:
         evaluators["ragas_faithfulness"] = (
@@ -1026,43 +1013,6 @@ def id_retrieval_metrics(
     }
 
 
-def chunk_recall_metrics(
-    inputs: dict[str, Any],
-    outputs: dict[str, Any],
-    reference_outputs: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    from imperial_rag.evals.ragas import retrieved_chunk_ids_from_output
-
-    chunk_k = CHUNK_RECALL_METRIC_K
-    reference_ids = _reference_context_ids(inputs, reference_outputs)
-    retrieved_ids = retrieved_chunk_ids_from_output(outputs)
-    if not reference_ids:
-        return _missing_reference_context_id_metric(
-            "Chunk recall requires chunk-level reference_context_ids.",
-            k=chunk_k,
-            retrieved_key="retrieved_chunk_ids",
-            retrieved_ids=retrieved_ids,
-            empty_fields={"matched_context_ids": []},
-        )
-
-    overlap = _ranked_id_overlap(reference_ids, retrieved_ids, chunk_k)
-    precision = len(overlap.matched_ids) / chunk_k if chunk_k > 0 else 0.0
-    return {
-        "score": overlap.recall,
-        "label": "hit" if overlap.hit else "miss",
-        "explanation": f"{len(overlap.matched_ids)} of {len(overlap.reference_set)} gold chunk IDs appeared in the top {chunk_k}.",
-        "metadata": {
-            "k": chunk_k,
-            f"chunk_hit_at_{chunk_k}": overlap.hit,
-            f"chunk_recall_at_{chunk_k}": overlap.recall,
-            f"chunk_precision_at_{chunk_k}": precision,
-            "retrieved_chunk_ids": retrieved_ids,
-            "reference_context_ids": reference_ids,
-            "matched_context_ids": overlap.matched_ids,
-        },
-    }
-
-
 def _reference_context_ids(
     inputs: Mapping[str, Any],
     reference_outputs: Mapping[str, Any] | None,
@@ -1113,11 +1063,9 @@ def _ranked_id_overlap(
 def _deterministic_retrieval_values(
     retrieval_metadata: Mapping[str, Any],
     id_metadata: Mapping[str, Any],
-    chunk_metadata: Mapping[str, Any],
     *,
     retrieval_k: int,
 ) -> dict[str, Any]:
-    chunk_k = CHUNK_RECALL_METRIC_K
     return {
         f"retrieval_hit_at_{retrieval_k}": retrieval_metadata.get(f"hit_at_{retrieval_k}"),
         f"retrieval_precision_at_{retrieval_k}": retrieval_metadata.get(f"precision_at_{retrieval_k}"),
@@ -1127,11 +1075,6 @@ def _deterministic_retrieval_values(
         f"id_recall_at_{retrieval_k}": id_metadata.get(f"id_recall_at_{retrieval_k}"),
         f"id_mrr_at_{retrieval_k}": id_metadata.get(f"id_mrr_at_{retrieval_k}"),
         f"id_ndcg_at_{retrieval_k}": id_metadata.get(f"id_ndcg_at_{retrieval_k}"),
-        f"chunk_hit_at_{chunk_k}": chunk_metadata.get(f"chunk_hit_at_{chunk_k}"),
-        f"chunk_recall_at_{chunk_k}": chunk_metadata.get(f"chunk_recall_at_{chunk_k}"),
-        f"chunk_precision_at_{chunk_k}": chunk_metadata.get(f"chunk_precision_at_{chunk_k}"),
-        "retrieved_chunk_ids": list(chunk_metadata.get("retrieved_chunk_ids") or []),
-        "matched_context_ids": list(chunk_metadata.get("matched_context_ids") or []),
     }
 
 
@@ -1218,8 +1161,6 @@ def build_eval_artifact_row(
     retrieval_metadata = retrieval_metrics.get("metadata", {})
     id_metrics = id_retrieval_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
     id_metadata = id_metrics.get("metadata", {})
-    chunk_metrics = chunk_recall_metrics(inputs, dict(output), reference_outputs)
-    chunk_metadata = chunk_metrics.get("metadata", {})
     deterministic = {
         "citation_behavior": citation_verdict,
         "source_hint_behavior": source_hint_verdict,
@@ -1228,7 +1169,6 @@ def build_eval_artifact_row(
         **_deterministic_retrieval_values(
             retrieval_metadata,
             id_metadata,
-            chunk_metadata,
             retrieval_k=retrieval_k,
         ),
     }
@@ -1285,7 +1225,6 @@ def summarize_eval_artifact_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str,
             row_list,
             lambda row: _clean_group_values(row.get("source_families") or []) or ["unknown"],
         ),
-        f"chunk_recall_at_{CHUNK_RECALL_METRIC_K}": _chunk_recall_summary(row_list, k=CHUNK_RECALL_METRIC_K),
     }
 
 
@@ -1466,28 +1405,6 @@ def _grouped_pass_rate_summary(rows: Sequence[Mapping[str, Any]], key_fn: Any) -
     return {key: _pass_rate_summary(groups[key]) for key in sorted(groups)}
 
 
-def _chunk_recall_summary(rows: Sequence[Mapping[str, Any]], *, k: int) -> dict[str, Any]:
-    recall_key = f"chunk_recall_at_{k}"
-    hit_key = f"chunk_hit_at_{k}"
-    precision_key = f"chunk_precision_at_{k}"
-    applicable: list[Mapping[str, Any]] = []
-    for row in rows:
-        deterministic = row.get("deterministic")
-        values = deterministic if isinstance(deterministic, Mapping) else {}
-        if values.get(recall_key) is not None:
-            applicable.append(values)
-    hit_rows = sum(1 for values in applicable if values.get(hit_key) is True)
-    recall_values = [float(values[recall_key]) for values in applicable]
-    precision_values = [float(values[precision_key]) for values in applicable if values.get(precision_key) is not None]
-    return {
-        "applicable_rows": len(applicable),
-        "hit_rows": hit_rows,
-        "hit_rate": hit_rows / len(applicable) if applicable else None,
-        "mean_recall": sum(recall_values) / len(recall_values) if recall_values else None,
-        "mean_precision": sum(precision_values) / len(precision_values) if precision_values else None,
-    }
-
-
 def _document_relevance_score(document: Any, hints: list[str]) -> float:
     if isinstance(document, Mapping):
         haystack = _document_search_text(dict(document))
@@ -1631,8 +1548,6 @@ def _retrieval_span_metric_names(metadata: Mapping[str, Any]) -> list[str]:
         "id_recall_at_",
         "id_mrr_at_",
         "id_ndcg_at_",
-        "chunk_recall_at_",
-        "chunk_precision_at_",
     )
     return [
         key
