@@ -194,11 +194,6 @@ def searchable_document_text(document: Document) -> str:
     )
 
 
-def relaxed_candidate_sort_key(candidate: tuple[int, int, int, object]) -> tuple[int, int, int]:
-    matched_token_count, query_order, row_order, _row = candidate
-    return (-matched_token_count, query_order, row_order)
-
-
 def _bounded_adjacent_pairs(tokens: list[str], budget: int) -> list[list[str]]:
     if budget <= 0:
         return []

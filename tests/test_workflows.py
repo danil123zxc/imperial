@@ -730,20 +730,12 @@ def test_query_workflow_preserves_cited_answer_with_uncited_structural_headings(
     assert result["invalid_citations"] == []
 
 
-def test_query_workflow_default_generation_requires_legacy_openai_flag(monkeypatch):
-    docs = [Document(page_content="Возврат брака оформляется актом.", metadata={"citation_id": "return"})]
-
-    class FakeModel:
-        def invoke(self, messages):
-            return type("Response", (), {"content": "Возврат брака оформляется актом. [S1]"})()
-
-    monkeypatch.delenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", raising=False)
-    monkeypatch.setattr("imperial_rag.answering.workflow.ChatOpenAI", lambda **kwargs: FakeModel(), raising=False)
-
+def test_query_workflow_generation_requires_explicit_model():
+    docs = [Document(page_content="Evidence", metadata={"citation_id": "source"})]
     workflow = build_query_workflow(retrieve=lambda question: docs)
 
-    with pytest.raises(RuntimeError, match="Legacy OpenAI chat is disabled"):
-        workflow.invoke({"question": "Как оформить возврат брака?"})
+    with pytest.raises(RuntimeError, match="requires an explicit chat_model or generate callback"):
+        workflow.invoke({"question": "What does the evidence say?"})
 
 
 def test_rank_hybrid_candidates_deduplicates_and_boosts_keyword_exact_matches():

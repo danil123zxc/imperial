@@ -138,48 +138,6 @@ def _uses_qwen_ocr_options(model: str) -> bool:
     return "ocr" in model.casefold()
 
 
-class LegacyOpenAIOcrClient:
-    def __init__(self, model: str = "gpt-4.1-mini") -> None:
-        from imperial_rag.integrations.dashscope import QwenProviderSettings
-
-        if not QwenProviderSettings.from_env().allow_legacy_openai:
-            raise RuntimeError(
-                "Legacy OpenAI OCR is disabled. Use Qwen OCR defaults or set "
-                "IMPERIAL_RAG_ALLOW_LEGACY_OPENAI=true."
-            )
-        self._model_name = model
-        self._model = None
-
-    @property
-    def model(self):
-        if self._model is None:
-            from langchain_openai import ChatOpenAI
-
-            self._model = ChatOpenAI(model=self._model_name, temperature=0)
-        return self._model
-
-    def extract_image_text(self, image_path: Path) -> OcrResult:
-        image_bytes = image_path.read_bytes()
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        mime_type, _ = mimetypes.guess_type(image_path.name)
-        mime_type = mime_type or "image/jpeg"
-        response = self.model.invoke(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Extract all visible Russian and English text verbatim. Do not summarize.",
-                        },
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
-                    ],
-                }
-            ]
-        )
-        return OcrResult(text=str(response.content).strip(), method="legacy_openai_vision")
-
-
 OcrClient = QwenOcrClient
 
 

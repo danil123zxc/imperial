@@ -14,7 +14,6 @@ dependencies = [
   "langchain-core>=1.4,<2",
   "langchain-openai>=1.2,<2",
   "langchain-qdrant>=1.1,<2",
-  "langchain-cohere>=0.6,<0.7",
   "langchain-elasticsearch>=1,<2",
   "langchain-qwq>=0.3,<0.4",
   "langchain-text-splitters>=1.1,<2",

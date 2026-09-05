@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import inspect
 import json
 import sys
-import types
 import warnings
 from pathlib import Path
 from time import perf_counter
@@ -24,6 +22,7 @@ from imperial_rag.cli import (  # noqa: E402
 )
 from imperial_rag.evals.phoenix_experiment import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, run_target
 from imperial_rag.evals.ragas import (
+    _install_ragas_langchain_community_compat,
     DEFAULT_RAGAS_CONCURRENCY,
     DEFAULT_RAGAS_METRICS,
     REFERENCE_REQUIRED_RAGAS_METRICS,
@@ -318,10 +317,6 @@ def main(argv: list[str] | None = None) -> None:
         raise
 
 
-def _retrieved_contexts(outputs: dict[str, Any]) -> list[str]:
-    return retrieved_contexts_from_output(outputs)
-
-
 def _log_completion(started_at: float, **fields: Any) -> None:
     from imperial_rag.observability import log_event
 
@@ -379,15 +374,6 @@ def _import_llm_factory() -> Callable[..., Any]:
     return llm_factory
 
 
-def _import_ragas_evaluate() -> Callable[..., Any]:
-    _install_ragas_langchain_community_compat()
-    try:
-        from ragas import evaluate
-    except ImportError as exc:
-        raise SystemExit("Ragas is not installed; run `uv sync --extra dev`.") from exc
-    return evaluate
-
-
 def _import_ragas_aevaluate() -> Callable[..., Any]:
     _install_ragas_langchain_community_compat()
     try:
@@ -395,30 +381,6 @@ def _import_ragas_aevaluate() -> Callable[..., Any]:
     except ImportError as exc:
         raise SystemExit("Ragas async evaluation is not installed; run `uv sync --extra dev`.") from exc
     return aevaluate
-
-
-def _install_ragas_langchain_community_compat() -> None:
-    module_name = "langchain_community.chat_models.vertexai"
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="`langchain-community` is being sunset.*",
-                category=DeprecationWarning,
-            )
-            importlib.import_module(module_name)
-        return
-    except ModuleNotFoundError as exc:
-        if exc.name != module_name:
-            raise
-
-    module = types.ModuleType(module_name)
-
-    class ChatVertexAI:
-        pass
-
-    setattr(module, "ChatVertexAI", ChatVertexAI)
-    sys.modules[module_name] = module
 
 
 def _ensure_src_on_path() -> None:

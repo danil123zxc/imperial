@@ -37,7 +37,7 @@ Core code lives in `src/imperial_rag/`:
 - `indexing/`: Qdrant vector indexing helpers and stable chunk identifiers.
 - `retrieval/`: Elasticsearch keyword search, vector/keyword fusion, and reranking.
 - `answering/`: query runtime, LangGraph workflows, and strict answer formatting.
-- `integrations/`: DashScope/Qwen provider adapters and legacy provider escape hatches.
+- `integrations/`: DashScope/Qwen provider adapters.
 - `observability/`: structured logs, event logs, Phoenix tracing, and privacy controls.
 - `app/`: Streamlit UI/auth, the Render Telegram adapter, the Russian job API/worker, and local chat history.
 
@@ -344,7 +344,7 @@ Important settings are documented in `.env.example`.
 | `IMPERIAL_RAG_EVENTLOG_*` | Optional local Elasticsearch event-log settings |
 | `IMPERIAL_RAG_CHUNK_*`, `IMPERIAL_RAG_VECTOR_*`, `IMPERIAL_RAG_KEYWORD_LIMIT`, `IMPERIAL_RAG_RERANK_*` | Retrieval, chunking, and reranking tuning |
 
-Legacy OpenAI, Azure OpenAI, and Cohere keys are compatibility escape hatches only. They must be enabled explicitly with `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE`.
+The default runtime uses DashScope/Qwen. Direct `build_query_workflow` callers must supply `chat_model` or `generate` to generate an answer; empty evidence still returns a refusal without a model.
 
 ## Tracing And Logs
 

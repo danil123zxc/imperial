@@ -23,8 +23,6 @@ def clear_provider_env(monkeypatch):
         "IMPERIAL_RAG_QWEN_EMBEDDING_MODEL",
         "IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS",
         "IMPERIAL_RAG_QWEN_RERANK_MODEL",
-        "IMPERIAL_RAG_ALLOW_LEGACY_OPENAI",
-        "IMPERIAL_RAG_ALLOW_LEGACY_COHERE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -49,8 +47,6 @@ def test_qwen_provider_settings_defaults(monkeypatch):
     assert settings.embedding_model == "text-embedding-v4"
     assert settings.embedding_dimensions == 2048
     assert settings.rerank_model == "qwen3-rerank"
-    assert settings.allow_legacy_openai is False
-    assert settings.allow_legacy_cohere is False
 
 
 def test_qwen_provider_settings_read_environment(monkeypatch):
@@ -68,8 +64,6 @@ def test_qwen_provider_settings_read_environment(monkeypatch):
     monkeypatch.setenv("IMPERIAL_RAG_QWEN_EMBEDDING_MODEL", "text-embedding-v4")
     monkeypatch.setenv("IMPERIAL_RAG_QWEN_EMBEDDING_DIMENSIONS", "1024")
     monkeypatch.setenv("IMPERIAL_RAG_QWEN_RERANK_MODEL", "qwen-test-rerank")
-    monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "1")
-    monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_COHERE", "yes")
 
     from imperial_rag.integrations.dashscope import QwenProviderSettings
 
@@ -87,8 +81,6 @@ def test_qwen_provider_settings_read_environment(monkeypatch):
     assert settings.ocr_enable_rotate is True
     assert settings.embedding_dimensions == 1024
     assert settings.rerank_model == "qwen-test-rerank"
-    assert settings.allow_legacy_openai is True
-    assert settings.allow_legacy_cohere is True
 
 
 def test_dashscope_configured_requires_key(monkeypatch):
@@ -99,27 +91,6 @@ def test_dashscope_configured_requires_key(monkeypatch):
     assert dashscope_configured() is False
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-test-key")
     assert dashscope_configured() is True
-
-
-def test_legacy_openai_ocr_requires_explicit_opt_in(monkeypatch):
-    clear_provider_env(monkeypatch)
-
-    from imperial_rag.ingestion.ocr import LegacyOpenAIOcrClient
-
-    with pytest.raises(RuntimeError, match="Legacy OpenAI OCR is disabled"):
-        LegacyOpenAIOcrClient()
-
-
-def test_legacy_openai_ocr_can_be_enabled_explicitly(monkeypatch):
-    clear_provider_env(monkeypatch)
-    monkeypatch.setenv("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "true")
-
-    from imperial_rag.ingestion.ocr import LegacyOpenAIOcrClient
-
-    client = LegacyOpenAIOcrClient(model="legacy-test-model")
-
-    assert client._model_name == "legacy-test-model"
-    assert client._model is None
 
 
 def test_qwen_provider_vector_metadata_defaults():

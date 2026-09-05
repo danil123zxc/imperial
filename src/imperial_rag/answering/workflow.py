@@ -89,19 +89,6 @@ class _CoercedRetrieval:
     retrieval: dict[str, Any] | None = None
 
 
-def _legacy_openai_chat_model():
-    from imperial_rag.integrations.dashscope import QwenProviderSettings
-
-    if not QwenProviderSettings.from_env().allow_legacy_openai:
-        raise RuntimeError(
-            "Legacy OpenAI chat is disabled. Use Qwen provider defaults or set "
-            "IMPERIAL_RAG_ALLOW_LEGACY_OPENAI=true."
-        )
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(model="gpt-4.1-mini", temperature=0)
-
-
 def _contains_query_terms(query: str, text: str) -> bool:
     normalized_text = text.casefold()
     return all(term in normalized_text for term in query.casefold().split() if term)
@@ -325,7 +312,9 @@ def build_query_workflow(
                     model_error = _coerce_error(generated)
                     _set_model_generation_trace_attributes(model_span, generated)
                 else:
-                    resolved_model = model or _legacy_openai_chat_model()
+                    if model is None:
+                        raise RuntimeError("Query generation requires an explicit chat_model or generate callback.")
+                    resolved_model = model
                     _set_model_trace_attributes(model_span, resolved_model)
                     answer = build_strict_answer_chain(resolved_model).invoke(
                         {"evidence_prompt": build_evidence_prompt(question, evidence)}

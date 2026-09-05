@@ -24,11 +24,6 @@ class SupportsInvoke(Protocol):
         ...
 
 
-class SupportsRetrieverFactory(Protocol):
-    def as_retriever(self, **kwargs: Any) -> Any:
-        ...
-
-
 @dataclass(frozen=True)
 class QueryDependencies:
     vector_search: Any
