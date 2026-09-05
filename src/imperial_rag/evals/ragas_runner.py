@@ -20,6 +20,9 @@ from imperial_rag.cli import (  # noqa: E402
     log_failure as _log_failure,
     positive_int,
 )
+from imperial_rag.evals.dataset_input import (
+    add_dataset_input_arguments, has_phoenix_input, load_phoenix_input, validate_dataset_input_arguments,
+)
 from imperial_rag.evals.phoenix_experiment import DEFAULT_QUESTIONS_PATH, build_runtime, load_questions, run_target
 from imperial_rag.evals.ragas import (
     _install_ragas_langchain_community_compat,
@@ -262,7 +265,7 @@ def result_records(result: Any) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> None:
     _ensure_src_on_path()
     parser = argparse.ArgumentParser(description="Run Imperial RAG quality evaluations with Ragas.")
-    parser.add_argument("--questions-path", type=Path, default=DEFAULT_QUESTIONS_PATH)
+    add_dataset_input_arguments(parser)
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--metrics", default=",".join(DEFAULT_METRICS))
     parser.add_argument("--output-path", type=Path)
@@ -278,13 +281,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Optional batch size passed to ragas.aevaluate for reference metrics.",
     )
     args = parser.parse_args(argv)
+    validate_dataset_input_arguments(parser, args)
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
     _configure_observability(settings)
     started_at = perf_counter()
     try:
-        examples = load_questions(args.questions_path)
+        source = _run_async(load_phoenix_input(args, settings)) if has_phoenix_input(args) else None
+        examples = source.examples if source else load_questions(args.questions_path or DEFAULT_QUESTIONS_PATH)
         metric_names = parse_metric_names(args.metrics)
         prepared = build_ragas_rows(examples, runtime=build_runtime(settings=settings))
         if not prepared.rows:
@@ -297,6 +302,9 @@ def main(argv: list[str] | None = None) -> None:
             batch_size=args.batch_size,
         )
         records = result_records(result)
+        if source:
+            records = [row | {"phoenix_dataset": source.binding} for row in records]
+            print(f"phoenix_input={json.dumps(source.binding, sort_keys=True)}")
         if args.output_path:
             write_jsonl(args.output_path, records)
         else:

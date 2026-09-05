@@ -175,6 +175,8 @@ async def run_comparison(
         "evaluator_version": "source-evidence-v1",
         "package_versions": {name: version(name) for name in ("langchain-text-splitters", "arize-phoenix-client")},
     }
+    if "phoenix_dataset" in benchmark:
+        manifest["phoenix_dataset"] = benchmark["phoenix_dataset"]
     write_json(output / "benchmark.json", benchmark)
     summaries = []
     for size, overlap in resolved:
@@ -199,6 +201,8 @@ async def run_comparison(
             for resource in resources:
                 await asyncio.to_thread(resource.close)
         for row in rows:
+            if "phoenix_dataset" in manifest:
+                row["phoenix_dataset"] = manifest["phoenix_dataset"]
             row.update({"config_id": config_id, "snapshot_hash": snapshot["snapshot_hash"],
                         "dataset_hash": benchmark["dataset_hash"]})
         write_jsonl(root / "results.jsonl", rows)
@@ -219,6 +223,8 @@ def load_comparison(root: Path) -> tuple[dict[str, Any], dict[str, Any], list[di
         raise ValueError("Invalid configuration ID in comparison manifest")
     if digest({key: value for key, value in benchmark.items() if key != "dataset_hash"}) != manifest["dataset_hash"]:
         raise ValueError("Comparison benchmark changed")
+    if manifest.get("phoenix_dataset") != benchmark.get("phoenix_dataset"):
+        raise ValueError("Comparison Phoenix dataset binding changed")
     results = [read_jsonl(root / config["config_id"] / "results.jsonl") for config in manifest["configs"]]
     if digest(results) != manifest.get("results_hash"):
         raise ValueError("Incomplete or modified comparison results")
@@ -259,6 +265,8 @@ async def generate_comparison_answers(root: Path, *, concurrency: int = 3) -> li
                                       "question": example["question"], "reference_answer": example["reference_answer"],
                                       "review_status": "pending", "proxy_tokens": packed["proxy_tokens"],
                                       "context": packed["context"], "dataset_hash": manifest["dataset_hash"]}
+            if "phoenix_dataset" in manifest:
+                result["phoenix_dataset"] = manifest["phoenix_dataset"]
             try:
                 workflow = build_query_workflow(retrieve=lambda _: docs, chat_model=model, context_token_budget=2000)
                 answer = await asyncio.to_thread(workflow.invoke, {"question": example["question"]})

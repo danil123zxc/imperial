@@ -454,6 +454,120 @@ It counts the rendered evidence using the fixed `cl100k_base` proxy tokenizer,
 including source labels and separators; these are not exact Qwen billing tokens.
 Unset the variable to retain existing application behavior.
 
+### Phoenix datasets as experiment input
+
+Maintain questions, reference answers and reviewed evidence in an **existing**
+Phoenix dataset instead of local questions/annotation JSONL. `snapshot.json` stays
+local and frozen: it is still the source for rechunking and exact evidence-span
+validation. No dataset is created, uploaded, overwritten or marked reviewed when
+Phoenix is the input source.
+
+All four eval entrypoints accept `--phoenix-dataset-name NAME` or
+`--phoenix-dataset-id ID`, plus optional `--phoenix-dataset-version-id VERSION_ID`.
+Omitting the version resolves latest once per command; the returned immutable
+version is retained for every configuration. Use an explicit version to bind
+separate validation and execution commands to the same reviewed dataset.
+`--dataset-name` retains its existing **upload destination** meaning and conflicts
+with Phoenix input. Explicit local questions, local annotations, and a second
+Phoenix selector also conflict; a version flag requires a Phoenix selector.
+Without a Phoenix selector, existing local defaults and commands above still work.
+
+Each Phoenix example uses these objects (the Phoenix example ID is separate from
+the stable Imperial question ID in metadata):
+
+| Object | Fields |
+| --- | --- |
+| `input` | `question`: nonempty string |
+| `output` | `reference_answer`, `expected_behavior`, `lane`; optional `expected_source_hints`, `reference_context_ids`, `quarantine_reason`, `evidence` |
+| `metadata` | `id`, `suite`; optional string-list `tags`; evidence runs also require `split`, `review_status`, `question_hash`, `snapshot_hash` |
+
+The existing question contract applies: `expected_behavior` is `cite_answer`,
+`surface_conflict` or `refuse_if_not_found`, and `lane` must match that behavior.
+For compatibility, `lane` and `quarantine_reason` may also live in metadata;
+duplicate values must agree. Optional fields remain absent when omitted.
+`expected_source_hints` and legacy `reference_context_ids` are lists of strings.
+Question IDs must be unique, nonempty strings; suite and reference answer are required.
+
+Evidence has the existing shape:
+
+```text
+evidence: [
+  {evidence_id: "claim-1", support_sets: [
+    [{source_id, text_sha256, start, end, quote}],
+    [{source_id, text_sha256, start, end, quote}]
+  ]}
+]
+```
+
+Each support set requires all its spans; any complete support set supports the
+unit. Offsets are Python Unicode character indices with exclusive ends. Exact
+source identity, text hash, bounds and quote must match the frozen snapshot.
+Answerable questions require evidence, conflict questions need at least two units,
+and refusals require an explicit empty evidence list. `split` is `dev` or `test`;
+`review_status` must explicitly be `reviewed`. The importer never fills in review
+approval or repairs hashes. All rows are validated before selecting a comparison split.
+
+`question_hash` is `imperial_rag.ingestion.provenance.digest(mapped_question)`:
+combine `input.question`, the listed question fields from output (excluding
+`evidence`), and `metadata.id/suite/tags/lane/quarantine_reason` when present.
+Review fields and Phoenix example IDs are excluded. Do not insert absent optional
+fields before hashing. `snapshot_hash` is the verified snapshot's `snapshot_hash`.
+After editing a question or its reference fields, re-review its evidence and
+update the hash in Phoenix. This read-only helper prints current question hashes;
+it does not approve annotations:
+
+```bash
+uv run python - <<'PY'
+import asyncio
+from phoenix.client import AsyncClient
+from imperial_rag.config import Settings
+from imperial_rag.env import load_project_env
+from imperial_rag.evals.dataset_input import map_phoenix_examples
+from imperial_rag.ingestion.provenance import digest
+async def main():
+    load_project_env()
+    dataset = await AsyncClient(base_url=Settings().phoenix_client_endpoint).datasets.get_dataset(dataset="imperial-reviewed-questions")
+    print("dataset_id=", dataset.id, "version_id=", dataset.version_id)
+    for question in map_phoenix_examples(dataset)[0]:
+        print(question["id"], digest(question))
+asyncio.run(main())
+PY
+```
+
+Basic evaluation accepts datasets without evidence annotations. It uses the
+question/reference contract; source-evidence validation and metrics belong to
+`run_all_evals.py` and `compare_chunking.py validate/run`:
+
+```bash
+# Basic evaluation; --use-phoenix stores an experiment on the original dataset.
+uv run python scripts/run_phoenix_eval.py --phoenix-dataset-name imperial-reviewed-questions --use-phoenix --ragas-metrics none
+uv run python scripts/run_ragas_eval.py --phoenix-dataset-name imperial-reviewed-questions --output-path .imperial_rag/ragas-phoenix.jsonl
+
+# Use the dataset/version IDs reported by the helper or shown in Phoenix.
+PHOENIX_INPUT_ID='replace-with-dataset-id'
+PHOENIX_INPUT_VERSION='replace-with-version-id'
+uv run python scripts/compare_chunking.py validate --snapshot .imperial_rag/evidence-eval/snapshot.json --phoenix-dataset-id "$PHOENIX_INPUT_ID" --phoenix-dataset-version-id "$PHOENIX_INPUT_VERSION"
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --phoenix-dataset-id "$PHOENIX_INPUT_ID" --phoenix-dataset-version-id "$PHOENIX_INPUT_VERSION" --ragas-metrics none
+uv run python scripts/compare_chunking.py run --snapshot .imperial_rag/evidence-eval/snapshot.json --phoenix-dataset-id "$PHOENIX_INPUT_ID" --phoenix-dataset-version-id "$PHOENIX_INPUT_VERSION" --configs 400:50,256:0 --output .imperial_rag/evidence-eval/runs/phoenix-first
+uv run python scripts/compare_chunking.py answers --run .imperial_rag/evidence-eval/runs/phoenix-first
+uv run python scripts/compare_chunking.py phoenix --run .imperial_rag/evidence-eval/runs/phoenix-first
+```
+
+Phoenix-backed `validate` only reads Phoenix and the local snapshot. Other eval/run
+commands retain their provider requirements: disabling Ragas judges does not
+disable answer generation or retrieval providers. Comparison indexes remain
+isolated; active indexes and aliases are unchanged.
+
+The `phoenix_dataset` binding records endpoint, dataset ID/name, version ID and an
+example-content hash in comparison benchmarks/manifests/results, answer artifacts,
+Ragas records and Phoenix experiment metadata; CLI output also reports the binding.
+Comparison `answers` uses saved retrieval and retains the binding without reading
+latest. `phoenix` fetches the recorded version, verifies its content and endpoint,
+and replays the selected split on the original dataset with original example IDs.
+Deletion/unavailability or a mismatch fails publication rather than re-uploading.
+Local-file comparison publication retains its existing upload-once/pinned replay.
+All snapshots, bindings and outputs remain private under `.imperial_rag/`.
+
 ## Testing
 
 Run the normal offline suite:

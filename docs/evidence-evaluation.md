@@ -97,12 +97,19 @@ packed before generation and citation numbering. Unset preserves prior behavior.
 
 ## Full evaluation runner
 
-`run_all_evals.py` requires `--snapshot` and `--annotations`, with
+With local-file input, `run_all_evals.py` requires `--snapshot` and `--annotations`, with
 `--questions-path` selecting the matching questions (default `evals/questions.jsonl`).
 It validates the snapshot, question hashes and reviewed sidecar before external
 setup. Missing inputs, empty datasets and invalid annotations stop the command;
 questions alone are insufficient. Annotation preparation and review use the same
 workflow described above.
+
+Alternatively, select an existing Phoenix dataset with `--phoenix-dataset-name` or
+`--phoenix-dataset-id`, optionally pinned by `--phoenix-dataset-version-id`. It replaces
+both local questions and annotations; `--snapshot` remains mandatory. All reviewed
+evidence gates run before retrieval/model calls. The same input flags work for
+comparison `validate/run`; basic Phoenix/Ragas evaluation accepts unannotated rows.
+See [README's Phoenix input schema and commands](../README.md#phoenix-datasets-as-experiment-input).
 
 ```bash
 uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
@@ -154,13 +161,18 @@ Reference-answer correctness still requires review; these checks do not establis
 semantic correctness or automatically select a deployment winner.
 
 `phoenix` replays saved results with deterministic code evaluators through the
-existing Phoenix runner. A binding under the run parent's `phoenix-datasets/` caches
+existing Phoenix runner. For local-file inputs, a binding under the run parent's `phoenix-datasets/` caches
 dataset ID and version for the benchmark hash and split. Subsequent configurations
 and runs reuse that exact version, verify its contents and endpoint, and never
 silently use the latest version. `phoenix.json` records completed publications so
 ordinary repeated calls do not duplicate them. After an interrupted network write,
 inspect Phoenix before retrying: remote experiment creation and local recording
 are not transactional.
+
+For Phoenix inputs, the benchmark and manifest instead retain the original dataset
+ID/version, endpoint and example-content hash. Publication reads that pinned version
+and selects the saved split in memory using original example IDs; no dataset upload
+or modification occurs. Separate answer generation preserves the saved binding.
 
 All snapshots, quotations, annotations, context, answers and evaluation outputs are
 private data. Store them under `.imperial_rag/`, keep them out of commits and public

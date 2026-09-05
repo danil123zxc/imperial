@@ -12,6 +12,9 @@ ensure_src_on_path(__file__)
 from imperial_rag.config import Settings  # noqa: E402
 from imperial_rag.env import load_project_env  # noqa: E402
 from imperial_rag.evals.chunk_comparison import generate_comparison_answers, run_comparison  # noqa: E402
+from imperial_rag.evals.dataset_input import (  # noqa: E402
+    add_dataset_input_arguments, has_phoenix_input, load_phoenix_input, validate_dataset_input_arguments,
+)
 from imperial_rag.evals.evidence import assemble_benchmark  # noqa: E402
 from imperial_rag.evals.questions import load_questions  # noqa: E402
 from imperial_rag.ingestion.provenance import freeze_extracted_sources, load_snapshot  # noqa: E402
@@ -28,8 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     for command in ("validate", "run"):
         cmd = sub.add_parser(command)
         cmd.add_argument("--snapshot", type=Path, required=True)
-        cmd.add_argument("--annotations", type=Path, required=True)
-        cmd.add_argument("--questions", type=Path, default=Path("evals/questions.jsonl"))
+        cmd.add_argument("--annotations", type=Path)
+        add_dataset_input_arguments(cmd, questions_flag="--questions")
         if command == "run":
             cmd.add_argument("--output", type=Path, required=True)
             cmd.add_argument("--configs", help="size:overlap pairs, comma-separated; default baseline plus nine variants")
@@ -42,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     phoenix.add_argument("--run", type=Path, required=True)
     phoenix.add_argument("--concurrency", type=int, default=3)
     args = parser.parse_args(argv)
+    if args.command in {"validate", "run"}:
+        validate_dataset_input_arguments(parser, args, evidence=True)
     load_project_env()
     settings = Settings()
     if args.command == "freeze":
@@ -49,7 +54,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"sources={len(snapshot['sources'])}; snapshot_hash={snapshot['snapshot_hash']}")
     elif args.command in {"validate", "run"}:
         snapshot = load_snapshot(args.snapshot)
-        benchmark = assemble_benchmark(load_questions(args.questions), read_jsonl(args.annotations), snapshot)
+        if has_phoenix_input(args):
+            source = asyncio.run(load_phoenix_input(args, settings, snapshot=snapshot))
+            benchmark = source.benchmark
+            assert benchmark is not None
+            print(f"phoenix_dataset_id={source.binding['dataset_id']}; phoenix_version_id={source.binding['version_id']}")
+        else:
+            benchmark = assemble_benchmark(load_questions(args.questions_path or Path("evals/questions.jsonl")),
+                                           read_jsonl(args.annotations), snapshot)
         if args.command == "validate":
             print(f"reviewed_questions={len(benchmark['examples'])}; dataset_hash={benchmark['dataset_hash']}")
         else:

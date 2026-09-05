@@ -10,6 +10,9 @@ from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 _ensure_src_on_path(__file__)
 
 import run_phoenix_eval as phoenix_eval
+from imperial_rag.evals.dataset_input import (
+    add_dataset_input_arguments, has_phoenix_input, load_phoenix_input, validate_dataset_input_arguments,
+)
 from imperial_rag.evals.evidence import assemble_benchmark
 from imperial_rag.ingestion.provenance import load_snapshot
 from imperial_rag.jsonl import read_jsonl
@@ -29,9 +32,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run all currently runnable Imperial RAG evals and store one Phoenix experiment."
     )
-    parser.add_argument("--questions-path", type=Path, default=phoenix_eval.DEFAULT_QUESTIONS_PATH)
+    add_dataset_input_arguments(parser)
     parser.add_argument("--snapshot", type=Path, required=True, help="Frozen source snapshot for evidence recall.")
-    parser.add_argument("--annotations", type=Path, required=True, help="Reviewed evidence sidecar matching the questions and snapshot.")
+    parser.add_argument("--annotations", type=Path, help="Reviewed evidence sidecar matching the questions and snapshot.")
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--dataset-name")
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
@@ -47,9 +50,18 @@ def main(argv: list[str] | None = None) -> None:
         help="Maximum concurrent Phoenix experiment tasks.",
     )
     args = parser.parse_args(argv)
+    validate_dataset_input_arguments(parser, args, evidence=True)
 
     snapshot = load_snapshot(args.snapshot)
-    benchmark = assemble_benchmark(phoenix_eval.load_questions(args.questions_path), read_jsonl(args.annotations), snapshot)
+    source = None
+    if has_phoenix_input(args):
+        phoenix_eval._load_project_env(args.workspace_root)
+        source = phoenix_eval._run_async(load_phoenix_input(args, phoenix_eval._build_settings(args.workspace_root), snapshot=snapshot))
+        benchmark = source.benchmark
+        assert benchmark is not None
+    else:
+        benchmark = assemble_benchmark(phoenix_eval.load_questions(args.questions_path or phoenix_eval.DEFAULT_QUESTIONS_PATH),
+                                       read_jsonl(args.annotations), snapshot)
     examples = benchmark["examples"]
     if not examples:
         parser.error("Evidence evaluation requires at least one question.")
@@ -70,6 +82,7 @@ def main(argv: list[str] | None = None) -> None:
             ragas_metric_names=metric_names,
             concurrency=args.concurrency,
             evidence_snapshot=snapshot,
+            **({"phoenix_input": source} if source else {}),
         )
         _log_completion(started_at, example_count=len(examples), ragas_metrics=",".join(metric_names))
     except (Exception, SystemExit) as exc:

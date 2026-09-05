@@ -23,6 +23,10 @@ from imperial_rag.cli import (  # noqa: E402
     log_failure as _log_failure,
     positive_int,
 )
+from imperial_rag.evals.dataset_input import (
+    PhoenixInput, add_dataset_input_arguments, has_phoenix_input, load_phoenix_input,
+    validate_dataset_input_arguments,
+)
 from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
 from imperial_rag.jsonl import iter_jsonl_with_line_numbers  # noqa: E402
@@ -536,7 +540,7 @@ def run_local_eval(
 def main(argv: list[str] | None = None) -> None:
     _ensure_src_on_path()
     parser = argparse.ArgumentParser(description="Run Imperial RAG citation/refusal evaluations.")
-    parser.add_argument("--questions-path", type=Path, default=DEFAULT_QUESTIONS_PATH)
+    add_dataset_input_arguments(parser)
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--dataset-name")
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
@@ -560,6 +564,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Top-k cutoff for deterministic retrieval relevance metrics.",
     )
     args = parser.parse_args(argv)
+    validate_dataset_input_arguments(parser, args)
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
@@ -568,7 +573,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if args.trace_phoenix or args.use_phoenix:
             _configure_tracing(settings, enabled=True)
-        examples = load_questions(args.questions_path)
+        source = _run_async(load_phoenix_input(args, settings)) if has_phoenix_input(args) else None
+        examples = source.examples if source else load_questions(args.questions_path or DEFAULT_QUESTIONS_PATH)
+        if source:
+            print(f"phoenix_input={stable_json_dumps(source.binding)}")
         metric_names = parse_phoenix_ragas_metrics(args.ragas_metrics)
 
         if args.use_phoenix:
@@ -580,6 +588,7 @@ def main(argv: list[str] | None = None) -> None:
                 ragas_metric_names=metric_names,
                 concurrency=args.concurrency,
                 retrieval_k=args.retrieval_k,
+                **({"phoenix_input": source} if source else {}),
             )
             _log_eval_completion(
                 started_at,
@@ -632,6 +641,7 @@ def run_phoenix_experiment(
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
     retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
     evidence_snapshot: dict[str, Any] | None = None,
+    phoenix_input: PhoenixInput | None = None,
 ) -> None:
     return _run_async(
         run_phoenix_experiment_async(
@@ -643,6 +653,7 @@ def run_phoenix_experiment(
             concurrency=concurrency,
             retrieval_k=retrieval_k,
             evidence_snapshot=evidence_snapshot,
+            phoenix_input=phoenix_input,
         )
     )
 
@@ -657,9 +668,21 @@ async def run_phoenix_experiment_async(
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
     retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
     evidence_snapshot: dict[str, Any] | None = None,
+    phoenix_input: PhoenixInput | None = None,
 ) -> None:
     concurrency = positive_int(concurrency)
     retrieval_k = positive_int(retrieval_k)
+    if phoenix_input is not None:
+        from imperial_rag.evals.dataset_input import dataset_binding, map_phoenix_examples
+        from imperial_rag.evals.evidence import assemble_benchmark
+
+        if dataset_binding(phoenix_input.dataset, settings.phoenix_client_endpoint) != phoenix_input.binding:
+            raise ValueError("Phoenix input binding changed")
+        questions, annotations = map_phoenix_examples(phoenix_input.dataset)
+        validated = (assemble_benchmark(questions, annotations, evidence_snapshot)["examples"]
+                     if evidence_snapshot is not None else questions)
+        if examples != validated:
+            raise ValueError("Phoenix input does not match the experiment examples")
     if ragas_metric_names is None:
         from imperial_rag.evals.ragas import DEFAULT_RAGAS_METRICS
 
@@ -698,18 +721,24 @@ async def run_phoenix_experiment_async(
     if "answer_relevancy" in resolved_ragas_metric_names and has_answer_quality_rows:
         _get_ragas_answer_relevancy_scorer()
     client = AsyncClient(base_url=settings.phoenix_client_endpoint)
-    inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
-    for row, example in zip(metadata, examples):
-        if evidence_metadata:
-            row.update(evidence_metadata | {"split": example["split"]})
-    dataset = await client.datasets.create_dataset(
-        name=dataset_name,
-        dataset_description=("Imperial RAG reviewed source evidence benchmark." if evidence_metadata else
-                             "Imperial RAG gold questions loaded from evals/questions.jsonl."),
-        inputs=inputs,
-        outputs=outputs,
-        metadata=metadata,
-    )
+    if phoenix_input is not None:
+        dataset = phoenix_input.dataset
+        evidence_metadata["phoenix_dataset"] = phoenix_input.binding
+        if phoenix_input.benchmark is not None:
+            evidence_metadata["dataset_hash"] = phoenix_input.benchmark["dataset_hash"]
+    else:
+        inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
+        for row, example in zip(metadata, examples):
+            if evidence_metadata:
+                row.update(evidence_metadata | {"split": example["split"]})
+        dataset = await client.datasets.create_dataset(
+            name=dataset_name,
+            dataset_description=("Imperial RAG reviewed source evidence benchmark." if evidence_metadata else
+                                 "Imperial RAG gold questions loaded from evals/questions.jsonl."),
+            inputs=inputs,
+            outputs=outputs,
+            metadata=metadata,
+        )
     runtime = build_runtime(settings=settings)
     failed_questions: list[str] = []
 
@@ -724,15 +753,18 @@ async def run_phoenix_experiment_async(
     experiment = await client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
+        experiment_metadata=evidence_metadata,
         evaluators=evaluators,
         experiment_name=experiment_name,
         experiment_description=(
             "Source evidence recall and full-evidence success; legacy_* checks are ID-based diagnostics. "
-            if evidence_metadata else ""
+            if evidence_snapshot is not None else ""
         ) + _phoenix_experiment_description(resolved_ragas_metric_names),
         concurrency=concurrency,
     )
-    print(f"phoenix_dataset={dataset_name}")
+    print(f"phoenix_dataset={phoenix_input.binding['dataset_id'] if phoenix_input else dataset_name}")
+    if phoenix_input is not None:
+        print(f"phoenix_input={stable_json_dumps(phoenix_input.binding)}")
     print(f"phoenix_examples={len(examples)}")
     print(f"phoenix_experiment={_experiment_identifier(experiment)}")
     if failed_questions:
@@ -907,6 +939,9 @@ def _phoenix_dataset_metadata(
         metadata["lane"] = str(example["lane"])
     if example.get("quarantine_reason"):
         metadata["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+    for key in ("split", "review_status", "question_hash", "snapshot_hash"):
+        if key in example:
+            metadata[key] = example[key]
     return metadata
 
 
@@ -1715,41 +1750,55 @@ async def publish_evidence_comparison_async(root: Path, settings: Any, *, concur
     manifest, benchmark, results = load_comparison(root)
     examples = [row for row in benchmark["examples"] if row["split"] == manifest["split"]]
     client = AsyncClient(base_url=settings.phoenix_client_endpoint)
-    binding_root = root.parent / "phoenix-datasets"
-    binding_root.mkdir(exist_ok=True)
-    binding_path = binding_root / f"{manifest['dataset_hash']}-{manifest['split']}.json"
-    inputs = [{"id": row["id"], "question": row["question"]} for row in examples]
-    outputs = [_phoenix_dataset_expected_payload(row) for row in examples]
-    if binding_path.exists():
-        binding = json.loads(binding_path.read_text())
-        if binding["endpoint"] != settings.phoenix_client_endpoint:
-            raise ValueError("Pinned dataset belongs to another Phoenix endpoint")
-        dataset = await client.datasets.get_dataset(dataset=binding["dataset_id"], version_id=binding["version_id"])
+    if "phoenix_dataset" in manifest:
+        from phoenix.client.resources.datasets import Dataset
+        from imperial_rag.evals.dataset_input import get_pinned_dataset
+
+        binding = manifest["phoenix_dataset"]
+        dataset = await get_pinned_dataset(client, binding, settings.phoenix_client_endpoint)
+        # Filter in memory, retaining server example IDs and the exact dataset version.
+        selected_ids = {row["id"] for row in examples}
+        payload = dataset.to_dict()
+        payload["examples"] = [row for row in dataset.examples if row["metadata"]["id"] in selected_ids]
+        dataset = Dataset.from_dict(payload)
     else:
-        dataset = await client.datasets.create_dataset(
-            name=f"imperial-evidence-{manifest['dataset_hash']}-{manifest['split']}",
-            inputs=inputs, outputs=outputs,
-            metadata=[{"id": row["id"], "dataset_hash": manifest["dataset_hash"],
-                       "snapshot_hash": manifest["snapshot_hash"], "split": row["split"]} for row in examples],
-        )
-        binding = {"dataset_id": dataset.id, "version_id": dataset.version_id,
-                   "endpoint": settings.phoenix_client_endpoint}
-        write_json(binding_path, binding)
-    expected_rows = {row["id"]: {"input": row, "output": expected} for row, expected in zip(inputs, outputs)}
-    actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
-    if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
-        raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
+        binding_root = root.parent / "phoenix-datasets"
+        binding_root.mkdir(exist_ok=True)
+        binding_path = binding_root / f"{manifest['dataset_hash']}-{manifest['split']}.json"
+        inputs = [{"id": row["id"], "question": row["question"]} for row in examples]
+        outputs = [_phoenix_dataset_expected_payload(row) for row in examples]
+        if binding_path.exists():
+            binding = json.loads(binding_path.read_text())
+            if binding["endpoint"] != settings.phoenix_client_endpoint:
+                raise ValueError("Pinned dataset belongs to another Phoenix endpoint")
+            dataset = await client.datasets.get_dataset(dataset=binding["dataset_id"], version_id=binding["version_id"])
+        else:
+            dataset = await client.datasets.create_dataset(
+                name=f"imperial-evidence-{manifest['dataset_hash']}-{manifest['split']}",
+                inputs=inputs, outputs=outputs,
+                metadata=[{"id": row["id"], "dataset_hash": manifest["dataset_hash"],
+                           "snapshot_hash": manifest["snapshot_hash"], "split": row["split"]} for row in examples],
+            )
+            binding = {"dataset_id": dataset.id, "version_id": dataset.version_id,
+                       "endpoint": settings.phoenix_client_endpoint}
+            write_json(binding_path, binding)
+        expected_rows = {row["id"]: {"input": row, "output": expected} for row, expected in zip(inputs, outputs)}
+        actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
+        if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
+            raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
     evaluators = _phoenix_evidence_evaluators()
     published_path = root / "phoenix.json"
     published = json.loads(published_path.read_text()) if published_path.exists() else binding | {"experiments": {}}
+    if any(published.get(key) != value for key, value in binding.items()):
+        raise ValueError("Published comparison has a different Phoenix dataset binding")
     for config in manifest["configs"]:
         config_id = config["config_id"]
         if config_id in published["experiments"]:
             continue
         by_id = {row["id"]: row for row in results if row["config_id"] == config_id}
 
-        async def replay(input: dict[str, Any]) -> dict[str, Any]:
-            return by_id[input["id"]]
+        async def replay(input: dict[str, Any], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+            return by_id[metadata["id"] if "phoenix_dataset" in manifest and metadata else input["id"]]
 
         experiment = await client.experiments.run_experiment(
             dataset=dataset, task=replay, evaluators=evaluators,
