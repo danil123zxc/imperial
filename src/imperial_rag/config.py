@@ -79,6 +79,11 @@ def env_optional_bool(name: str) -> bool | None:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(populate_by_name=True, frozen=True, extra="ignore")
 
+    context_token_budget: int | None = Field(
+        None, gt=0,
+        validation_alias=AliasChoices("IMPERIAL_RAG_CONTEXT_TOKEN_BUDGET", "context_token_budget"),
+    )
+
     workspace_root: Path = Field(
         DEFAULT_WORKSPACE_ROOT,
         validation_alias=AliasChoices("IMPERIAL_RAG_WORKSPACE_ROOT", "workspace_root"),

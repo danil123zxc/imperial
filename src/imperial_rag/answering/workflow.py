@@ -17,6 +17,7 @@ from imperial_rag.answering.strict import (
     format_citations,
     format_sources,
     validate_citations,
+    pack_context,
 )
 from imperial_rag.document_ids import content_key, document_key
 from imperial_rag.retrieval.lexical import searchable_document_text
@@ -236,6 +237,7 @@ def build_query_workflow(
     chat_model: ChatModel | None = None,
     retrieve=None,
     generate=None,
+    context_token_budget: int | None = None,
 ):
     model = chat_model
 
@@ -274,6 +276,16 @@ def build_query_workflow(
                 "fallbacks": [],
             },
         }
+
+    def pack_node(state: QueryState) -> QueryState:
+        if context_token_budget is None:
+            return {}
+        packed = pack_context(state.get("evidence", []), context_token_budget)
+        diagnostics = dict(state.get("retrieval") or {})
+        diagnostics["context_packing"] = {key: packed[key] for key in (
+            "proxy_tokens", "tokenizer", "budget", "budget_utilization"
+        )}
+        return {"evidence": packed["documents"], "retrieval": diagnostics}
 
     def call_model(state: QueryState) -> QueryState:
         question = str(state.get("question", ""))
@@ -377,10 +389,12 @@ def build_query_workflow(
     graph = StateGraph(QueryState)
     graph.add_node("normalize_query", normalize_query)
     graph.add_node("retrieve", retrieve_node)
+    graph.add_node("pack_context", pack_node)
     graph.add_node("call_model", call_model)
     graph.add_edge(START, "normalize_query")
     graph.add_edge("normalize_query", "retrieve")
-    graph.add_edge("retrieve", "call_model")
+    graph.add_edge("retrieve", "pack_context")
+    graph.add_edge("pack_context", "call_model")
     graph.add_edge("call_model", END)
     return graph.compile()
 

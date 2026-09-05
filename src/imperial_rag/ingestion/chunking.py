@@ -6,6 +6,8 @@ import re
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from imperial_rag.ingestion.provenance import source_identity
+
 
 RUSSIAN_STRUCTURE_SEPARATORS = ["\n\n", "\n", ". ", "; ", ": ", " - ", " ", ""]
 
@@ -63,7 +65,16 @@ def _tabular_windows(document: Document, chunk_size: int) -> list[Document]:
     metadata = dict(document.metadata or {})
     if metadata.get("source_type") not in {"table", "sheet"} and metadata.get("layout_route") != "table":
         return [document]
-    lines = [line.strip() for line in document.page_content.splitlines() if line.strip()]
+    lines = []
+    line_ranges = []
+    offset = 0
+    for raw in document.page_content.splitlines(keepends=True):
+        text = raw.strip()
+        if text:
+            start = offset + raw.index(text)
+            lines.append(text)
+            line_ranges.append((start, start + len(text)))
+        offset += len(raw)
     if len(lines) <= 2 or estimated_token_count(document.page_content) <= chunk_size:
         return [document]
     header, data_rows = lines[0], lines[1:]
@@ -88,6 +99,21 @@ def _tabular_windows(document: Document, chunk_size: int) -> list[Document]:
                 "table_header": header,
             }
         )
+        mappings = []
+        window_offset = 0
+        selected = [0, *range(first_row - 1, last_row)]
+        for position, row_index in enumerate(selected):
+            start, end = line_ranges[row_index]
+            mappings.append({"start": start, "end": end, "chunk_start": window_offset,
+                             "chunk_end": window_offset + end - start})
+            window_offset += end - start
+            if position < len(selected) - 1:
+                next_start = line_ranges[selected[position + 1]][0]
+                if document.page_content[end:next_start] == "\n":
+                    mappings.append({"start": end, "end": next_start,
+                                     "chunk_start": window_offset, "chunk_end": window_offset + 1})
+                window_offset += 1
+        window_metadata["_source_mapping"] = mappings
         windows.append(Document(page_content="\n".join([header, *current]), metadata=window_metadata))
         first_row = last_row + 1
         current = []
@@ -105,18 +131,19 @@ def _body_start_index(source_text: str, chunk_text: str, metadata: dict, search_
     raw_start = metadata.get("start_index")
     if raw_start is not None:
         start = int(raw_start)
-        if start >= 0:
+        if start >= search_from and source_text[start:start + len(chunk_text)] == chunk_text:
             return start, max(search_from, start + 1)
 
     found = source_text.find(chunk_text, max(0, search_from))
     if found < 0:
-        stripped = chunk_text.strip()
-        found = source_text.find(stripped, max(0, search_from)) if stripped else -1
-    start = max(0, found)
+        raise ValueError("Chunk text cannot be mapped to its source")
+    start = found
     return start, max(search_from, start + 1)
 
 
 def build_chunks(documents: list[Document], chunk_size: int = 400, chunk_overlap: int = 50) -> list[Document]:
+    if chunk_size < 1 or not 0 <= chunk_overlap < chunk_size:
+        raise ValueError("Require 0 <= chunk_overlap < chunk_size")
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -126,6 +153,7 @@ def build_chunks(documents: list[Document], chunk_size: int = 400, chunk_overlap
     )
     chunks: list[Document] = []
     for document in documents:
+        identity = source_identity(document)
         source_documents = _tabular_windows(document, chunk_size)
         chunk_sequence = 0
         for source_document in source_documents:
@@ -146,6 +174,20 @@ def build_chunks(documents: list[Document], chunk_size: int = 400, chunk_overlap
                     metadata,
                     search_from,
                 )
+                mappings = metadata.pop("_source_mapping", None) or [{
+                    "start": 0, "end": len(document.page_content),
+                    "chunk_start": 0, "chunk_end": len(document.page_content),
+                }]
+                spans = []
+                for mapping in mappings:
+                    lo = max(body_start_index, mapping["chunk_start"])
+                    hi = min(body_start_index + len(chunk.page_content), mapping["chunk_end"])
+                    if lo < hi:
+                        start = mapping["start"] + lo - mapping["chunk_start"]
+                        spans.append(identity | {"start": start, "end": start + hi - lo,
+                                                 "chunk_start": lo - body_start_index,
+                                                 "chunk_end": hi - body_start_index})
+                metadata["source_spans"] = spans
                 metadata["body_start_index"] = body_start_index
                 metadata["body_token_count"] = estimated_token_count(chunk.page_content)
                 metadata["citation_id"] = _citation_id(metadata, index)

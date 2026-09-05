@@ -37,7 +37,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audit-path", type=Path)
     parser.add_argument("--findings-path", type=Path)
     parser.add_argument("--strict", action="store_true", help="Exit non-zero when eval contract errors are present.")
+    parser.add_argument("--snapshot", type=Path, help="Draft source evidence sidecars against a frozen snapshot.")
     args = parser.parse_args(argv)
+
+    if args.snapshot:
+        from imperial_rag.evals.evidence import draft_annotations
+        from imperial_rag.evals.questions import load_questions
+        from imperial_rag.ingestion.provenance import load_snapshot
+        from imperial_rag.jsonl import read_jsonl
+
+        if args.output_path.exists():
+            raise FileExistsError("Refusing to overwrite evidence annotations")
+        rows = draft_annotations(load_questions(args.questions_path), read_jsonl(args.chunks_path), load_snapshot(args.snapshot))
+        write_jsonl(args.output_path, rows)
+        print(f"draft_annotations={len(rows)}; review_required=true")
+        return 0
 
     report = build_eval_audit_report(
         questions_path=args.questions_path,

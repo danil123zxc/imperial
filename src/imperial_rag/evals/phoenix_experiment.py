@@ -845,6 +845,8 @@ def _phoenix_dataset_expected_payload(example: Mapping[str, Any]) -> dict[str, A
         ]
     if example.get("quarantine_reason"):
         expected["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+    if "evidence" in example:
+        expected["evidence"] = example["evidence"]
     return expected
 
 
@@ -1601,3 +1603,84 @@ async def _await_result(awaitable: Any) -> Any:
 
 if __name__ == "__main__":
     main()
+
+
+def phoenix_evidence_evaluator(*, metric: str, k: int | None = None, budget: int | None = None):
+    from imperial_rag.answering.strict import pack_context
+    from imperial_rag.evals.evidence import evidence_recall
+    from langchain_core.documents import Document
+
+    def evaluate(output: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+        key = f"{metric}_{'at_' + str(k) if k is not None else 'budget_' + str(budget)}"
+        if not output.get("eligible"):
+            return {"key": key, "score": None, "explanation": "Invalid or degraded retrieval run"}
+        documents = [Document(**row) for row in output["documents"]]
+        selected = documents[:k] if k is not None else pack_context(documents, budget)["documents"]
+        score = evidence_recall(expected["evidence"], selected)[metric]
+        return {"key": key, "score": score,
+                "explanation": "Recall is undefined for refusal questions" if score is None else "Exact source union coverage"}
+
+    return evaluate
+
+
+async def publish_evidence_comparison_async(root: Path, settings: Any, *, concurrency: int = 3) -> None:
+    """Replay saved retrieval once per configuration against one pinned dataset version."""
+    import json
+    from phoenix.client import AsyncClient
+    from imperial_rag.evals.chunk_comparison import load_comparison, write_json
+    from imperial_rag.evals.evidence import BUDGETS, KS
+    from imperial_rag.ingestion.provenance import digest
+
+    concurrency = positive_int(concurrency)
+    manifest, benchmark, results = load_comparison(root)
+    examples = [row for row in benchmark["examples"] if row["split"] == manifest["split"]]
+    client = AsyncClient(base_url=settings.phoenix_client_endpoint)
+    binding_root = root.parent / "phoenix-datasets"
+    binding_root.mkdir(exist_ok=True)
+    binding_path = binding_root / f"{manifest['dataset_hash']}-{manifest['split']}.json"
+    inputs = [{"id": row["id"], "question": row["question"]} for row in examples]
+    outputs = [_phoenix_dataset_expected_payload(row) for row in examples]
+    if binding_path.exists():
+        binding = json.loads(binding_path.read_text())
+        if binding["endpoint"] != settings.phoenix_client_endpoint:
+            raise ValueError("Pinned dataset belongs to another Phoenix endpoint")
+        dataset = await client.datasets.get_dataset(dataset=binding["dataset_id"], version_id=binding["version_id"])
+    else:
+        dataset = await client.datasets.create_dataset(
+            name=f"imperial-evidence-{manifest['dataset_hash']}-{manifest['split']}",
+            inputs=inputs, outputs=outputs,
+            metadata=[{"id": row["id"], "dataset_hash": manifest["dataset_hash"],
+                       "snapshot_hash": manifest["snapshot_hash"], "split": row["split"]} for row in examples],
+        )
+        binding = {"dataset_id": dataset.id, "version_id": dataset.version_id,
+                   "endpoint": settings.phoenix_client_endpoint}
+        write_json(binding_path, binding)
+    expected_rows = {row["id"]: {"input": row, "output": expected} for row, expected in zip(inputs, outputs)}
+    actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
+    if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
+        raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
+    evaluators = {}
+    for metric in ("evidence_recall", "full_evidence_success"):
+        for k in KS:
+            evaluators[f"{metric}_at_{k}"] = phoenix_evidence_evaluator(metric=metric, k=k)
+        for budget in BUDGETS:
+            evaluators[f"{metric}_budget_{budget}"] = phoenix_evidence_evaluator(metric=metric, budget=budget)
+    published_path = root / "phoenix.json"
+    published = json.loads(published_path.read_text()) if published_path.exists() else binding | {"experiments": {}}
+    for config in manifest["configs"]:
+        config_id = config["config_id"]
+        if config_id in published["experiments"]:
+            continue
+        by_id = {row["id"]: row for row in results if row["config_id"] == config_id}
+
+        async def replay(input: dict[str, Any]) -> dict[str, Any]:
+            return by_id[input["id"]]
+
+        experiment = await client.experiments.run_experiment(
+            dataset=dataset, task=replay, evaluators=evaluators,
+            experiment_name=f"{manifest['run_id']}-{config_id}",
+            experiment_metadata={**manifest, "config": config, "mode": "saved-retrieval-replay"},
+            concurrency=concurrency,
+        )
+        published["experiments"][config_id] = _experiment_identifier(experiment)
+        write_json(published_path, published)

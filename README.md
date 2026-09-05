@@ -418,6 +418,34 @@ uv run python scripts/run_ragas_eval.py
 
 Ragas metrics need the dev dependencies and model credentials configured in `.env`.
 
+### Chunk-independent evidence comparison
+
+`scripts/compare_chunking.py` compares isolated indexes against one frozen extraction
+snapshot and reviewed source-span annotations. The existing gold questions and ID
+metrics are unchanged. See [the evidence evaluation guide](docs/evidence-evaluation.md)
+for the annotation contract, metrics, and provider boundaries.
+
+```bash
+uv run python scripts/compare_chunking.py freeze --output .imperial_rag/evidence-eval/snapshot.json
+uv run python scripts/generate_eval_evidence_packets.py --snapshot .imperial_rag/evidence-eval/snapshot.json --output-path .imperial_rag/evidence-eval/annotations.jsonl
+# Review annotations against the snapshot before validation or running providers.
+uv run python scripts/compare_chunking.py validate --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
+uv run python scripts/compare_chunking.py run --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl --output .imperial_rag/evidence-eval/runs/first
+uv run python scripts/compare_chunking.py answers --run .imperial_rag/evidence-eval/runs/first
+uv run python scripts/compare_chunking.py phoenix --run .imperial_rag/evidence-eval/runs/first
+```
+
+`freeze` and annotation preparation are local. `run` calls embedding/query/reranking
+providers and writes fresh shadow indexes; `answers` separately calls the answer
+model. `phoenix` publishes saved results without repeating retrieval. No command
+promotes indexes or changes active aliases. Keep every generated artifact private
+under `.imperial_rag/`; use a new output directory for each run.
+
+Application context packing is opt-in with `IMPERIAL_RAG_CONTEXT_TOKEN_BUDGET`.
+It counts the rendered evidence using the fixed `cl100k_base` proxy tokenizer,
+including source labels and separators; these are not exact Qwen billing tokens.
+Unset the variable to retain existing application behavior.
+
 ## Testing
 
 Run the normal offline suite:

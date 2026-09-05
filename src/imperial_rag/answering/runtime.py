@@ -221,7 +221,8 @@ def create_runtime(settings: Settings | None = None) -> Runtime:
             "trace_attributes": {**trace_attributes, "answer.model_status": "ok"},
         }
 
-    workflow = build_query_workflow(retrieve=retrieve, generate=generate)
+    packing = {"context_token_budget": resolved_settings.context_token_budget} if resolved_settings.context_token_budget else {}
+    workflow = build_query_workflow(retrieve=retrieve, generate=generate, **packing)
     return Runtime(settings=resolved_settings, workflow=workflow)
 
 
