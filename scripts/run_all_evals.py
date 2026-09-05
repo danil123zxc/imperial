@@ -10,6 +10,9 @@ from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 _ensure_src_on_path(__file__)
 
 import run_phoenix_eval as phoenix_eval
+from imperial_rag.evals.evidence import assemble_benchmark
+from imperial_rag.ingestion.provenance import load_snapshot
+from imperial_rag.jsonl import read_jsonl
 from imperial_rag.cli import (  # noqa: E402
     configure_observability as _configure_observability,
     duration_ms as _duration_ms,
@@ -27,6 +30,8 @@ def main(argv: list[str] | None = None) -> None:
         description="Run all currently runnable Imperial RAG evals and store one Phoenix experiment."
     )
     parser.add_argument("--questions-path", type=Path, default=phoenix_eval.DEFAULT_QUESTIONS_PATH)
+    parser.add_argument("--snapshot", type=Path, required=True, help="Frozen source snapshot for evidence recall.")
+    parser.add_argument("--annotations", type=Path, required=True, help="Reviewed evidence sidecar matching the questions and snapshot.")
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--dataset-name")
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
@@ -43,6 +48,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    snapshot = load_snapshot(args.snapshot)
+    benchmark = assemble_benchmark(phoenix_eval.load_questions(args.questions_path), read_jsonl(args.annotations), snapshot)
+    examples = benchmark["examples"]
+    if not examples:
+        parser.error("Evidence evaluation requires at least one question.")
     phoenix_eval._load_project_env(args.workspace_root)
     settings = phoenix_eval._build_settings(args.workspace_root)
     _configure_observability(settings)
@@ -51,7 +61,6 @@ def main(argv: list[str] | None = None) -> None:
         _assert_phoenix_reachable(settings.phoenix_client_endpoint)
         phoenix_eval._configure_tracing(settings, enabled=True)
 
-        examples = phoenix_eval.load_questions(args.questions_path)
         metric_names = phoenix_eval.parse_phoenix_ragas_metrics(args.ragas_metrics)
         phoenix_eval.run_phoenix_experiment(
             examples=examples,
@@ -60,6 +69,7 @@ def main(argv: list[str] | None = None) -> None:
             experiment_name=args.experiment_name,
             ragas_metric_names=metric_names,
             concurrency=args.concurrency,
+            evidence_snapshot=snapshot,
         )
         _log_completion(started_at, example_count=len(examples), ragas_metrics=",".join(metric_names))
     except (Exception, SystemExit) as exc:

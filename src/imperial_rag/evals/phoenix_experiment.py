@@ -143,13 +143,18 @@ def run_target(inputs: dict[str, Any], runtime: Any | None = None) -> dict[str, 
     resolved_runtime = runtime or build_runtime()
     result = _coerce_result(resolved_runtime.query(question))
     evidence = result.get("evidence", []) or result.get("documents", [])
-    return {
+    output = {
         "answer": str(result.get("answer", "")),
         "citations": list(result.get("citations") or result.get("sources") or []),
         "sources": list(result.get("sources") or result.get("citations") or []),
         "documents": [_document_payload(document) for document in evidence],
         "retrieval": dict(result.get("retrieval") or {}),
     }
+    if "ranked_documents" in result:
+        output["ranked_documents"] = [_document_payload(doc) for doc in result["ranked_documents"]]
+    if result.get("error"):
+        output["error"] = result["error"]
+    return output
 
 
 def build_runtime(settings: Any | None = None) -> Any:
@@ -626,6 +631,7 @@ def run_phoenix_experiment(
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
     retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
+    evidence_snapshot: dict[str, Any] | None = None,
 ) -> None:
     return _run_async(
         run_phoenix_experiment_async(
@@ -636,6 +642,7 @@ def run_phoenix_experiment(
             ragas_metric_names=ragas_metric_names,
             concurrency=concurrency,
             retrieval_k=retrieval_k,
+            evidence_snapshot=evidence_snapshot,
         )
     )
 
@@ -649,6 +656,7 @@ async def run_phoenix_experiment_async(
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
     retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
+    evidence_snapshot: dict[str, Any] | None = None,
 ) -> None:
     concurrency = positive_int(concurrency)
     retrieval_k = positive_int(retrieval_k)
@@ -660,6 +668,22 @@ async def run_phoenix_experiment_async(
         resolved_ragas_metric_names = list(ragas_metric_names)
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
     evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True, retrieval_k=retrieval_k)
+    evidence_metadata: dict[str, Any] = {}
+    if evidence_snapshot is not None:
+        from imperial_rag.ingestion.provenance import digest
+
+        if not examples or any("evidence" not in row or "split" not in row for row in examples):
+            raise ValueError("Evidence evaluation requires assembled, validated benchmark examples")
+        evidence_metadata = {
+            "snapshot_hash": evidence_snapshot["snapshot_hash"],
+            "dataset_hash": digest({"schema_version": "imperial-evidence-benchmark-v1",
+                                    "snapshot_hash": evidence_snapshot["snapshot_hash"], "examples": examples}),
+        }
+        legacy_names = {"id_retrieval_relevance", "chunk_recall", "citation_grounding_behavior",
+                        "conflict_behavior", "ragas_id_context_recall"}
+        evaluators = {f"legacy_{name}" if name in legacy_names else name: evaluator
+                      for name, evaluator in evaluators.items()}
+        evaluators.update(_phoenix_evidence_evaluators(documents_key="ranked_documents"))
 
     try:
         from phoenix.client import AsyncClient
@@ -675,29 +699,45 @@ async def run_phoenix_experiment_async(
         _get_ragas_answer_relevancy_scorer()
     client = AsyncClient(base_url=settings.phoenix_client_endpoint)
     inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
+    for row, example in zip(metadata, examples):
+        if evidence_metadata:
+            row.update(evidence_metadata | {"split": example["split"]})
     dataset = await client.datasets.create_dataset(
         name=dataset_name,
-        dataset_description="Imperial RAG gold questions loaded from evals/questions.jsonl.",
+        dataset_description=("Imperial RAG reviewed source evidence benchmark." if evidence_metadata else
+                             "Imperial RAG gold questions loaded from evals/questions.jsonl."),
         inputs=inputs,
         outputs=outputs,
         metadata=metadata,
     )
     runtime = build_runtime(settings=settings)
+    failed_questions: list[str] = []
 
     async def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
-        return await run_sync_in_worker_thread(lambda: run_target(inputs, runtime=runtime))
+        if evidence_snapshot is None:
+            return await run_sync_in_worker_thread(lambda: run_target(inputs, runtime=runtime))
+        output = await run_sync_in_worker_thread(lambda: _run_evidence_target(inputs, runtime, evidence_snapshot))
+        if not output["eligible"]:
+            failed_questions.append(output["evidence_error"])
+        return output
 
     experiment = await client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
         evaluators=evaluators,
         experiment_name=experiment_name,
-        experiment_description=_phoenix_experiment_description(resolved_ragas_metric_names),
+        experiment_description=(
+            "Source evidence recall and full-evidence success; legacy_* checks are ID-based diagnostics. "
+            if evidence_metadata else ""
+        ) + _phoenix_experiment_description(resolved_ragas_metric_names),
         concurrency=concurrency,
     )
     print(f"phoenix_dataset={dataset_name}")
     print(f"phoenix_examples={len(examples)}")
     print(f"phoenix_experiment={_experiment_identifier(experiment)}")
+    if failed_questions:
+        raise RuntimeError(f"Evidence evaluation failed for {len(failed_questions)} task(s): "
+                           + ", ".join(sorted(set(failed_questions))))
 
 
 def _run_phoenix_experiment(
@@ -1601,11 +1641,37 @@ async def _await_result(awaitable: Any) -> Any:
     return await awaitable
 
 
-if __name__ == "__main__":
-    main()
+def _run_evidence_target(inputs: dict[str, Any], runtime: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    from langchain_core.documents import Document
+    from imperial_rag.ingestion.provenance import validate_chunk
+
+    output: dict[str, Any] = {"eligible": False}
+    try:
+        output.update(run_target(inputs, runtime=runtime))
+        output["eligible"] = False
+        if "ranked_documents" not in output:
+            output["evidence_error"] = "missing_ranked_documents"
+            return output
+        sources = {row["source_id"]: row for row in snapshot["sources"]}
+        for row in output["ranked_documents"]:
+            validate_chunk(Document(**row), sources)
+        diagnostics = output["retrieval"]
+        error = output.get("error", {}).get("type")
+        if diagnostics.get("fallbacks") or diagnostics.get("degraded"):
+            output["evidence_error"] = "degraded_retrieval"
+        elif error and error != "no_relevant_documents":
+            output["evidence_error"] = "query_error"
+        else:
+            output["eligible"] = True
+    except Exception as exc:
+        # Exceptions can contain private text or credentials; publish only the class.
+        output["evidence_error"] = type(exc).__name__
+    return output
 
 
-def phoenix_evidence_evaluator(*, metric: str, k: int | None = None, budget: int | None = None):
+def phoenix_evidence_evaluator(
+    *, metric: str, k: int | None = None, budget: int | None = None, documents_key: str = "documents",
+):
     from imperial_rag.answering.strict import pack_context
     from imperial_rag.evals.evidence import evidence_recall
     from langchain_core.documents import Document
@@ -1613,8 +1679,9 @@ def phoenix_evidence_evaluator(*, metric: str, k: int | None = None, budget: int
     def evaluate(output: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
         key = f"{metric}_{'at_' + str(k) if k is not None else 'budget_' + str(budget)}"
         if not output.get("eligible"):
-            return {"key": key, "score": None, "explanation": "Invalid or degraded retrieval run"}
-        documents = [Document(**row) for row in output["documents"]]
+            return {"key": key, "score": None,
+                    "explanation": "Invalid or degraded retrieval run: " + output.get("evidence_error", "ineligible")}
+        documents = [Document(**row) for row in output[documents_key]]
         selected = documents[:k] if k is not None else pack_context(documents, budget)["documents"]
         score = evidence_recall(expected["evidence"], selected)[metric]
         return {"key": key, "score": score,
@@ -1623,12 +1690,25 @@ def phoenix_evidence_evaluator(*, metric: str, k: int | None = None, budget: int
     return evaluate
 
 
+def _phoenix_evidence_evaluators(*, documents_key: str = "documents") -> dict[str, Any]:
+    from imperial_rag.evals.evidence import BUDGETS, KS
+
+    evaluators = {}
+    for metric in ("evidence_recall", "full_evidence_success"):
+        for k in KS:
+            evaluators[f"{metric}_at_{k}"] = phoenix_evidence_evaluator(metric=metric, k=k, documents_key=documents_key)
+        for budget in BUDGETS:
+            evaluators[f"{metric}_budget_{budget}"] = phoenix_evidence_evaluator(
+                metric=metric, budget=budget, documents_key=documents_key,
+            )
+    return evaluators
+
+
 async def publish_evidence_comparison_async(root: Path, settings: Any, *, concurrency: int = 3) -> None:
     """Replay saved retrieval once per configuration against one pinned dataset version."""
     import json
     from phoenix.client import AsyncClient
     from imperial_rag.evals.chunk_comparison import load_comparison, write_json
-    from imperial_rag.evals.evidence import BUDGETS, KS
     from imperial_rag.ingestion.provenance import digest
 
     concurrency = positive_int(concurrency)
@@ -1659,12 +1739,7 @@ async def publish_evidence_comparison_async(root: Path, settings: Any, *, concur
     actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
     if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
         raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
-    evaluators = {}
-    for metric in ("evidence_recall", "full_evidence_success"):
-        for k in KS:
-            evaluators[f"{metric}_at_{k}"] = phoenix_evidence_evaluator(metric=metric, k=k)
-        for budget in BUDGETS:
-            evaluators[f"{metric}_budget_{budget}"] = phoenix_evidence_evaluator(metric=metric, budget=budget)
+    evaluators = _phoenix_evidence_evaluators()
     published_path = root / "phoenix.json"
     published = json.loads(published_path.read_text()) if published_path.exists() else binding | {"experiments": {}}
     for config in manifest["configs"]:
@@ -1684,3 +1759,7 @@ async def publish_evidence_comparison_async(root: Path, settings: Any, *, concur
         )
         published["experiments"][config_id] = _experiment_identifier(experiment)
         write_json(published_path, published)
+
+
+if __name__ == "__main__":
+    main()

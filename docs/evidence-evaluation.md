@@ -95,6 +95,45 @@ are reproducible proxy tokens, not Qwen billing or model-limit guarantees.
 Application budgeting is opt-in using `IMPERIAL_RAG_CONTEXT_TOKEN_BUDGET`; evidence is
 packed before generation and citation numbering. Unset preserves prior behavior.
 
+## Full evaluation runner
+
+`run_all_evals.py` requires `--snapshot` and `--annotations`, with
+`--questions-path` selecting the matching questions (default `evals/questions.jsonl`).
+It validates the snapshot, question hashes and reviewed sidecar before external
+setup. Missing inputs, empty datasets and invalid annotations stop the command;
+questions alone are insufficient. Annotation preparation and review use the same
+workflow described above.
+
+```bash
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
+```
+
+The existing async Phoenix runner evaluates live queries once each. It publishes
+`evidence_recall_at_{k}` and `full_evidence_success_at_{k}` for k=1/3/5/10, plus
+`evidence_recall_budget_{budget}` and `full_evidence_success_budget_{budget}` for
+1000/2000/4000 proxy tokens. These reuse the union-coverage scorer and packer.
+`ranked_documents` preserves the retrieval order before answer packing and refusal
+handling; `documents` remains the answer context. Budget scores describe repacking
+the ranked retrieval at each evaluation budget, not necessarily the context used
+by the answer model.
+
+Every ranked chunk must map exactly to the supplied snapshot. Missing mappings,
+stale text versions, invalid coordinates, retrieval fallbacks/degradation and query
+errors produce undefined evidence scores with a failure reason. Any such task makes
+the command exit nonzero after the experiment is recorded. Successful empty retrieval
+scores zero on answerable questions; refusal evidence scores remain undefined and
+are excluded from averages. An older index without `source_spans` must be rebuilt
+against the frozen source text before evidence results can be valid; this command
+does not rebuild or promote indexes.
+
+Phoenix dataset rows include reviewed evidence, split, benchmark (`dataset_hash`)
+and snapshot hashes. ID-dependent retrieval, citation-grounding, conflict and optional
+Ragas ID-recall checks are retained under `legacy_*` evaluator names. They are legacy
+diagnostics, not evidence-recall substitutes, and may fail after rechunking.
+Citation/refusal/source-hint checks and default Ragas faithfulness/answer-relevancy
+remain enabled. `--ragas-metrics none` disables judges, not live retrieval or the
+answer model. Other callers, including `run_phoenix_eval.py`, keep their prior defaults.
+
 ## Artifacts, Phoenix, and answer review
 
 Run artifacts include the benchmark, manifest, per-configuration chunks/results, and

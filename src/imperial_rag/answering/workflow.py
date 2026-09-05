@@ -65,6 +65,7 @@ class QueryState(TypedDict, total=False):
     keyword_candidates: list[Document]
     evidence: list[Document]
     retrieved_documents: list[Document]
+    ranked_documents: list[Document]
     cited_documents: list[Document]
     answer: str
     citations: list[str]
@@ -254,6 +255,7 @@ def build_query_workflow(
                 "keyword_candidates": coerced.keyword_candidates,
                 "evidence": coerced.evidence,
                 "retrieved_documents": coerced.evidence,
+                "ranked_documents": coerced.evidence,
             }
             if coerced.retrieval is not None:
                 update["retrieval"] = coerced.retrieval
@@ -266,6 +268,7 @@ def build_query_workflow(
             "keyword_candidates": keyword_docs,
             "evidence": evidence,
             "retrieved_documents": evidence,
+            "ranked_documents": evidence,
             "retrieval": {
                 "vector_candidates": len(vector_docs),
                 "keyword_candidates": len(keyword_docs),

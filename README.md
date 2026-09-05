@@ -293,7 +293,7 @@ uv run python scripts/promote_ingestion.py migration-v1 --workspace-root /Users/
 uv run python scripts/query.py "question text"
 
 # Run all configured evals
-uv run python scripts/run_all_evals.py
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
 ```
 
 ## Services And State
@@ -392,11 +392,19 @@ Allowed event fields are operational metadata such as timings, counts, statuses,
 
 Gold questions live in `evals/questions.jsonl`.
 
-Run the full configured eval suite:
+Run the full configured eval suite with a frozen snapshot and reviewed evidence annotations:
 
 ```bash
-uv run python scripts/run_all_evals.py
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
 ```
+
+Both evidence inputs are required; corrected questions alone do not enable a run.
+See [the evidence evaluation guide](docs/evidence-evaluation.md) to prepare them.
+This runner scores source evidence at k=1/3/5/10 and budgets 1000/2000/4000, using
+ranked retrieval before answer packing. ID-based checks appear as `legacy_*` diagnostics.
+Invalid source mappings or degraded retrieval fail the run; existing indexes may need
+rebuilding to carry valid `source_spans`. `--ragas-metrics none` disables Ragas judges,
+but the query still uses the answer model when context is available.
 
 Run deterministic citation/refusal/source-hint checks:
 
