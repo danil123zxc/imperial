@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 from langchain_core.documents import Document
+from phoenix.client.resources.experiments import _bind_task_signature, _validate_task_signature
 import pytest
 
 from imperial_rag.answering.workflow import build_query_workflow
 from imperial_rag.evals import phoenix_experiment
 from imperial_rag.evals.evidence import assemble_benchmark
 from imperial_rag.ingestion.chunking import build_chunks
-from imperial_rag.ingestion.provenance import digest, freeze_sources
+from imperial_rag.ingestion.provenance import digest, document_payload, freeze_sources
 from imperial_rag.jsonl import write_jsonl
 
 
@@ -103,6 +105,10 @@ def test_all_evals_validates_before_any_external_calls(monkeypatch, evidence_cas
 def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, scenario):
     module = prepare_runner(monkeypatch)
     case = evidence_case
+    extraction_root = case.snapshot_path.parent / "extracted"
+    write_jsonl(extraction_root / "chunks.jsonl", [document_payload(doc) for doc in case.documents])
+    settings = module.phoenix_eval._build_settings(None)
+    settings.extraction_root = extraction_root
     if scenario == "refusal":
         case.question.update(expected_behavior="refuse_if_not_found", lane="refusal_out_of_corpus_behavior")
         case.annotation.update(evidence=[], question_hash=digest(case.question))
@@ -137,7 +143,13 @@ def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, sc
 
     async def run_experiment(**kwargs):
         captured["experiment"] = kwargs
-        output = await kwargs["task"](kwargs["dataset"]["inputs"][0])
+        signature = inspect.signature(kwargs["task"])
+        _validate_task_signature(signature)
+        bound = _bind_task_signature(signature, {
+            "id": "example-1", "input": kwargs["dataset"]["inputs"][0],
+            "output": kwargs["dataset"]["outputs"][0], "metadata": kwargs["dataset"]["metadata"][0],
+        })
+        output = await kwargs["task"](*bound.args, **bound.kwargs)
         expected = kwargs["dataset"]["outputs"][0]
         captured["output"] = output
         captured["scores"] = {name: evaluator(output=output, expected=expected)
@@ -158,8 +170,12 @@ def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, sc
     evidence_scores = {key: row["score"] for key, row in scores.items()
                        if key.startswith(("evidence_recall_", "full_evidence_success_"))}
     assert len(evidence_scores) == 14
+    ranking_scores = {key: row["score"] for key, row in scores.items()
+                      if key.startswith(("evidence_rr_", "evidence_ap_", "evidence_ndcg_"))}
+    assert len(ranking_scores) == 12
     expected_score = None if invalid or scenario == "refusal" else 0 if scenario == "empty" else 1
     assert set(evidence_scores.values()) == {expected_score}
+    assert set(ranking_scores.values()) == {expected_score}
     assert "legacy_chunk_recall" not in scores and "chunk_recall" not in scores
     assert "legacy_citation_grounding_behavior" in scores
     assert "legacy_conflict_behavior" in scores
@@ -186,6 +202,18 @@ def test_all_evals_preflight_fails_with_phoenix_start_hint(monkeypatch):
         module._assert_phoenix_reachable("http://localhost:6006")
     assert "Phoenix is not reachable at http://localhost:6006" in str(exc_info.value)
     assert "docker compose up -d phoenix" in str(exc_info.value)
+
+
+def test_missing_ranking_corpus_fails_before_query_or_experiment(monkeypatch, evidence_case):
+    module = prepare_runner(monkeypatch)
+    settings = module.phoenix_eval._build_settings(None)
+    settings.extraction_root = evidence_case.snapshot_path.parent / "missing"
+    monkeypatch.setattr(phoenix_experiment, "build_runtime", lambda **kwargs: pytest.fail("runtime before corpus validation"))
+    monkeypatch.setitem(sys.modules, "phoenix.client", SimpleNamespace(
+        AsyncClient=lambda **kwargs: pytest.fail("Phoenix client before corpus validation"),
+    ))
+    with pytest.raises(FileNotFoundError):
+        module.main(evidence_case.argv + ["--ragas-metrics", "none"])
 
 
 def _load_all_evals_runner():

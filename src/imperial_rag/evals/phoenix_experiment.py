@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import math
 import sys
 from collections import Counter
 from collections.abc import Mapping
@@ -26,6 +25,9 @@ from imperial_rag.cli import (  # noqa: E402
 from imperial_rag.evals.dataset_input import (
     PhoenixInput, add_dataset_input_arguments, has_phoenix_input, load_phoenix_input,
     validate_dataset_input_arguments,
+)
+from imperial_rag.evals.evidence import (
+    RANKING_METRICS, RANKING_VERSION, EvidenceRankingCorpus, _dcg, _mrr, _ndcg_with_ideal, load_ranking_corpus,
 )
 from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
@@ -680,12 +682,18 @@ async def run_phoenix_experiment_async(
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
     evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True, retrieval_k=retrieval_k)
     evidence_metadata: dict[str, Any] = {}
+    ranking_corpus = None
     if evidence_snapshot is not None:
         from imperial_rag.ingestion.provenance import digest
 
         if not examples or any("evidence" not in row or "split" not in row for row in examples):
             raise ValueError("Evidence evaluation requires assembled, validated benchmark examples")
+        ranking_corpus = await run_sync_in_worker_thread(
+            lambda: load_ranking_corpus(settings.extraction_root / "chunks.jsonl", evidence_snapshot, examples)
+        )
         evidence_metadata = {
+            "ranking_metric_version": RANKING_VERSION,
+            "ranking_corpus_hash": ranking_corpus.corpus_hash,
             "snapshot_hash": evidence_snapshot["snapshot_hash"],
             "dataset_hash": digest({"schema_version": "imperial-evidence-benchmark-v1",
                                     "snapshot_hash": evidence_snapshot["snapshot_hash"], "examples": examples}),
@@ -694,7 +702,7 @@ async def run_phoenix_experiment_async(
                         "conflict_behavior", "ragas_id_context_recall"}
         evaluators = {f"legacy_{name}" if name in legacy_names else name: evaluator
                       for name, evaluator in evaluators.items()}
-        evaluators.update(_phoenix_evidence_evaluators(documents_key="ranked_documents"))
+        evaluators.update(_phoenix_evidence_evaluators(documents_key="ranked_documents", include_ranking=True))
 
     try:
         from phoenix.client import AsyncClient
@@ -729,11 +737,15 @@ async def run_phoenix_experiment_async(
         )
     runtime = build_runtime(settings=settings)
     failed_questions: list[str] = []
+    examples_by_id = {example["id"]: example for example in examples} if evidence_snapshot is not None else {}
 
-    async def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
+    async def bound_target(input: dict[str, Any], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         if evidence_snapshot is None:
-            return await run_sync_in_worker_thread(lambda: run_target(inputs, runtime=runtime))
-        output = await run_sync_in_worker_thread(lambda: _run_evidence_target(inputs, runtime, evidence_snapshot))
+            return await run_sync_in_worker_thread(lambda: run_target(input, runtime=runtime))
+        example = examples_by_id[metadata["id"] if metadata else input["id"]]
+        output = await run_sync_in_worker_thread(
+            lambda: _run_evidence_target(example, runtime, evidence_snapshot, ranking_corpus)
+        )
         if not output["eligible"]:
             failed_questions.append(output["evidence_error"])
         return output
@@ -1506,29 +1518,6 @@ def _ndcg(scores: list[float]) -> float:
     return _dcg(scores) / ideal_dcg
 
 
-def _ndcg_with_ideal(scores: list[float], *, relevant_count: int, k: int) -> float:
-    if k <= 0:
-        return 0.0
-    actual_scores = [*scores[:k], *([0.0] * max(0, k - len(scores)))]
-    ideal_scores = [1.0] * min(relevant_count, k)
-    ideal_scores.extend([0.0] * max(0, k - len(ideal_scores)))
-    ideal_dcg = _dcg(ideal_scores)
-    if ideal_dcg == 0:
-        return 0.0
-    return _dcg(actual_scores) / ideal_dcg
-
-
-def _mrr(scores: list[float]) -> float:
-    for index, score in enumerate(scores, start=1):
-        if score > 0:
-            return 1.0 / index
-    return 0.0
-
-
-def _dcg(scores: list[float]) -> float:
-    return sum(float(score) / math.log2(index + 2) for index, score in enumerate(scores))
-
-
 def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if metric.get("score") is not None:
@@ -1591,7 +1580,10 @@ async def _await_result(awaitable: Any) -> Any:
     return await awaitable
 
 
-def _run_evidence_target(inputs: dict[str, Any], runtime: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+def _run_evidence_target(
+    inputs: dict[str, Any], runtime: Any, snapshot: dict[str, Any],
+    ranking_corpus: EvidenceRankingCorpus | None = None,
+) -> dict[str, Any]:
     from langchain_core.documents import Document
     from imperial_rag.ingestion.provenance import validate_chunk
 
@@ -1612,6 +1604,10 @@ def _run_evidence_target(inputs: dict[str, Any], runtime: Any, snapshot: dict[st
         elif error and error != "no_relevant_documents":
             output["evidence_error"] = "query_error"
         else:
+            if ranking_corpus is not None:
+                output["metrics"] = ranking_corpus.score(
+                    inputs, [Document(**row) for row in output["ranked_documents"]],
+                )
             output["eligible"] = True
     except Exception as exc:
         # Exceptions can contain private text or credentials; publish only the class.
@@ -1631,6 +1627,14 @@ def phoenix_evidence_evaluator(
         if not output.get("eligible"):
             return {"key": key, "score": None,
                     "explanation": "Invalid or degraded retrieval run: " + output.get("evidence_error", "ineligible")}
+        if metric in RANKING_METRICS:
+            metrics = output["metrics"]
+            if metrics["ranking_metric_version"] != RANKING_VERSION:
+                raise ValueError("Unsupported ranking metric version")
+            score = metrics[key]
+            return {"key": key, "score": score,
+                    "explanation": "Ranking is undefined for refusal questions" if score is None else
+                    "Complete evidence per chunk; AP uses all relevant corpus chunks"}
         documents = [Document(**row) for row in output[documents_key]]
         selected = documents[:k] if k is not None else pack_context(documents, budget)["documents"]
         score = evidence_recall(expected["evidence"], selected)[metric]
@@ -1640,7 +1644,9 @@ def phoenix_evidence_evaluator(
     return evaluate
 
 
-def _phoenix_evidence_evaluators(*, documents_key: str = "documents") -> dict[str, Any]:
+def _phoenix_evidence_evaluators(
+    *, documents_key: str = "documents", include_ranking: bool = False,
+) -> dict[str, Any]:
     from imperial_rag.evals.evidence import BUDGETS, KS
 
     evaluators = {}
@@ -1651,6 +1657,10 @@ def _phoenix_evidence_evaluators(*, documents_key: str = "documents") -> dict[st
             evaluators[f"{metric}_budget_{budget}"] = phoenix_evidence_evaluator(
                 metric=metric, budget=budget, documents_key=documents_key,
             )
+    if include_ranking:
+        for metric in RANKING_METRICS:
+            for k in KS:
+                evaluators[f"{metric}_at_{k}"] = phoenix_evidence_evaluator(metric=metric, k=k)
     return evaluators
 
 
@@ -1701,7 +1711,7 @@ async def publish_evidence_comparison_async(root: Path, settings: Any, *, concur
         actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
         if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
             raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
-    evaluators = _phoenix_evidence_evaluators()
+    evaluators = _phoenix_evidence_evaluators(include_ranking=manifest.get("ranking_metric_version") == RANKING_VERSION)
     published_path = root / "phoenix.json"
     published = json.loads(published_path.read_text()) if published_path.exists() else binding | {"experiments": {}}
     if any(published.get(key) != value for key, value in binding.items()):

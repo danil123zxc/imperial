@@ -402,6 +402,12 @@ Both evidence inputs are required; corrected questions alone do not enable a run
 See [the evidence evaluation guide](docs/evidence-evaluation.md) to prepare them.
 This runner scores source evidence at k=1/3/5/10 and budgets 1000/2000/4000, using
 ranked retrieval before answer packing. ID-based checks appear as `legacy_*` diagnostics.
+Evidence-based RR/AP/NDCG are also reported at k=1/3/5/10; averaging RR/AP gives
+MRR/MAP. A relevant chunk must independently supply a complete reviewed evidence
+unit. The full runner requires the resolved active `chunks.jsonl` to match the
+snapshot so missed relevant chunks remain in the AP/NDCG denominator. New chunk
+comparisons report the same metrics using each saved shadow corpus. See the
+[metric definitions and artifact contract](docs/evidence-evaluation.md#evidence-based-ranking-metrics).
 The separate `chunk_recall` evaluator and its chunk hit/precision metrics are removed;
 `id_recall` and optional Ragas `id_context_recall` remain available.
 Invalid source mappings or degraded retrieval fail the run; existing indexes may need

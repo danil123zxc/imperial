@@ -17,7 +17,7 @@ import pytest
 from imperial_rag.config import Settings
 from imperial_rag.evals import chunk_comparison, dataset_input, phoenix_experiment, ragas_runner
 from imperial_rag.ingestion.chunking import build_chunks
-from imperial_rag.ingestion.provenance import digest, freeze_sources
+from imperial_rag.ingestion.provenance import digest, document_payload, freeze_sources
 from imperial_rag.jsonl import read_jsonl, write_jsonl
 
 
@@ -57,7 +57,7 @@ def case(tmp_path, monkeypatch):
             state.experiments.append(kwargs)
             for example in kwargs["dataset"].examples:
                 if kwargs["experiment_name"].startswith("test"):
-                    await kwargs["task"](example["input"])
+                    await kwargs["task"](example["input"], metadata=example["metadata"])
                 else:
                     output = await kwargs["task"](example["input"], example["metadata"])
                     assert output["id"] == example["metadata"]["id"]
@@ -67,6 +67,7 @@ def case(tmp_path, monkeypatch):
     monkeypatch.setattr(phoenix_experiment, "build_runtime", lambda **kw: pytest.fail("Unexpected runtime construction"))
     monkeypatch.setattr(ragas_runner, "build_runtime", lambda **kw: pytest.fail("Unexpected runtime construction"))
     settings = Settings(workspace_root=tmp_path)
+    write_jsonl(settings.extraction_root / "chunks.jsonl", [document_payload(chunk) for chunk in build_chunks([doc])])
     return SimpleNamespace(doc=doc, snapshot=snapshot, snapshot_path=snapshot_path, question=question,
                            annotation=annotation, state=state, settings=settings, client=Client())
 
@@ -281,8 +282,11 @@ def test_comparison_answers_and_publication_preserve_original_version(case, tmp_
     case.state.dataset = Dataset.from_dict(payload)
     source = load(case)
     monkeypatch.setattr(dashscope.QwenProviderSettings, "require_api_key", lambda self: "offline")
-    monkeypatch.setattr(chunk_comparison, "build_shadow_retriever", lambda snapshot, settings, retrieval: (
-        SimpleNamespace(retrieve=lambda q: SimpleNamespace(evidence=build_chunks([case.doc]), diagnostics={})), ()))
+    def build(snapshot, settings, retrieval):
+        chunks = build_chunks([case.doc], retrieval.chunk_size, retrieval.chunk_overlap)
+        write_jsonl(settings.extraction_root / "chunks.jsonl", [document_payload(doc) for doc in chunks])
+        return SimpleNamespace(retrieve=lambda q: SimpleNamespace(evidence=chunks, diagnostics={})), ()
+    monkeypatch.setattr(chunk_comparison, "build_shadow_retriever", build)
     root = tmp_path / "comparison"
     manifest = asyncio.run(chunk_comparison.run_comparison(case.snapshot, source.benchmark, case.settings, root,
                                                            configs=[(400, 50), (256, 0)]))
