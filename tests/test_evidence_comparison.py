@@ -11,7 +11,7 @@ import pytest
 from imperial_rag.answering.strict import build_context, pack_context
 from imperial_rag.evals.chunk_comparison import evaluate_configuration, run_comparison, summarize, load_comparison
 from imperial_rag.evals.evidence import (
-    RANKING_METRICS, assemble_benchmark, draft_annotations, evidence_recall, load_ranking_corpus, score_retrieval,
+    assemble_benchmark, draft_annotations, evidence_recall, load_evidence_corpus, score_retrieval,
 )
 from imperial_rag.ingestion.chunking import build_chunks, _body_start_index
 from imperial_rag.ingestion.provenance import digest, document_payload, freeze_sources, load_snapshot, validate_chunk
@@ -109,70 +109,26 @@ def test_union_coverage_alternatives_and_duplicate_chunks():
     assert evidence_recall([], [])["evidence_recall"] is None
 
 
-def test_ranking_metrics_use_complete_evidence_and_full_corpus(tmp_path):
-    doc = Document(page_content="ABCDEFGHIJ", metadata={"file_id": "f", "source_locator": "body:1"})
-    snapshot = freeze_sources([doc], tmp_path / "snapshot.json")
-    source = snapshot["sources"][0]
-
-    def span(start, end):
-        return {"source_id": source["source_id"], "text_sha256": source["text_sha256"],
-                "start": start, "end": end}
-
-    def chunk(name, start, end):
-        return Document(page_content=doc.page_content[start:end], metadata={"chunk_id": name,
-                        "source_spans": [span(start, end) | {"chunk_start": 0, "chunk_end": end - start}]})
-
-    example = {"id": "q", "evidence": [{"evidence_id": "a", "support_sets": [[span(0, 4)], [span(6, 8)]]}]}
-    refusal = {"id": "refusal", "evidence": []}
-    joint = {"id": "joint", "evidence": [{"evidence_id": "b", "support_sets": [[span(0, 2), span(6, 8)]]}]}
-    a, b, missed, fragment1, fragment2, irrelevant = (
-        chunk("a", 0, 4), chunk("b", 6, 8), chunk("missed", 0, 5),
-        chunk("fragment1", 0, 2), chunk("fragment2", 2, 4), chunk("irrelevant", 8, 10),
-    )
-    documents = [a, b, missed, fragment1, fragment2, irrelevant]
+def test_evidence_corpus_validation_survives_ranking_removal(tmp_path):
+    doc, snapshot, _, _, benchmark = benchmark_case(tmp_path)
+    documents = build_chunks([doc])
     path = tmp_path / "chunks.jsonl"
     write_jsonl(path, [document_payload(doc) for doc in documents])
-    corpus = load_ranking_corpus(path, snapshot, [example, refusal, joint])
-    assert corpus.relevant_ids == {"q": {"a", "b", "missed"}, "refusal": set(), "joint": set()}
-    # A duplicate occupies rank 3 without receiving a second hit; the third relevant chunk is missed.
-    result = score_retrieval(example, [irrelevant, a, a, b], snapshot, ranking_corpus=corpus)
-    assert result["evidence_rr_at_1"] == result["evidence_ap_at_1"] == result["evidence_ndcg_at_1"] == 0
-    assert result["evidence_rr_at_3"] == .5
-    assert result["evidence_ap_at_3"] == pytest.approx(.5 / 3)
-    assert result["evidence_ap_at_5"] == pytest.approx(1 / 3)
-    assert result["evidence_ndcg_at_5"] == pytest.approx((.6309297536 + .4306765581) / (1 + .6309297536 + .5))
-    assert corpus.score(example, [a, b, missed])["evidence_ndcg_at_3"] == 1
-    assert corpus.score(example, [a])["evidence_ap_at_1"] == pytest.approx(1 / 3)
-    partial = score_retrieval(example, [fragment1, fragment2], snapshot, ranking_corpus=corpus)
-    assert partial["evidence_recall_at_3"] == 1
-    assert partial["evidence_rr_at_3"] == partial["evidence_ap_at_3"] == partial["evidence_ndcg_at_3"] == 0
-    for metric in RANKING_METRICS:
-        assert corpus.score(example, [])[f"{metric}_at_10"] == 0
-        assert corpus.score(refusal, [a])[f"{metric}_at_10"] is None
-        assert corpus.score(joint, [fragment1, b])[f"{metric}_at_10"] == 0
-    metrics = [result, corpus.score(example, []), corpus.score(refusal, []), corpus.score(joint, [])]
-    rows = [{"eligible": True, "metrics": partial | item, "latency_ms": 1} for item in metrics]
-    rows.append({"eligible": False, "metrics": result, "latency_ms": 1})
-    summary = summarize(rows)
-    assert summary["ranking_questions"] == 3
-    assert summary["zero_relevant_questions"] == 1
-    assert summary["evidence_mrr_at_5"] == pytest.approx(.5 / 3)
-    assert summary["evidence_map_at_5"] == pytest.approx(1 / 9)
-
-    for bad in (chunk("unknown", 0, 4), chunk("a", 0, 5)):
-        with pytest.raises(ValueError, match="does not match"):
-            corpus.score(example, [bad])
-    for bad_rows in ([], [a, a], [chunk("", 0, 4)]):
-        write_jsonl(path, [document_payload(doc) for doc in bad_rows])
-        with pytest.raises(ValueError):
-            load_ranking_corpus(path, snapshot, [example])
-    stale = deepcopy(a)
+    corpus = load_evidence_corpus(path, snapshot)
+    result = score_retrieval(benchmark["examples"][0], documents, snapshot, evidence_corpus=corpus)
+    assert result["evidence_recall_at_10"] == 1
+    assert not any(key.startswith(("evidence_rr_", "evidence_ap_", "evidence_ndcg_")) for key in result)
+    stale = deepcopy(documents[0])
+    stale.page_content += "changed"
+    with pytest.raises(ValueError, match="does not match"):
+        corpus.validate_documents([stale])
     stale.metadata["source_spans"][0]["text_sha256"] = "stale"
-    write_jsonl(path, [document_payload(stale)])
-    with pytest.raises(ValueError):
-        load_ranking_corpus(path, snapshot, [example])
+    for invalid in ([], [documents[0], documents[0]], [stale]):
+        write_jsonl(path, [document_payload(doc) for doc in invalid])
+        with pytest.raises(ValueError):
+            load_evidence_corpus(path, snapshot)
     with pytest.raises(FileNotFoundError):
-        load_ranking_corpus(tmp_path / "missing.jsonl", snapshot, [example])
+        load_evidence_corpus(tmp_path / "missing.jsonl", snapshot)
 
 
 @pytest.mark.parametrize("mutation", ["draft", "quote", "offset", "version", "question", "empty", "conflict", "missing"])
@@ -259,15 +215,17 @@ def test_refusal_gold_is_reviewed_but_recall_undefined(tmp_path):
 
 @pytest.mark.parametrize("mutation", ["none", "score", "corpus", "version", "legacy"])
 def test_saved_ranking_integrity_and_legacy_artifacts(tmp_path, mutation):
-    from imperial_rag.evals.evidence import RANKING_VERSION
+    RANKING_VERSION = "complete-evidence-ranking-v1"
     from imperial_rag.evals.phoenix_experiment import _phoenix_evidence_evaluators
 
     doc, snapshot, _, _, benchmark = benchmark_case(tmp_path)
     chunks = build_chunks([doc])
     write_jsonl(tmp_path / "chunks.jsonl", [document_payload(doc) for doc in chunks])
-    corpus = load_ranking_corpus(tmp_path / "chunks.jsonl", snapshot, benchmark["examples"])
+    corpus = load_evidence_corpus(tmp_path / "chunks.jsonl", snapshot)
     row = {"eligible": True, "latency_ms": 1,
-           "metrics": score_retrieval(benchmark["examples"][0], chunks, snapshot, ranking_corpus=corpus)}
+           "metrics": score_retrieval(benchmark["examples"][0], chunks, snapshot, evidence_corpus=corpus)}
+    row["metrics"].update(ranking_metric_version=RANKING_VERSION, ranking_corpus_hash=corpus.corpus_hash,
+                          evidence_ap_at_1=1.0)
     manifest = {"dataset_hash": benchmark["dataset_hash"], "ranking_metric_version": RANKING_VERSION,
                 "configs": [{"config_id": "s400-o50", "ranking_corpus_hash": corpus.corpus_hash}],
                 "results_hash": digest([[row]])}
@@ -290,9 +248,9 @@ def test_saved_ranking_integrity_and_legacy_artifacts(tmp_path, mutation):
             load_comparison(tmp_path)
     else:
         loaded, _, rows = load_comparison(tmp_path)
-        evaluators = _phoenix_evidence_evaluators(include_ranking=loaded.get("ranking_metric_version") == RANKING_VERSION)
-        assert ("evidence_ap_at_1" in evaluators) == (mutation != "legacy")
-        assert ("evidence_map_at_1" in summarize(rows)) == (mutation != "legacy")
+        evaluators = _phoenix_evidence_evaluators()
+        assert "evidence_ap_at_1" not in evaluators
+        assert "evidence_map_at_1" not in summarize(rows)
 
 
 def test_comparison_isolated_and_phoenix_dataset_pinned(tmp_path, monkeypatch):
@@ -348,7 +306,8 @@ def test_comparison_isolated_and_phoenix_dataset_pinned(tmp_path, monkeypatch):
                 assert kwargs["evaluators"]["evidence_recall_budget_2000"](output, example["output"])["score"] == 1
                 for metric in ("rr", "ap", "ndcg"):
                     key = f"evidence_{metric}_at_10"
-                    assert kwargs["evaluators"][key](output, example["output"])["score"] == output["metrics"][key]
+                    assert key not in kwargs["evaluators"]
+                    assert key not in output["metrics"]
             return {"id": "experiment"}
     monkeypatch.setattr(phoenix.client, "AsyncClient", FakeClient)
     asyncio.run(publish_evidence_comparison_async(root, settings))

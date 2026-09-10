@@ -27,8 +27,9 @@ from imperial_rag.evals.dataset_input import (
     validate_dataset_input_arguments,
 )
 from imperial_rag.evals.evidence import (
-    RANKING_METRICS, RANKING_VERSION, EvidenceRankingCorpus, _dcg, _mrr, _ndcg_with_ideal, load_ranking_corpus,
+    EvidenceCorpus, load_evidence_corpus,
 )
+from imperial_rag.evals.phoenix_retrieval import PhoenixRetrievalJudge
 from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
 from imperial_rag.jsonl import iter_jsonl_with_line_numbers  # noqa: E402
@@ -75,9 +76,6 @@ class _RankedIdOverlap(NamedTuple):
     @property
     def hit(self) -> bool:
         return bool(self.matched_ids)
-
-    def precision_at(self, k: int) -> float:
-        return sum(self.ranked_scores) / k if k > 0 else 0.0
 
 
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
@@ -347,36 +345,12 @@ def phoenix_conflict_behavior(
     return conflict_behavior(input or {}, output or {}, expected)
 
 
-def phoenix_retrieval_relevance(
-    output: dict[str, Any],
-    expected: dict[str, Any] | None = None,
-    input: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return retrieval_relevance_metrics(input or {}, output or {}, expected)
-
-
 def phoenix_id_retrieval_relevance(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return id_retrieval_metrics(input or {}, output or {}, expected)
-
-
-def phoenix_retrieval_relevance_for_k(k: int) -> Any:
-    retrieval_k = positive_int(k)
-    if retrieval_k == DEFAULT_RETRIEVAL_METRIC_K:
-        return phoenix_retrieval_relevance
-
-    def evaluator(
-        output: dict[str, Any],
-        expected: dict[str, Any] | None = None,
-        input: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return retrieval_relevance_metrics(input or {}, output or {}, expected, k=retrieval_k)
-
-    evaluator.__name__ = f"phoenix_retrieval_relevance_at_{retrieval_k}"
-    return evaluator
 
 
 def phoenix_id_retrieval_relevance_for_k(k: int) -> Any:
@@ -504,8 +478,6 @@ def run_local_eval(
             "reference_context_ids": example.get("reference_context_ids", []),
         }
         outputs = run_target(inputs, runtime=resolved_runtime)
-        retrieval_metrics = retrieval_relevance_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
-        retrieval_metadata = retrieval_metrics.get("metadata", {})
         id_metrics = id_retrieval_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
         id_metadata = id_metrics.get("metadata", {})
         citation_grounding = citation_grounding_behavior(inputs, outputs, reference_outputs)
@@ -518,7 +490,6 @@ def run_local_eval(
                 "citation_grounding_behavior": citation_grounding["score"],
                 "conflict_behavior": conflict["score"],
                 **_deterministic_retrieval_values(
-                    retrieval_metadata,
                     id_metadata,
                     retrieval_k=retrieval_k,
                 ),
@@ -551,7 +522,7 @@ def main(argv: list[str] | None = None) -> None:
         "--retrieval-k",
         type=positive_int,
         default=DEFAULT_RETRIEVAL_METRIC_K,
-        help="Top-k cutoff for deterministic retrieval relevance metrics.",
+        help="Maximum ranked chunks judged by Phoenix; also the ID-recall cutoff.",
     )
     args = parser.parse_args(argv)
     validate_dataset_input_arguments(parser, args)
@@ -682,18 +653,17 @@ async def run_phoenix_experiment_async(
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
     evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True, retrieval_k=retrieval_k)
     evidence_metadata: dict[str, Any] = {}
-    ranking_corpus = None
+    evidence_corpus = None
     if evidence_snapshot is not None:
         from imperial_rag.ingestion.provenance import digest
 
         if not examples or any("evidence" not in row or "split" not in row for row in examples):
             raise ValueError("Evidence evaluation requires assembled, validated benchmark examples")
-        ranking_corpus = await run_sync_in_worker_thread(
-            lambda: load_ranking_corpus(settings.extraction_root / "chunks.jsonl", evidence_snapshot, examples)
+        evidence_corpus = await run_sync_in_worker_thread(
+            lambda: load_evidence_corpus(settings.extraction_root / "chunks.jsonl", evidence_snapshot)
         )
         evidence_metadata = {
-            "ranking_metric_version": RANKING_VERSION,
-            "ranking_corpus_hash": ranking_corpus.corpus_hash,
+            "evidence_corpus_hash": evidence_corpus.corpus_hash,
             "snapshot_hash": evidence_snapshot["snapshot_hash"],
             "dataset_hash": digest({"schema_version": "imperial-evidence-benchmark-v1",
                                     "snapshot_hash": evidence_snapshot["snapshot_hash"], "examples": examples}),
@@ -702,7 +672,7 @@ async def run_phoenix_experiment_async(
                         "conflict_behavior", "ragas_id_context_recall"}
         evaluators = {f"legacy_{name}" if name in legacy_names else name: evaluator
                       for name, evaluator in evaluators.items()}
-        evaluators.update(_phoenix_evidence_evaluators(documents_key="ranked_documents", include_ranking=True))
+        evaluators.update(_phoenix_evidence_evaluators(documents_key="ranked_documents"))
 
     try:
         from phoenix.client import AsyncClient
@@ -717,6 +687,7 @@ async def run_phoenix_experiment_async(
     if "answer_relevancy" in resolved_ragas_metric_names and has_answer_quality_rows:
         _get_ragas_answer_relevancy_scorer()
     client = AsyncClient(base_url=settings.phoenix_client_endpoint)
+    retrieval_judge = PhoenixRetrievalJudge(client, k=retrieval_k, concurrency=concurrency)
     if phoenix_input is not None:
         dataset = phoenix_input.dataset
         evidence_metadata["phoenix_dataset"] = phoenix_input.binding
@@ -737,29 +708,43 @@ async def run_phoenix_experiment_async(
         )
     runtime = build_runtime(settings=settings)
     failed_questions: list[str] = []
-    examples_by_id = {example["id"]: example for example in examples} if evidence_snapshot is not None else {}
+    examples_by_id = {_phoenix_dataset_metadata(example, row_index=i,
+                       expected=_phoenix_dataset_expected_payload(example))["id"]: example
+                      for i, example in enumerate(examples)}
 
     async def bound_target(input: dict[str, Any], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         if evidence_snapshot is None:
-            return await run_sync_in_worker_thread(lambda: run_target(input, runtime=runtime))
-        example = examples_by_id[metadata["id"] if metadata else input["id"]]
-        output = await run_sync_in_worker_thread(
-            lambda: _run_evidence_target(example, runtime, evidence_snapshot, ranking_corpus)
-        )
-        if not output["eligible"]:
-            failed_questions.append(output["evidence_error"])
+            try:
+                output = await run_sync_in_worker_thread(lambda: run_target(input, runtime=runtime))
+            except Exception as exc:
+                failed_questions.append(type(exc).__name__)
+                return {"retrieval_evaluation": {"status": "error", "error_type": type(exc).__name__,
+                                                 "error_stage": "query"}}
+        else:
+            example = examples_by_id[metadata["id"] if metadata else input["id"]]
+            output = await run_sync_in_worker_thread(
+                lambda: _run_evidence_target(example, runtime, evidence_snapshot, evidence_corpus)
+            )
+            if not output["eligible"]:
+                failed_questions.append(output["evidence_error"])
+                return output
+        example = examples_by_id[metadata["id"]] if metadata else input
+        output["retrieval_evaluation"] = await retrieval_judge.evaluate(example, output)
+        if output["retrieval_evaluation"]["status"] == "error":
+            failed_questions.append(output["retrieval_evaluation"]["error_type"])
         return output
 
     experiment = await client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
-        experiment_metadata=evidence_metadata,
+        experiment_metadata=evidence_metadata | retrieval_judge.metadata,
         evaluators=evaluators,
         experiment_name=experiment_name,
         experiment_description=(
             "Source evidence recall and full-evidence success; legacy_* checks are ID-based diagnostics. "
             if evidence_snapshot is not None else ""
-        ) + _phoenix_experiment_description(resolved_ragas_metric_names),
+        ) + "Phoenix LLM retrieval relevance and native trace ranking metrics. "
+        + _phoenix_experiment_description(resolved_ragas_metric_names),
         concurrency=concurrency,
     )
     print(f"phoenix_dataset={phoenix_input.binding['dataset_id'] if phoenix_input else dataset_name}")
@@ -768,7 +753,7 @@ async def run_phoenix_experiment_async(
     print(f"phoenix_examples={len(examples)}")
     print(f"phoenix_experiment={_experiment_identifier(experiment)}")
     if failed_questions:
-        raise RuntimeError(f"Evidence evaluation failed for {len(failed_questions)} task(s): "
+        raise RuntimeError(f"Evaluation failed for {len(failed_questions)} task(s): "
                            + ", ".join(sorted(set(failed_questions))))
 
 
@@ -842,7 +827,6 @@ def _phoenix_evaluators(
         "source_hint_behavior": phoenix_source_hint_behavior,
         "citation_grounding_behavior": phoenix_citation_grounding_behavior,
         "conflict_behavior": phoenix_conflict_behavior,
-        "retrieval_relevance": phoenix_retrieval_relevance_for_k(retrieval_k),
         "id_retrieval_relevance": phoenix_id_retrieval_relevance_for_k(retrieval_k),
     }
     if "faithfulness" in metric_names:
@@ -944,45 +928,6 @@ def _phoenix_dataset_metadata(
     return metadata
 
 
-def retrieval_relevance_metrics(
-    inputs: dict[str, Any],
-    outputs: dict[str, Any],
-    reference_outputs: dict[str, Any] | None = None,
-    *,
-    k: int = DEFAULT_RETRIEVAL_METRIC_K,
-) -> dict[str, Any]:
-    hints = _reference_hints(reference_outputs or inputs)
-    if not hints:
-        return {
-            "score": None,
-            "label": "skipped",
-            "explanation": "Retrieval relevance requires expected_source_hints.",
-            "metadata": {"k": k, "reason": "missing_expected_source_hints", "document_scores": []},
-        }
-
-    documents = list(outputs.get("documents") or outputs.get("evidence") or [])
-    document_scores = [_document_relevance_score(document, hints) for document in documents]
-    ranked_scores = document_scores[:k]
-    hit = any(score > 0 for score in ranked_scores)
-    precision = sum(ranked_scores) / k if k > 0 else 0.0
-    ndcg = _ndcg(ranked_scores)
-    relevant_count = int(sum(1 for score in document_scores if score > 0))
-    return {
-        "score": precision,
-        "label": "hit" if hit else "miss",
-        "explanation": f"{relevant_count} of {len(document_scores)} retrieved documents matched expected source hints.",
-        "metadata": {
-            "k": k,
-            f"hit_at_{k}": hit,
-            f"precision_at_{k}": precision,
-            f"ndcg_at_{k}": ndcg,
-            "document_scores": document_scores,
-            "document_count": len(document_scores),
-            "relevant_document_count": relevant_count,
-        },
-    }
-
-
 def id_retrieval_metrics(
     inputs: dict[str, Any],
     outputs: dict[str, Any],
@@ -1004,8 +949,6 @@ def id_retrieval_metrics(
         )
 
     overlap = _ranked_id_overlap(reference_ids, retrieved_ids, k)
-    mrr = _mrr(overlap.ranked_scores)
-    ndcg = _ndcg_with_ideal(overlap.ranked_scores, relevant_count=len(overlap.reference_set), k=k)
     return {
         "score": overlap.recall,
         "label": "hit" if overlap.hit else "miss",
@@ -1013,10 +956,7 @@ def id_retrieval_metrics(
         "metadata": {
             "k": k,
             f"id_hit_at_{k}": overlap.hit,
-            f"id_precision_at_{k}": overlap.precision_at(k),
             f"id_recall_at_{k}": overlap.recall,
-            f"id_mrr_at_{k}": mrr,
-            f"id_ndcg_at_{k}": ndcg,
             "id_document_scores": overlap.ranked_scores,
             "retrieved_context_ids": retrieved_ids,
             "reference_context_ids": reference_ids,
@@ -1073,20 +1013,13 @@ def _ranked_id_overlap(
 
 
 def _deterministic_retrieval_values(
-    retrieval_metadata: Mapping[str, Any],
     id_metadata: Mapping[str, Any],
     *,
     retrieval_k: int,
 ) -> dict[str, Any]:
     return {
-        f"retrieval_hit_at_{retrieval_k}": retrieval_metadata.get(f"hit_at_{retrieval_k}"),
-        f"retrieval_precision_at_{retrieval_k}": retrieval_metadata.get(f"precision_at_{retrieval_k}"),
-        f"retrieval_ndcg_at_{retrieval_k}": retrieval_metadata.get(f"ndcg_at_{retrieval_k}"),
         f"id_hit_at_{retrieval_k}": id_metadata.get(f"id_hit_at_{retrieval_k}"),
-        f"id_precision_at_{retrieval_k}": id_metadata.get(f"id_precision_at_{retrieval_k}"),
         f"id_recall_at_{retrieval_k}": id_metadata.get(f"id_recall_at_{retrieval_k}"),
-        f"id_mrr_at_{retrieval_k}": id_metadata.get(f"id_mrr_at_{retrieval_k}"),
-        f"id_ndcg_at_{retrieval_k}": id_metadata.get(f"id_ndcg_at_{retrieval_k}"),
     }
 
 
@@ -1128,25 +1061,6 @@ def log_phoenix_eval_annotations(
     if span_annotations:
         client.spans.log_span_annotations(span_annotations=span_annotations, sync=sync)
 
-    document_scores = retrieval_metadata.get("document_scores") or []
-    if retrieval_span_id and document_scores:
-        client.spans.log_document_annotations(
-            document_annotations=[
-                {
-                    "name": "relevance",
-                    "span_id": retrieval_span_id,
-                    "document_position": position,
-                    "annotator_kind": "CODE",
-                    "result": {
-                        "score": float(score),
-                        "label": "relevant" if float(score) > 0 else "not_relevant",
-                    },
-                }
-                for position, score in enumerate(document_scores)
-            ],
-            sync=sync,
-        )
-
 
 def build_eval_artifact_row(
     *,
@@ -1169,8 +1083,6 @@ def build_eval_artifact_row(
     source_hint_verdict = source_hint_behavior(inputs, dict(output), reference_outputs)["score"]
     citation_grounding = citation_grounding_behavior(inputs, dict(output), reference_outputs)
     conflict_verdict = conflict_behavior(inputs, dict(output), reference_outputs)
-    retrieval_metrics = retrieval_relevance_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
-    retrieval_metadata = retrieval_metrics.get("metadata", {})
     id_metrics = id_retrieval_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
     id_metadata = id_metrics.get("metadata", {})
     deterministic = {
@@ -1179,7 +1091,6 @@ def build_eval_artifact_row(
         "citation_grounding_behavior": citation_grounding.get("score"),
         "conflict_behavior": conflict_verdict.get("score"),
         **_deterministic_retrieval_values(
-            retrieval_metadata,
             id_metadata,
             retrieval_k=retrieval_k,
         ),
@@ -1364,10 +1275,6 @@ def _document_search_text(document: dict[str, Any]) -> str:
     )
 
 
-def _reference_hints(reference: Mapping[str, Any]) -> list[str]:
-    return [str(hint).casefold() for hint in reference.get("expected_source_hints", []) if str(hint).strip()]
-
-
 def _source_family_from_metadata(metadata: Mapping[str, Any]) -> str:
     for field in ("relative_path", "file_path"):
         value = str(metadata.get(field) or "").strip()
@@ -1415,15 +1322,6 @@ def _grouped_pass_rate_summary(rows: Sequence[Mapping[str, Any]], key_fn: Any) -
         for key in keys:
             groups.setdefault(str(key), []).append(row)
     return {key: _pass_rate_summary(groups[key]) for key in sorted(groups)}
-
-
-def _document_relevance_score(document: Any, hints: list[str]) -> float:
-    if isinstance(document, Mapping):
-        haystack = _document_search_text(dict(document))
-    else:
-        haystack = _document_search_text(_document_payload(document))
-    normalized = haystack.casefold()
-    return 1.0 if any(hint in normalized for hint in hints) else 0.0
 
 
 def _citation_values(outputs: Mapping[str, Any]) -> list[str]:
@@ -1508,16 +1406,6 @@ def _has_decisive_version_claim(answer: str) -> bool:
     )
 
 
-def _ndcg(scores: list[float]) -> float:
-    if not scores:
-        return 0.0
-    ideal = sorted(scores, reverse=True)
-    ideal_dcg = _dcg(ideal)
-    if ideal_dcg == 0:
-        return 0.0
-    return _dcg(scores) / ideal_dcg
-
-
 def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if metric.get("score") is not None:
@@ -1530,14 +1418,7 @@ def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _retrieval_span_metric_names(metadata: Mapping[str, Any]) -> list[str]:
-    metric_prefixes = (
-        "precision_at_",
-        "ndcg_at_",
-        "id_precision_at_",
-        "id_recall_at_",
-        "id_mrr_at_",
-        "id_ndcg_at_",
-    )
+    metric_prefixes = ("id_recall_at_",)
     return [
         key
         for key in metadata
@@ -1582,7 +1463,7 @@ async def _await_result(awaitable: Any) -> Any:
 
 def _run_evidence_target(
     inputs: dict[str, Any], runtime: Any, snapshot: dict[str, Any],
-    ranking_corpus: EvidenceRankingCorpus | None = None,
+    evidence_corpus: EvidenceCorpus | None = None,
 ) -> dict[str, Any]:
     from langchain_core.documents import Document
     from imperial_rag.ingestion.provenance import validate_chunk
@@ -1604,10 +1485,8 @@ def _run_evidence_target(
         elif error and error != "no_relevant_documents":
             output["evidence_error"] = "query_error"
         else:
-            if ranking_corpus is not None:
-                output["metrics"] = ranking_corpus.score(
-                    inputs, [Document(**row) for row in output["ranked_documents"]],
-                )
+            if evidence_corpus is not None:
+                evidence_corpus.validate_documents([Document(**row) for row in output["ranked_documents"]])
             output["eligible"] = True
     except Exception as exc:
         # Exceptions can contain private text or credentials; publish only the class.
@@ -1627,14 +1506,6 @@ def phoenix_evidence_evaluator(
         if not output.get("eligible"):
             return {"key": key, "score": None,
                     "explanation": "Invalid or degraded retrieval run: " + output.get("evidence_error", "ineligible")}
-        if metric in RANKING_METRICS:
-            metrics = output["metrics"]
-            if metrics["ranking_metric_version"] != RANKING_VERSION:
-                raise ValueError("Unsupported ranking metric version")
-            score = metrics[key]
-            return {"key": key, "score": score,
-                    "explanation": "Ranking is undefined for refusal questions" if score is None else
-                    "Complete evidence per chunk; AP uses all relevant corpus chunks"}
         documents = [Document(**row) for row in output[documents_key]]
         selected = documents[:k] if k is not None else pack_context(documents, budget)["documents"]
         score = evidence_recall(expected["evidence"], selected)[metric]
@@ -1645,7 +1516,7 @@ def phoenix_evidence_evaluator(
 
 
 def _phoenix_evidence_evaluators(
-    *, documents_key: str = "documents", include_ranking: bool = False,
+    *, documents_key: str = "documents",
 ) -> dict[str, Any]:
     from imperial_rag.evals.evidence import BUDGETS, KS
 
@@ -1657,10 +1528,6 @@ def _phoenix_evidence_evaluators(
             evaluators[f"{metric}_budget_{budget}"] = phoenix_evidence_evaluator(
                 metric=metric, budget=budget, documents_key=documents_key,
             )
-    if include_ranking:
-        for metric in RANKING_METRICS:
-            for k in KS:
-                evaluators[f"{metric}_at_{k}"] = phoenix_evidence_evaluator(metric=metric, k=k)
     return evaluators
 
 
@@ -1711,7 +1578,7 @@ async def publish_evidence_comparison_async(root: Path, settings: Any, *, concur
         actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
         if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
             raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
-    evaluators = _phoenix_evidence_evaluators(include_ranking=manifest.get("ranking_metric_version") == RANKING_VERSION)
+    evaluators = _phoenix_evidence_evaluators()
     published_path = root / "phoenix.json"
     published = json.loads(published_path.read_text()) if published_path.exists() else binding | {"experiments": {}}
     if any(published.get(key) != value for key, value in binding.items()):

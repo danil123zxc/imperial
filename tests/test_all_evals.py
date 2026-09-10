@@ -11,6 +11,8 @@ from langchain_core.documents import Document
 from phoenix.client.resources.experiments import _bind_task_signature, _validate_task_signature
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_phoenix_retrieval_judge")
+
 from imperial_rag.answering.workflow import build_query_workflow
 from imperial_rag.evals import phoenix_experiment
 from imperial_rag.evals.evidence import assemble_benchmark
@@ -68,6 +70,7 @@ def test_all_evals_forwards_validated_evidence_and_ragas(monkeypatch, evidence_c
     assert captured["evidence_snapshot"] == evidence_case.snapshot
     assert captured["ragas_metric_names"] == metrics
     assert captured["concurrency"] == 5
+    assert captured["retrieval_k"] == 5
     assert captured["experiment_name"] == "imperial-rag-all-evals"
 
 
@@ -101,7 +104,7 @@ def test_all_evals_validates_before_any_external_calls(monkeypatch, evidence_cas
         module.main(case.argv)
 
 
-@pytest.mark.parametrize("scenario", ["packed", "empty", "refusal", "mapping", "degraded", "fallback", "provider", "missing_ranked"])
+@pytest.mark.parametrize("scenario", ["packed", "empty", "refusal", "mapping", "degraded", "fallback", "provider", "missing_ranked", "judge_error"])
 def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, scenario):
     module = prepare_runner(monkeypatch)
     case = evidence_case
@@ -124,6 +127,11 @@ def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, sc
         context_token_budget=1,
     )
     captured = {}
+    if scenario == "judge_error":
+        async def fail_judging(example, output):
+            return {"status": "error", "error_type": "HTTPStatusError", "error_stage": "log_annotations"}
+        monkeypatch.setattr(phoenix_experiment, "PhoenixRetrievalJudge",
+                            lambda *a, **kw: SimpleNamespace(evaluate=fail_judging, metadata={}))
 
     def query(question):
         if scenario == "provider":
@@ -160,28 +168,30 @@ def test_all_evals_evidence_experiment_end_to_end(monkeypatch, evidence_case, sc
         datasets=SimpleNamespace(create_dataset=create_dataset), experiments=SimpleNamespace(run_experiment=run_experiment),
     )))
     invalid = scenario in {"mapping", "degraded", "fallback", "provider", "missing_ranked"}
-    if invalid:
-        with pytest.raises(RuntimeError, match="Evidence evaluation failed") as exc:
+    if invalid or scenario == "judge_error":
+        with pytest.raises(RuntimeError, match="Evaluation failed") as exc:
             module.main(case.argv + ["--ragas-metrics", "none"])
         assert "private provider failure" not in str(exc.value)
     else:
         module.main(case.argv + ["--ragas-metrics", "none"])
+    if scenario == "judge_error":
+        assert captured["output"]["retrieval_evaluation"]["status"] == "error"
     scores = captured["scores"]
     evidence_scores = {key: row["score"] for key, row in scores.items()
                        if key.startswith(("evidence_recall_", "full_evidence_success_"))}
     assert len(evidence_scores) == 14
     ranking_scores = {key: row["score"] for key, row in scores.items()
                       if key.startswith(("evidence_rr_", "evidence_ap_", "evidence_ndcg_"))}
-    assert len(ranking_scores) == 12
+    assert ranking_scores == {}
     expected_score = None if invalid or scenario == "refusal" else 0 if scenario == "empty" else 1
     assert set(evidence_scores.values()) == {expected_score}
-    assert set(ranking_scores.values()) == {expected_score}
     assert "legacy_chunk_recall" not in scores and "chunk_recall" not in scores
     assert "legacy_citation_grounding_behavior" in scores
     assert "legacy_conflict_behavior" in scores
     if scenario == "packed":
         assert captured["output"]["documents"] == []
         assert captured["output"]["ranked_documents"]
+        assert captured["output"]["retrieval_evaluation"]["document_count"] == len(case.documents)
         assert case.documents[0].metadata["chunk_id"] != "obsolete-chunk"
     benchmark = assemble_benchmark([case.question], [case.annotation], case.snapshot)
     metadata = captured["dataset"]["metadata"][0]
@@ -204,7 +214,7 @@ def test_all_evals_preflight_fails_with_phoenix_start_hint(monkeypatch):
     assert "docker compose up -d phoenix" in str(exc_info.value)
 
 
-def test_missing_ranking_corpus_fails_before_query_or_experiment(monkeypatch, evidence_case):
+def test_missing_evidence_corpus_fails_before_query_or_experiment(monkeypatch, evidence_case):
     module = prepare_runner(monkeypatch)
     settings = module.phoenix_eval._build_settings(None)
     settings.extraction_root = evidence_case.snapshot_path.parent / "missing"

@@ -17,7 +17,7 @@ from langchain_core.documents import Document
 from imperial_rag.answering.strict import pack_context
 from imperial_rag.config import Settings
 from imperial_rag.evals.evidence import (
-    BUDGETS, KS, RANKING_VERSION, EvidenceRankingCorpus, evidence_recall, load_ranking_corpus, score_retrieval,
+    BUDGETS, KS, EvidenceCorpus, evidence_recall, load_evidence_corpus, score_retrieval,
 )
 from imperial_rag.ingestion.chunking import build_chunks
 from imperial_rag.ingestion.provenance import digest, document_payload
@@ -86,7 +86,7 @@ def build_shadow_retriever(
 
 async def evaluate_configuration(
     examples: list[dict[str, Any]], snapshot: dict[str, Any], service: Any, *, concurrency: int = 3,
-    ranking_corpus: EvidenceRankingCorpus | None = None,
+    evidence_corpus: EvidenceCorpus | None = None,
 ) -> list[dict[str, Any]]:
     if concurrency < 1:
         raise ValueError("Concurrency must be positive")
@@ -105,7 +105,7 @@ async def evaluate_configuration(
                 row["retrieved_source_spans"] = [span for doc in result.evidence
                                                   for span in doc.metadata.get("source_spans", [])]
                 row["metrics"] = await asyncio.to_thread(
-                    score_retrieval, example, result.evidence, snapshot, ranking_corpus=ranking_corpus,
+                    score_retrieval, example, result.evidence, snapshot, evidence_corpus=evidence_corpus,
                 )
                 degraded = bool(result.diagnostics.get("fallbacks") or result.diagnostics.get("degraded"))
                 row["eligible"] = not degraded
@@ -120,7 +120,7 @@ async def evaluate_configuration(
     return list(await asyncio.gather(*(evaluate(example) for example in examples)))
 
 
-def summarize(rows: list[dict[str, Any]], *, include_ranking: bool = False) -> dict[str, Any]:
+def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     valid = [row for row in rows if row["eligible"]]
     result: dict[str, Any] = {"eligible": bool(rows) and len(valid) == len(rows),
                               "questions": len(rows), "errors": len(rows) - len(valid), "budgets": {}}
@@ -136,16 +136,6 @@ def summarize(rows: list[dict[str, Any]], *, include_ranking: bool = False) -> d
             for key in ("evidence_recall", "full_evidence_success", "proxy_tokens", "budget_utilization")
         }
     result["mean_latency_ms"] = mean(row["latency_ms"] for row in rows) if rows else None
-    if include_ranking or any("ranking_metric_version" in row.get("metrics", {}) for row in rows):
-        ranked = [row["metrics"] for row in valid if row["metrics"].get("ranking_metric_version") == RANKING_VERSION
-                  and row["metrics"]["relevant_chunk_count"] is not None]
-        result["ranking_questions"] = len(ranked)
-        result["zero_relevant_questions"] = sum(row["relevant_chunk_count"] == 0 for row in ranked)
-        for k in KS:
-            for per_query, aggregate in (("rr", "mrr"), ("ap", "map"), ("ndcg", "ndcg")):
-                result[f"evidence_{aggregate}_at_{k}"] = (
-                    mean(row[f"evidence_{per_query}_at_{k}"] for row in ranked) if ranked else None
-                )
     return result
 
 
@@ -188,7 +178,6 @@ async def run_comparison(
         "embedding": provider.vector_metadata().to_dict(), "chat_model": provider.chat_model,
         "rerank_model": provider.rerank_model, "configs": [],
         "evaluator_version": "source-evidence-v1",
-        "ranking_metric_version": RANKING_VERSION,
         "package_versions": {name: version(name) for name in ("langchain-text-splitters", "arize-phoenix-client")},
     }
     if "phoenix_dataset" in benchmark:
@@ -209,11 +198,11 @@ async def run_comparison(
             service, resources = await asyncio.to_thread(
                 build_shadow_retriever, snapshot, target, replace(retrieval, chunk_size=size, chunk_overlap=overlap),
             )
-            corpus = await asyncio.to_thread(load_ranking_corpus, target.extraction_root / "chunks.jsonl",
-                                             snapshot, examples)
-            config["ranking_corpus_hash"] = corpus.corpus_hash
+            corpus = await asyncio.to_thread(load_evidence_corpus, target.extraction_root / "chunks.jsonl",
+                                             snapshot)
+            config["evidence_corpus_hash"] = corpus.corpus_hash
             rows = await evaluate_configuration(examples, snapshot, service, concurrency=concurrency,
-                                                ranking_corpus=corpus)
+                                                evidence_corpus=corpus)
         except Exception as exc:
             rows = [{"id": row["id"], "split": split, "eligible": False, "error": type(exc).__name__,
                      "documents": [], "latency_ms": 0} for row in examples]
@@ -226,7 +215,7 @@ async def run_comparison(
             row.update({"config_id": config_id, "snapshot_hash": snapshot["snapshot_hash"],
                         "dataset_hash": benchmark["dataset_hash"]})
         write_jsonl(root / "results.jsonl", rows)
-        summary = summarize(rows, include_ranking=True) | config
+        summary = summarize(rows) | config
         summaries.append(summary)
         write_json(output / "summary.json", {"configurations": summaries,
                    "ranking": rank_configurations(summaries) if split == "dev" else []})
@@ -249,13 +238,13 @@ def load_comparison(root: Path) -> tuple[dict[str, Any], dict[str, Any], list[di
     if digest(results) != manifest.get("results_hash"):
         raise ValueError("Incomplete or modified comparison results")
     if manifest.get("ranking_metric_version") is not None:
-        if manifest["ranking_metric_version"] != RANKING_VERSION:
+        if manifest["ranking_metric_version"] != "complete-evidence-ranking-v1":
             raise ValueError("Unsupported ranking metric version")
         for config, rows in zip(manifest["configs"], results):
             for row in rows:
                 if row["eligible"] and (
                     not config.get("ranking_corpus_hash")
-                    or row["metrics"].get("ranking_metric_version") != RANKING_VERSION
+                    or row["metrics"].get("ranking_metric_version") != "complete-evidence-ranking-v1"
                     or row["metrics"].get("ranking_corpus_hash") != config.get("ranking_corpus_hash")
                 ):
                     raise ValueError("Comparison ranking corpus or metric version changed")

@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--ragas-metrics",
         default="faithfulness,answer_relevancy",
-        help="Comma-separated Ragas metrics to attach, or 'none' for deterministic-only.",
+        help="Comma-separated Ragas metrics to attach, or 'none' to skip answer-quality judging; Phoenix retrieval judging still runs.",
     )
     parser.add_argument(
         "--concurrency",
@@ -49,6 +49,9 @@ def main(argv: list[str] | None = None) -> None:
         default=phoenix_eval.DEFAULT_PHOENIX_CONCURRENCY,
         help="Maximum concurrent Phoenix experiment tasks.",
     )
+    parser.add_argument("--retrieval-k", type=phoenix_eval.positive_int,
+                        default=phoenix_eval.DEFAULT_RETRIEVAL_METRIC_K,
+                        help="Maximum ranked chunks judged by Phoenix; also the ID-recall cutoff.")
     args = parser.parse_args(argv)
     validate_dataset_input_arguments(parser, args, evidence=True)
 
@@ -81,6 +84,7 @@ def main(argv: list[str] | None = None) -> None:
             experiment_name=args.experiment_name,
             ragas_metric_names=metric_names,
             concurrency=args.concurrency,
+            retrieval_k=args.retrieval_k,
             evidence_snapshot=snapshot,
             **({"phoenix_input": source} if source else {}),
         )

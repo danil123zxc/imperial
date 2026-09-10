@@ -14,6 +14,8 @@ import phoenix.client
 from phoenix.client.resources.datasets import Dataset
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_phoenix_retrieval_judge")
+
 from imperial_rag.config import Settings
 from imperial_rag.evals import chunk_comparison, dataset_input, phoenix_experiment, ragas_runner
 from imperial_rag.ingestion.chunking import build_chunks

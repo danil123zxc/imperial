@@ -213,6 +213,26 @@ wheels = [
 ]
 
 [[package]]
+name = "arize-phoenix-evals"
+version = "2.13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jsonpath-ng" },
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pystache" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0d/1b/ad1a3906ab333ce5bf373639e51069ec3b47be7ad0f60528d522eabff7b7/arize_phoenix_evals-2.13.0.tar.gz", hash = "sha256:b0a87ab66aabd6e7bb0982f52476cd4487996ab9e17524b205bdb4e3881d3b16", size = 125204, upload-time = "2026-04-01T01:28:15.753Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/5f/439696a5ee5b4ba40ddb77808b3eb919694631008114487ec696c9808e64/arize_phoenix_evals-2.13.0-py3-none-any.whl", hash = "sha256:db2aa81edc1d0226c3517ea55ed7fcb700c25865feb68e4c5536a9d259f5fbb2", size = 183712, upload-time = "2026-04-01T01:28:14.261Z" },
+]
+
+[[package]]
 name = "arize-phoenix-otel"
 version = "0.16.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1139,6 +1159,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "arize-phoenix-evals" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1150,6 +1171,7 @@ dev = [
 requires-dist = [
     { name = "anyio", specifier = ">=4.13,<5" },
     { name = "arize-phoenix-client", specifier = ">=2.7,<3" },
+    { name = "arize-phoenix-evals", marker = "extra == 'dev'", specifier = ">=2.13,<3" },
     { name = "arize-phoenix-otel", specifier = ">=0.16.0" },
     { name = "dashscope", specifier = ">=1.25,<2" },
     { name = "elasticsearch", specifier = ">=8.19,<9" },
@@ -1326,6 +1348,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c", size = 21699, upload-time = "2023-06-26T12:07:29.144Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade", size = 12898, upload-time = "2023-06-16T21:01:28.466Z" },
+]
+
+[[package]]
+name = "jsonpath-ng"
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/32/58/250751940d75c8019659e15482d548a4aa3b6ce122c515102a4bfdac50e3/jsonpath_ng-1.8.0.tar.gz", hash = "sha256:54252968134b5e549ea5b872f1df1168bd7defe1a52fed5a358c194e1943ddc3", size = 74513, upload-time = "2026-02-24T14:42:06.182Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/99/33c7d78a3fb70d545fd5411ac67a651c81602cc09c9cf0df383733f068c5/jsonpath_ng-1.8.0-py3-none-any.whl", hash = "sha256:b8dde192f8af58d646fc031fac9c99fe4d00326afc4148f1f043c601a8cfe138", size = 67844, upload-time = "2026-02-28T00:53:19.637Z" },
 ]
 
 [[package]]
@@ -2864,6 +2895,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0a/6d/20879428577c1e57ecd41b69dc86beabf43db9287ad2e702207f8b48c751/pypdf-6.12.2.tar.gz", hash = "sha256:111669eb6680c04495ae0c113a1476e3bf93a95761d23c7406b591c80a6490b1", size = 6468184, upload-time = "2026-05-26T13:31:26.911Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/44/fee070a16639d9869bb6a7e0f3a1b3946da1d66f32b9260b4d19cb90d7b2/pypdf-6.12.2-py3-none-any.whl", hash = "sha256:67b2699357a1f3f4c945940ea80826349ee507c9e2577724a14b4941982c104d", size = 343865, upload-time = "2026-05-26T13:31:25.068Z" },
+]
+
+[[package]]
+name = "pystache"
+version = "0.6.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/89/0a712ca22930b8c71bced8703e5bb45669c31690ea81afe15f6cb284550c/pystache-0.6.8.tar.gz", hash = "sha256:3707518e6a4d26dd189b07c10c669b1fc17df72684617c327bd3550e7075c72c", size = 101892, upload-time = "2025-03-18T11:54:47.595Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/78/ffd13a516219129cef6a754a11ba2a1c0d69f1e281af4f6bca9ed5327219/pystache-0.6.8-py3-none-any.whl", hash = "sha256:7211e000974a6e06bce2d4d5cad8df03bcfffefd367209117376e4527a1c3cb8", size = 82051, upload-time = "2025-03-18T11:54:45.813Z" },
 ]
 
 [[package]]

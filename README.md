@@ -326,7 +326,7 @@ Important settings are documented in `.env.example`.
 
 | Variable | Notes |
 | --- | --- |
-| `DASHSCOPE_API_KEY` | Required for Qwen chat, embeddings, OCR, reranking, and Ragas model-backed metrics |
+| `DASHSCOPE_API_KEY` | Required for Qwen chat, embeddings, OCR, reranking, and Phoenix/Ragas model-backed metrics |
 | `IMPERIAL_RAG_WORKSPACE_ROOT` | Workspace root; defaults to this checkout in host runs and `/app` in Compose |
 | `TELEGRAM_BOT_TOKEN` | Required Telegram Bot API token; keep only in local/server environment configuration |
 | `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` | Optional comma-separated bootstrap allowlist of trusted numeric Telegram user IDs |
@@ -402,17 +402,22 @@ Both evidence inputs are required; corrected questions alone do not enable a run
 See [the evidence evaluation guide](docs/evidence-evaluation.md) to prepare them.
 This runner scores source evidence at k=1/3/5/10 and budgets 1000/2000/4000, using
 ranked retrieval before answer packing. ID-based checks appear as `legacy_*` diagnostics.
-Evidence-based RR/AP/NDCG are also reported at k=1/3/5/10; averaging RR/AP gives
-MRR/MAP. A relevant chunk must independently supply a complete reviewed evidence
-unit. The full runner requires the resolved active `chunks.jsonl` to match the
-snapshot so missed relevant chunks remain in the AP/NDCG denominator. New chunk
-comparisons report the same metrics using each saved shadow corpus. See the
-[metric definitions and artifact contract](docs/evidence-evaluation.md#evidence-based-ranking-metrics).
+Phoenix mode judges each of the first `--retrieval-k` ranked chunks with Phoenix's
+`DocumentRelevanceEvaluator` and the configured Qwen model (default cutoff: 5).
+The experiment output's `retrieval_evaluation` contains status and trace/span IDs.
+Open the `evaluation.retrieval_relevance` span to inspect document labels,
+explanations and Phoenix-native nDCG, MRR, precision and hit rate. No ranking
+arithmetic is implemented locally, and MAP is no longer emitted. These scores
+are not comparable to historical complete-evidence ranking scores.
+Full evidence evaluation still validates the active corpus against the frozen
+snapshot and reports evidence recall/completeness separately; local chunk
+comparisons retain only those diagnostics. See the
+[metric and trace contract](docs/evidence-evaluation.md#phoenix-llm-retrieval-ranking).
 The separate `chunk_recall` evaluator and its chunk hit/precision metrics are removed;
 `id_recall` and optional Ragas `id_context_recall` remain available.
 Invalid source mappings or degraded retrieval fail the run; existing indexes may need
 rebuilding to carry valid `source_spans`. `--ragas-metrics none` disables Ragas judges,
-but the query still uses the answer model when context is available.
+but Phoenix retrieval judging and the query answer model still run when applicable.
 
 Run deterministic citation/refusal/source-hint checks:
 
@@ -420,7 +425,7 @@ Run deterministic citation/refusal/source-hint checks:
 uv run python scripts/run_phoenix_eval.py
 ```
 
-Store a deterministic-only Phoenix experiment:
+Store a Phoenix experiment with retrieval judging and no Ragas answer judges:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py --use-phoenix --ragas-metrics none

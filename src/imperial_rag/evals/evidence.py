@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from pathlib import Path
 from typing import Any
 
@@ -14,80 +13,35 @@ from imperial_rag.jsonl import read_jsonl
 
 KS = (1, 3, 5, 10)
 BUDGETS = (1000, 2000, 4000)
-RANKING_VERSION = "complete-evidence-ranking-v1"
-RANKING_METRICS = ("evidence_rr", "evidence_ap", "evidence_ndcg")
-
-
-def _dcg(scores: list[float]) -> float:
-    return sum(float(score) / math.log2(index + 2) for index, score in enumerate(scores))
-
-
-def _mrr(scores: list[float]) -> float:
-    return next((1.0 / rank for rank, score in enumerate(scores, 1) if score > 0), 0.0)
-
-
-def _ndcg_with_ideal(scores: list[float], *, relevant_count: int, k: int) -> float:
-    ideal = _dcg([1.0] * min(relevant_count, max(0, k)))
-    return _dcg(scores[:k]) / ideal if ideal else 0.0
-
-
 def _chunk_fingerprint(document: Document) -> str:
     # Retrieval adds scores and ranks; identity covers only text and its exact provenance.
     return digest([document.page_content, document.metadata.get("source_spans")])
 
 
 @dataclass
-class EvidenceRankingCorpus:
+class EvidenceCorpus:
     fingerprints: dict[str, str]
-    relevant_ids: dict[str, set[str]]
     corpus_hash: str
 
-    def score(self, example: dict[str, Any], documents: list[Document]) -> dict[str, Any]:
-        relevant = self.relevant_ids[example["id"]]
-        scores: list[float] = []
-        seen: set[str] = set()
+    def validate_documents(self, documents: list[Document]) -> None:
         for document in documents:
-            chunk_id = document.metadata.get("chunk_id")
-            if self.fingerprints.get(chunk_id) != _chunk_fingerprint(document):
+            if self.fingerprints.get(document.metadata.get("chunk_id", "")) != _chunk_fingerprint(document):
                 raise ValueError("Retrieved chunk does not match the evaluation corpus")
-            scores.append(float(chunk_id in relevant and chunk_id not in seen))
-            seen.add(chunk_id)
-        result: dict[str, Any] = {
-            "ranking_metric_version": RANKING_VERSION, "ranking_corpus_hash": self.corpus_hash,
-            "relevant_chunk_count": len(relevant) if example["evidence"] else None,
-        }
-        for k in KS:
-            hits = 0.0
-            precision_sum = 0.0
-            for rank, score in enumerate(scores[:k], 1):
-                hits += score
-                precision_sum += score * hits / rank
-            values = (_mrr(scores[:k]), precision_sum / len(relevant) if relevant else 0.0,
-                      _ndcg_with_ideal(scores, relevant_count=len(relevant), k=k))
-            result.update({f"{metric}_at_{k}": value if example["evidence"] else None
-                           for metric, value in zip(RANKING_METRICS, values)})
-        return result
 
 
-def load_ranking_corpus(
-    path: Path, snapshot: dict[str, Any], examples: list[dict[str, Any]],
-) -> EvidenceRankingCorpus:
+def load_evidence_corpus(path: Path, snapshot: dict[str, Any]) -> EvidenceCorpus:
     documents = [Document(**row) for row in read_jsonl(path)]
     if not documents:
-        raise ValueError("Ranking evaluation requires a nonempty chunk corpus")
+        raise ValueError("Evidence evaluation requires a nonempty chunk corpus")
     sources = {row["source_id"]: row for row in snapshot["sources"]}
     fingerprints: dict[str, str] = {}
     for document in documents:
         validate_chunk(document, sources)
         chunk_id = document.metadata.get("chunk_id")
         if not isinstance(chunk_id, str) or not chunk_id.strip() or chunk_id in fingerprints:
-            raise ValueError("Ranking corpus requires unique nonempty chunk IDs")
+            raise ValueError("Evidence corpus requires unique nonempty chunk IDs")
         fingerprints[chunk_id] = _chunk_fingerprint(document)
-    # ponytail: scan each question's corpus once; index spans if benchmark size makes this costly.
-    relevant = {example["id"]: {doc.metadata["chunk_id"] for doc in documents
-                                if evidence_recall(example["evidence"], [doc])["recovered_evidence_ids"]}
-                for example in examples}
-    return EvidenceRankingCorpus(fingerprints, relevant, digest(fingerprints))
+    return EvidenceCorpus(fingerprints, digest(fingerprints))
 
 
 def assemble_benchmark(
@@ -157,7 +111,7 @@ def evidence_recall(units: list[dict[str, Any]], documents: list[Document]) -> d
 
 def score_retrieval(
     example: dict[str, Any], documents: list[Document], snapshot: dict[str, Any],
-    *, ranking_corpus: EvidenceRankingCorpus | None = None,
+    *, evidence_corpus: EvidenceCorpus | None = None,
 ) -> dict[str, Any]:
     sources = {row["source_id"]: row for row in snapshot["sources"]}
     for document in documents:
@@ -173,8 +127,8 @@ def score_retrieval(
             "delivered_chunk_ids": [doc.metadata.get("chunk_id") for doc in packed["documents"]],
             "delivered_source_spans": [span for doc in packed["documents"] for span in doc.metadata["source_spans"]],
         }
-    if ranking_corpus is not None:
-        result.update(ranking_corpus.score(example, documents))
+    if evidence_corpus is not None:
+        evidence_corpus.validate_documents(documents)
     return result
 
 

@@ -84,60 +84,60 @@ Refusal recall is undefined and excluded from the mean. Invalid mappings, provid
 errors and fallbacks are explicit failures; any failed question disqualifies that
 configuration from ranking. Run exit status is nonzero if any configuration fails.
 
-### Evidence-based ranking metrics
+### Phoenix LLM retrieval ranking
 
-Full evaluation and new chunk comparisons also report RR, AP and NDCG at
-k=1/3/5/10 over the ranked chunks before answer packing. A chunk has binary
-relevance when it alone covers every span in at least one complete support set
-for any reviewed evidence unit. Partial overlap is insufficient. Evidence spread
-across multiple chunks still contributes to union recall, but not to individual
-chunk relevance.
+`scripts/run_phoenix_eval.py --use-phoenix` and `scripts/run_all_evals.py` use
+Phoenix Evals `DocumentRelevanceEvaluator` with the existing Qwen model,
+OpenAI-compatible endpoint and `DASHSCOPE_API_KEY`. Install evaluation dependencies
+with `uv sync --extra dev`. Both commands accept `--retrieval-k` (default 5).
+`--ragas-metrics none` disables answer-quality judges only; retrieval judging and
+live query generation still incur provider calls. Local evaluation and saved
+chunk-comparison replay never acquire implicit LLM judging.
 
-For binary relevance `rel_i` at rank `i`, and `R` relevant chunks in the complete
-evaluation corpus:
+Each question is paired with the original text of each selected `ranked_documents`
+chunk before context packing or relevance rejection. The built-in rubric returns
+binary relevant/unrelated labels plus explanations. The shared concurrency limit
+bounds active judge requests across all questions. Duplicate positions remain
+separate documents according to Phoenix's native semantics.
 
-- `RR@k` is `1 / first_relevant_rank`, or zero if there is no hit through k.
-- `AP@k = sum(precision@i * rel_i, i=1..k) / R`. The denominator is **R**, not
-  `min(R, k)` or the number of retrieved hits; relevant chunks missed by retrieval
-  remain in the denominator. AP@k can be below one even with a perfect top k.
-- `NDCG@k` divides `sum(rel_i / log2(i+1), i=1..k)` by the same discounted sum
-  for `min(R, k)` leading relevant chunks. Relevance gains are binary.
+An evaluation-only `evaluation.retrieval_relevance` RETRIEVER span records the
+selected documents in their original order. After judging and flushing the span,
+the async client logs position-indexed `relevance` document annotations with
+`annotator_kind=LLM` and waits for server acknowledgement. A bounded retry handles missing-span 404s
+while Phoenix ingests exported traces, without repeating judge calls. Phoenix supplies nDCG,
+MRR, precision and hit rate on the trace; experiment tables and local reports do
+not duplicate ranking arithmetic. These are semantic judgments of the retrieved
+set, not measurements of all missed evidence in the full corpus. Custom
+source-hint/ID ranking metrics and complete-corpus RR/AP/NDCG are retired; there
+is no MAP replacement.
 
-Repeated chunk IDs retain their rank positions but receive credit only once.
-Distinct overlapping chunks are separate items, even when they supply the same
-fact. Successful empty retrieval and answerable questions with `R=0` score zero.
-Refusal scores are undefined and excluded from means. These metrics measure
-ordering against reviewed evidence labels; they do not establish exhaustive
-semantic relevance judgments over the corpus.
+Experiment output includes `retrieval_evaluation` with `status`, `document_count`,
+`question_kind`, trace/span IDs when a span exists, `judge_model`, `retrieval_k`,
+`phoenix_evals_version` and `ranking_evaluation_version=phoenix-document-relevance-v1`.
+Completed annotations have status `completed`; successful empty retrieval has
+status `empty`, invokes no judge and invents no ranking values. Refusal questions
+are marked separately; filter them out when reviewing answerable retrieval.
+Errors record a sanitized type/stage and fail the command after recording the
+experiment. Partial judging never falls back to deterministic relevance.
 
-Per-question artifacts and Phoenix evaluator names are `evidence_rr_at_{k}`,
-`evidence_ap_at_{k}`, and `evidence_ndcg_at_{k}`. Their arithmetic means are MRR,
-MAP and mean NDCG; comparison summaries name them `evidence_mrr_at_{k}`,
-`evidence_map_at_{k}` and `evidence_ndcg_at_{k}`. Summaries include
-`ranking_questions` (valid, non-refusal contributors) and `zero_relevant_questions`.
+Phoenix tracing must be configured and spans must be recording. Hidden inputs,
+input text or outputs are incompatible with this evaluation path, and the trace
+document limit must cover the requested cutoff. Preflight fails with the relevant
+setting name rather than overriding privacy controls. Existing text-preview and
+metadata controls still apply to spans; the judge receives the original chunk.
 
-The scorer loads the full saved `chunks.jsonl` once and derives relevant IDs for
-each question. Live evaluation uses the resolved active extraction root;
-comparisons use each configuration's shadow extraction artifact. All corpus
-chunks must have unique nonempty chunk IDs and valid snapshot mappings, and every
-retrieved chunk must match its corpus ID, text and source spans. A missing, empty,
-stale or mismatched corpus fails validation; retrieved hits are never used to
-estimate the full denominator. Live corpus validation runs before query/model
-calls or experiment creation. No reindexing is performed automatically.
+Evidence recall, full-evidence success and token-budget scores remain deterministic.
+Full evidence evaluation validates unique nonempty corpus IDs and source mappings
+against the snapshot before query/model calls or experiment creation; each retrieved
+chunk must match its corpus ID, text and spans. Missing/stale corpora fail without
+reindexing. The validated corpus is recorded as `evidence_corpus_hash` in experiment
+metadata or comparison configuration metadata.
 
-Results record `relevant_chunk_count`, `ranking_corpus_hash`, and
-`ranking_metric_version=complete-evidence-ranking-v1`. Live experiment metadata
-and comparison manifests/configurations retain the corresponding version/hash.
-Comparison replay uses the saved scores after existing result-hash checks and
-ranking version/corpus-hash consistency checks, without rerunning retrieval.
-Older artifacts without ranking metadata retain their previous evaluators and
-summaries; they do not acquire synthetic ranking scores. Already published
-experiments are not updated in place.
-
-Budget scores and development configuration selection remain based on evidence
-recall and full-evidence success. Complete-chunk relevance depends on chunk
-boundaries, so union-based evidence recall remains the primary measure for
-cross-chunking comparisons.
+Historical artifacts and experiments remain unchanged. Legacy result hashes and
+ranking-version/corpus checks remain readable, but newly generated summaries and
+comparison publications omit the retired ranking evaluators. Native Phoenix scores
+must not be compared numerically with `complete-evidence-ranking-v1`. Development
+configuration selection remains based on evidence recall/completeness at budget 2000.
 
 The shared context packer uses `tiktoken==0.13.0`, `cl100k_base`. It tries whole chunks
 in rank order, skips those that do not fit and continues. It counts the complete
