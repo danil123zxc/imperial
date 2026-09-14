@@ -12,6 +12,8 @@ import sqlite3
 from time import perf_counter, time
 from typing import Any, AsyncIterator
 
+import httpx
+
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -20,12 +22,16 @@ from starlette.routing import Route
 from imperial_rag.app.auth import AuthStore
 from imperial_rag.app.chat_history import ChatHistoryStore
 from imperial_rag.app.telegram import (
+    DELIVERY_SECONDS_PER_CHUNK,
     MAX_TELEGRAM_TEXT_LENGTH,
     NEW_COMMAND,
     NEW_CONVERSATION_TEXT,
     NEW_CONVERSATION_TITLE,
     PayloadError,
+    _https_url,
     _json_body,
+    _required,
+    _retry_after,
     _validated_secret,
     parse_allowed_user_ids,
     split_telegram_text,
@@ -35,7 +41,6 @@ from imperial_rag.observability import log_event, log_failure
 from imperial_rag.observability.phoenix import phoenix_trace_context, trace_user_id_from_email
 
 PROCESSING_LEASE_SECONDS = 30 * 60
-DELIVERY_LEASE_SECONDS = 60
 FAILURE_TEXT = "Не удалось подготовить ответ. Подробности доступны в локальных журналах."
 
 
@@ -44,6 +49,7 @@ class TelegramBackendConfig:
     service_token: str
     allowed_user_ids: frozenset[int]
     phone_hash_secret: str
+    render_url: str
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,8 @@ class TelegramJob:
     status: str
     result: dict[str, Any] | None
     attempts: int
+    delivery_attempts: int
+    next_delivery_at: float
     processing_lease_until: float | None
     delivery_lease_until: float | None
     created_at: float
@@ -66,7 +74,7 @@ class TelegramJobStore:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as conn:
+        with self._immediate_connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS telegram_jobs (
@@ -83,6 +91,11 @@ class TelegramJobStore:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(telegram_jobs)")}
+            if "delivery_attempts" not in columns:
+                conn.execute("ALTER TABLE telegram_jobs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0")
+            if "next_delivery_at" not in columns:
+                conn.execute("ALTER TABLE telegram_jobs ADD COLUMN next_delivery_at REAL NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS telegram_jobs_status_updated_idx
@@ -161,34 +174,50 @@ class TelegramJobStore:
         with self._immediate_connection() as conn:
             self._recover_expired(conn, timestamp)
             row = conn.execute(
-                "SELECT * FROM telegram_jobs WHERE status = 'deliverable' ORDER BY updated_at, update_id LIMIT 1"
+                "SELECT * FROM telegram_jobs WHERE status = 'deliverable' AND next_delivery_at <= ? "
+                "ORDER BY next_delivery_at, updated_at, update_id LIMIT 1",
+                (timestamp,),
             ).fetchone()
             if row is None:
                 return None
             conn.execute(
                 """
                 UPDATE telegram_jobs
-                SET status = 'delivering', delivery_lease_until = ?, updated_at = ?
+                SET status = 'delivering', delivery_attempts = delivery_attempts + 1,
+                    delivery_lease_until = ?, updated_at = ?
                 WHERE update_id = ? AND status = 'deliverable'
                 """,
-                (timestamp + DELIVERY_LEASE_SECONDS, timestamp, int(row["update_id"])),
+                (timestamp + _delivery_timeout(_job_from_row(row)) + 45, timestamp, int(row["update_id"])),
             )
             claimed = conn.execute("SELECT * FROM telegram_jobs WHERE update_id = ?", (int(row["update_id"]),)).fetchone()
         return _job_from_row(claimed) if claimed is not None else None
 
-    def complete_delivery(self, update_id: int, *, now: float | None = None) -> bool:
+    def complete_delivery(self, update_id: int, attempt: int, *, now: float | None = None) -> bool:
         timestamp = time() if now is None else now
         with self._connection() as conn:
-            row = conn.execute("SELECT status FROM telegram_jobs WHERE update_id = ?", (update_id,)).fetchone()
-            if row is not None and row["status"] == "delivered":
-                return True
             cursor = conn.execute(
                 """
                 UPDATE telegram_jobs
-                SET status = 'delivered', delivery_lease_until = NULL, updated_at = ?
-                WHERE update_id = ? AND status = 'delivering'
+                SET status = 'delivered', delivery_lease_until = NULL, next_delivery_at = 0, updated_at = ?
+                WHERE update_id = ? AND delivery_attempts = ?
+                    AND (status = 'delivered' OR (status = 'delivering' AND delivery_lease_until > ?))
                 """,
-                (timestamp, update_id),
+                (timestamp, update_id, attempt, timestamp),
+            )
+        return cursor.rowcount == 1
+
+    def retry_delivery(
+        self, update_id: int, attempt: int, delay: float, *, now: float | None = None,
+    ) -> bool:
+        timestamp = time() if now is None else now
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE telegram_jobs
+                SET status = 'deliverable', delivery_lease_until = NULL, next_delivery_at = ?, updated_at = ?
+                WHERE update_id = ? AND status = 'delivering' AND delivery_attempts = ? AND delivery_lease_until > ?
+                """,
+                (timestamp + delay, timestamp, update_id, attempt, timestamp),
             )
         return cursor.rowcount == 1
 
@@ -323,10 +352,15 @@ def load_configuration(environ: Mapping[str, str] | None = None) -> TelegramBack
 
         load_project_env()
     values = os.environ if environ is None else environ
+    render_url = _required(values, "IMPERIAL_RAG_TELEGRAM_RENDER_URL").rstrip("/")
+    parsed = _https_url(render_url, "IMPERIAL_RAG_TELEGRAM_RENDER_URL")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("IMPERIAL_RAG_TELEGRAM_RENDER_URL must be an HTTPS origin without a path")
     return TelegramBackendConfig(
         service_token=_validated_secret(values, "IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN"),
         allowed_user_ids=parse_allowed_user_ids(values.get("IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS")),
         phone_hash_secret=_validated_secret(values, "IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET"),
+        render_url=render_url,
     )
 
 
@@ -341,8 +375,6 @@ def create_app(
             Route("/healthz", healthz, methods=["GET"]),
             Route("/internal/telegram/access", check_access, methods=["POST"]),
             Route("/internal/telegram/jobs", create_job, methods=["POST"]),
-            Route("/internal/telegram/deliveries/claim", claim_delivery, methods=["POST"]),
-            Route("/internal/telegram/deliveries/{update_id:int}/complete", complete_delivery, methods=["POST"]),
         ],
         lifespan=_lifespan,
     )
@@ -350,6 +382,7 @@ def create_app(
     application.state.store = store
     application.state.worker = worker
     application.state.access_store = access_store
+    application.state.delivery_client = None
     application.state.ready = bool(config and store and access_store)
     return application
 
@@ -416,31 +449,57 @@ async def create_job(request: Request) -> Response:
     return JSONResponse(_job_payload(job), status_code=202 if created else 200)
 
 
-async def claim_delivery(request: Request) -> Response:
-    if not _authorized(request):
-        return PlainTextResponse("unauthorized\n", status_code=401)
-    try:
-        await _json_body(request)
-    except PayloadError as exc:
-        return PlainTextResponse(f"{exc}\n", status_code=exc.status_code)
-    job = _store(request.app).claim_delivery()
+def _delivery_timeout(job: TelegramJob) -> int:
+    messages = (job.result or {}).get("messages")
+    return DELIVERY_SECONDS_PER_CHUNK * max(1, len(messages) if isinstance(messages, list) else 0)
+
+
+async def deliver_once(application: Starlette) -> bool:
+    store = _store(application)
+    job = store.claim_delivery()
     if job is None:
-        return Response(status_code=204)
-    result = job.result or {}
-    return JSONResponse({"update_id": job.update_id, "user_id": job.user_id, "messages": result.get("messages") or []})
-
-
-async def complete_delivery(request: Request) -> Response:
-    if not _authorized(request):
-        return PlainTextResponse("unauthorized\n", status_code=401)
+        return False
+    config = _config(application)
+    delay = min(300, 5 * 2 ** min(job.delivery_attempts - 1, 6))
+    http_status = None
     try:
-        await _json_body(request)
-        update_id = _positive_int(request.path_params.get("update_id"), "update_id")
-    except PayloadError as exc:
-        return PlainTextResponse(f"{exc}\n", status_code=exc.status_code)
-    if not _store(request.app).complete_delivery(update_id):
-        return PlainTextResponse("delivery is not claimable\n", status_code=409)
-    return JSONResponse({"update_id": update_id, "status": "delivered"})
+        async with asyncio.timeout(_delivery_timeout(job) + 15):
+            response = await application.state.delivery_client.post(
+                f"{config.render_url}/internal/telegram/deliver",
+                headers={"Authorization": f"Bearer {config.service_token}"},
+                json={"update_id": job.update_id, "user_id": job.user_id,
+                      "messages": (job.result or {}).get("messages")},
+                timeout=_delivery_timeout(job) + 15,
+            )
+        http_status = response.status_code
+        if 400 <= http_status < 500 and http_status not in {408, 429}:
+            delay = 900
+        payload = response.json()
+        if http_status == 200 and isinstance(payload, dict) and type(payload.get("update_id")) is int and payload == {"update_id": job.update_id, "status": "delivered"}:
+            completed = store.complete_delivery(job.update_id, job.delivery_attempts)
+            log_event("imperial_rag.telegram_delivery", operation="telegram_delivery", component="telegram-backend",
+                      status="success" if completed else "stale", attempt=job.delivery_attempts)
+            return True
+        if isinstance(payload, dict) and payload.get("retryable") is False:
+            delay = 900
+        delay = max(delay, _retry_after(payload) or 0)
+        raise RuntimeError("Render delivery not confirmed")
+    except (httpx.HTTPError, TimeoutError, ValueError, RuntimeError) as exc:
+        store.retry_delivery(job.update_id, job.delivery_attempts, delay)
+        log_failure("telegram_delivery", exc, component="telegram-backend", http_status=http_status,
+                    attempt=job.delivery_attempts, retry_delay_seconds=delay)
+    return True
+
+
+async def _delivery_loop(application: Starlette) -> None:
+    while True:
+        try:
+            processed = await deliver_once(application)
+        except Exception as exc:
+            log_failure("telegram_delivery", exc, component="telegram-backend")
+            processed = False
+        if not processed:
+            await asyncio.sleep(1)
 
 
 @asynccontextmanager
@@ -476,15 +535,19 @@ async def _lifespan(application: Starlette) -> AsyncIterator[None]:
             create_runtime(settings),
             settings,
         )
-    application.state.ready = True
-    task = asyncio.create_task(_worker_loop(application))
-    try:
-        yield
-    finally:
-        application.state.ready = False
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+    async with httpx.AsyncClient() as client:
+        application.state.delivery_client = client
+        application.state.ready = True
+        tasks = [asyncio.create_task(_worker_loop(application)), asyncio.create_task(_delivery_loop(application))]
+        try:
+            yield
+        finally:
+            application.state.ready = False
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 async def _worker_loop(application: Starlette) -> None:
@@ -540,6 +603,8 @@ def _job_from_row(row: sqlite3.Row) -> TelegramJob:
         status=str(row["status"]),
         result=result if isinstance(result, dict) else None,
         attempts=int(row["attempts"]),
+        delivery_attempts=int(row["delivery_attempts"]),
+        next_delivery_at=float(row["next_delivery_at"]),
         processing_lease_until=float(row["processing_lease_until"]) if row["processing_lease_until"] is not None else None,
         delivery_lease_until=float(row["delivery_lease_until"]) if row["delivery_lease_until"] is not None else None,
         created_at=float(row["created_at"]),

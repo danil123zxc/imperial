@@ -65,7 +65,7 @@ Create local configuration:
 cp .env.example .env
 ```
 
-Fill in `DASHSCOPE_API_KEY` and the Streamlit credentials. Telegram additionally needs the six variables
+Fill in `DASHSCOPE_API_KEY` and the Streamlit credentials. Telegram additionally needs the environment variables
 listed under [Render Telegram deployment](#render-telegram-deployment). The allowlist is a comma-separated
 set of trusted numeric Telegram user IDs. Both HTTP boundaries reject groups and users outside that list.
 
@@ -206,10 +206,32 @@ and the secret-token header. For each private message, Render first sends only t
 username, and any explicitly shared contact to the authenticated Russian access endpoint. Question text is
 submitted only after authorization succeeds. A matching username binds automatically; a phone grant binds
 only when Telegram marks the shared contact as belonging to the sender. Accepted questions are idempotently
-stored in Russia before Render returns `200`. The Russian worker processes jobs sequentially; Render leases
-completed responses every two seconds and acknowledges delivery after Telegram accepts all message chunks.
-Expired processing and delivery leases recover after restarts. Delivery is at least once, so a reply can
-rarely be duplicated if Telegram accepts it but the completion acknowledgement fails.
+stored in Russia before Render returns `200`. The Russian worker processes jobs sequentially and saves each
+completed answer before a separate backend delivery task claims it. That task calls Render's authenticated
+`POST /internal/telegram/deliver` with `{update_id, user_id, messages}`. Render validates the entire batch,
+sends chunks sequentially, and returns `200` with `{update_id, status: "delivered"}` only after Telegram
+accepts every chunk. The backend then marks the matching delivery attempt delivered. Render does not poll.
+
+Set `IMPERIAL_RAG_TELEGRAM_RENDER_URL` on the Russian backend to the Render HTTPS origin (no path,
+query, fragment, or embedded credentials). The existing service token authenticates both directions.
+The backend delivery task checks its local queue once per second when idle. SQLite adds
+`delivery_attempts` and `next_delivery_at` with a repeatable, additive migration preserving existing jobs.
+Transient failures retry after 5, 10, 20 seconds, doubling to a five-minute cap; a larger Telegram
+`retry_after` takes precedence. Non-transient failures remain queued with a 15-minute retry delay and
+sanitized logs. Due jobs proceed while other jobs wait. Retry timing and expired lease recovery survive
+restarts; stale attempts cannot acknowledge or reschedule newer claims.
+
+Each Telegram call has a 15-second deadline. For N chunks, Render's total deadline is 20N seconds,
+the backend deadline is 20N + 15, and the delivery lease is 20N + 45. Delivery batches have a 1 MiB
+JSON body limit, separate from the existing 16 KiB webhook/job limit. Oversized or invalid batches
+remain queued for operator correction. Delivery is at least once: retries resend the whole answer,
+so partial sends or lost success confirmations can duplicate chunks. Render stores no delivery state.
+
+For deployment, coordinate any live automatic deployment settings to enforce this order. Fully replace Render first and ensure all old polling processes have stopped, then
+configure and activate the new backend. Completed answers remain queued during the gap. Do not run
+old Render pollers alongside backend push. For rollback, stop backend push before restoring the old
+backend and Render poller; retain the queue database and additive columns. The backend's former
+HTTP delivery claim/completion routes are removed. Incoming webhooks and access/job routes remain.
 
 Render also registers the private-chat command menu in Russian. `/start` welcomes the user, `/help` lists
 the available commands, and `/new` creates a fresh conversation on the Russian backend without querying the
@@ -313,7 +335,7 @@ uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/sn
 | `.imperial_rag/active-ingestion.json` | local file | Atomically replaced pointer to the promoted artifacts and search aliases |
 | `.imperial_rag/auth.sqlite3` | local file | Streamlit users, browser sessions, and Telegram access grants |
 | `.imperial_rag/chat_history.sqlite3` | local file | Local chat history |
-| `telegram_jobs` | table in chat-history SQLite | Durable Telegram job, result, attempt, and lease state |
+| `telegram_jobs` | table in chat-history SQLite | Durable jobs, results, processing/delivery attempts, leases, and retry due times |
 | `telegram_access_grants` | table in auth SQLite | Username/phone grants, masked labels, and bound Telegram IDs |
 
 Use the live files, database tables, and service health checks as source of truth for generated state. Snapshot counts in documentation drift quickly after corpus rebuilds.
@@ -333,6 +355,7 @@ Important settings are documented in `.env.example`.
 | `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET` | Required Russia-only HMAC secret for phone-number grants |
 | `TELEGRAM_WEBHOOK_URL` / `TELEGRAM_WEBHOOK_SECRET` | Exact Render webhook URL and strong Telegram secret-token value |
 | `IMPERIAL_RAG_TELEGRAM_BACKEND_URL` / `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN` | Russian HTTPS origin and shared bearer secret |
+| `IMPERIAL_RAG_TELEGRAM_RENDER_URL` | Required on the Russian backend: Render HTTPS origin for answer delivery |
 | `IMPERIAL_RAG_ADMIN_EMAIL` / `IMPERIAL_RAG_ADMIN_PASSWORD` | Streamlit admin access |
 | `ELASTICSEARCH_URL` / `ELASTICSEARCH_INDEX` | Keyword search endpoint and index |
 | `QDRANT_URL` / `QDRANT_COLLECTION` | Optional vector search endpoint and collection |
@@ -629,11 +652,14 @@ If vector search is unavailable, start Qdrant and rerun ingestion with `--index-
 If model-backed chat, OCR, embeddings, reranking, or Ragas metrics fail, confirm `DASHSCOPE_API_KEY` is present in `.env` or the process environment.
 
 If the Telegram backend is unhealthy, confirm `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET` and
-`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, and ensure the optional numeric allowlist contains only integers.
+`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, the Render origin `IMPERIAL_RAG_TELEGRAM_RENDER_URL`, and ensure the optional numeric allowlist contains only integers.
 Then inspect `docker compose logs --tail=200 telegram-api`. An authenticated `200` from local port `8502`
 proves that the API and worker initialized; it does not prove that Qwen, Elasticsearch, or Qdrant will
 answer a new question. On Render, verify `/healthz` and Telegram `getWebhookInfo`, including the exact URL
-and an empty `last_error_message`.
+and an empty `last_error_message`. If completed answers are not arriving, inspect `telegram_delivery`
+logs on the backend and Render: status, attempt, and retry delay contain no answer text. Check queue
+counts by status and `next_delivery_at` without printing questions or results. `/healthz` proves
+initialization, not end-to-end Telegram acceptance.
 
 If Phoenix validation fails, start Phoenix, run a fresh traced query with a stable `IMPERIAL_RAG_TRACE_RUN_ID`, then validate that run ID.
 

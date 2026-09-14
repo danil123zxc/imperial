@@ -295,6 +295,7 @@ def test_lifespan_sets_exact_webhook_and_health(monkeypatch) -> None:
             assert app.state.ready is True
 
     asyncio.run(exercise())
+    assert len(fake.calls) == 2  # No backend polling during lifespan.
     commands_url, commands_call = fake.calls[0]
     assert commands_url.endswith("/setMyCommands")
     assert commands_call["json"] == {
@@ -309,3 +310,114 @@ def test_lifespan_sets_exact_webhook_and_health(monkeypatch) -> None:
         "drop_pending_updates": False,
         "secret_token": SECRET,
     }
+
+
+@pytest.mark.parametrize("payload,status", [
+    ({"update_id": True, "user_id": 123, "messages": ["answer"]}, 400),
+    ({"update_id": 1.5, "user_id": 123, "messages": ["answer"]}, 400),
+    ({"update_id": 1, "user_id": "123", "messages": ["answer"]}, 400),
+    ({"update_id": 1, "user_id": 0, "messages": ["answer"]}, 400),
+    ({"update_id": 1, "user_id": 123, "messages": []}, 400),
+    ({"update_id": 1, "user_id": 123, "messages": ["valid", " "]}, 400),
+    ({"update_id": 1, "user_id": 123, "messages": ["valid", 12]}, 400),
+    ({"update_id": 1, "user_id": 123, "messages": ["valid", "x" * 4097]}, 400),
+    ({"update_id": 1, "user_id": 123, "messages": ["x" * 4096] * 260}, 413),
+])
+def test_delivery_validates_whole_batch_before_sending(payload, status) -> None:
+    app = create_app(_config())
+    app.state.telegram_client = FakeClient()
+    response = asyncio.run(_request(app, "POST", "/internal/telegram/deliver", json=payload,
+                                    headers={"Authorization": f"Bearer {TOKEN}"}))
+    assert response.status_code == status
+    assert app.state.telegram_client.calls == []
+
+
+def test_delivery_auth_body_limits_and_multichunk_success() -> None:
+    app = create_app(_config())
+    app.state.telegram_client = FakeClient()
+    payload = {"update_id": 7, "user_id": 123, "messages": ["я" * 4096] * 5}
+    for headers in ({}, {"Authorization": "Bearer wrong"}):
+        assert asyncio.run(_request(app, "POST", "/internal/telegram/deliver", json=payload, headers=headers)).status_code == 401
+    assert app.state.telegram_client.calls == []
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    response = asyncio.run(_request(app, "POST", "/internal/telegram/deliver", json=payload, headers=headers))
+    assert response.status_code == 200 and response.json() == {"update_id": 7, "status": "delivered"}
+    assert [call[1]["json"]["text"] for call in app.state.telegram_client.calls] == payload["messages"]
+    assert asyncio.run(_request(app, "POST", "/internal/telegram/deliver", content=b"bad", headers={**headers, "content-type": "application/json"})).status_code == 400
+    assert asyncio.run(_request(app, "POST", "/internal/telegram/deliver", content=b"{}", headers={**headers, "content-type": "text/plain"})).status_code == 415
+    # The larger delivery limit must not change the webhook limit.
+    assert asyncio.run(_request(app, "POST", "/telegram/webhook", json=payload,
+                               headers={"X-Telegram-Bot-Api-Secret-Token": SECRET})).status_code == 413
+
+
+@pytest.mark.parametrize("failure,retryable,retry_after", [
+    (httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 420}, "description": "private"}), True, 420),
+    (httpx.Response(403, json={"ok": False, "description": "private"}), False, None),
+    (httpx.Response(500, text="private"), True, None),
+    (httpx.Response(200, json={"ok": False}), True, None),
+    (httpx.Response(200, text="private"), True, None),
+    (httpx.ReadTimeout("private"), True, None),
+    (TimeoutError("private"), True, None),
+])
+def test_partial_delivery_failure_never_acknowledges_success(failure, retryable, retry_after) -> None:
+    app = create_app(_config())
+    calls = []
+
+    class Client:
+        async def post(self, url, **kwargs):
+            calls.append(kwargs["json"])
+            if len(calls) == 2:
+                if isinstance(failure, Exception):
+                    raise failure
+                return failure
+            return httpx.Response(200, json={"ok": True})
+
+    app.state.telegram_client = Client()
+    response = asyncio.run(_request(app, "POST", "/internal/telegram/deliver",
+                                    json={"update_id": 1, "user_id": 123, "messages": ["first", "second", "third"]},
+                                    headers={"Authorization": f"Bearer {TOKEN}"}))
+    assert response.status_code == 502
+    assert response.json() == {"error": "telegram_delivery_failed", "retryable": retryable, "retry_after": retry_after}
+    assert [call["text"] for call in calls] == ["first", "second"]
+    assert "private" not in response.text
+
+
+def test_streaming_delivery_body_limit_without_content_length() -> None:
+    app = create_app(_config())
+    app.state.telegram_client = FakeClient()
+
+    async def body():
+        yield b" " * telegram.MAX_DELIVERY_BODY_BYTES
+        yield b"{}"
+
+    response = asyncio.run(_request(app, "POST", "/internal/telegram/deliver", content=body(),
+                                    headers={"Authorization": f"Bearer {TOKEN}", "content-type": "application/json"}))
+    assert response.status_code == 413
+    assert app.state.telegram_client.calls == []
+
+
+def test_telegram_call_deadline_cancels_hung_send(monkeypatch) -> None:
+    real_timeout = asyncio.timeout
+    deadlines = []
+
+    def short_timeout(seconds):
+        deadlines.append(seconds)
+        return real_timeout(0.01 if seconds == 15 else seconds)
+
+    monkeypatch.setattr(telegram.asyncio, "timeout", short_timeout)
+    app = create_app(_config())
+    cancelled = []
+
+    class Client:
+        async def post(self, url, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+    app.state.telegram_client = Client()
+    response = asyncio.run(_request(app, "POST", "/internal/telegram/deliver",
+                                    json={"update_id": 1, "user_id": 123, "messages": ["answer", "sources"]},
+                                    headers={"Authorization": f"Bearer {TOKEN}"}))
+    assert response.status_code == 502 and response.json()["retryable"] is True
+    assert deadlines == [40, 15] and cancelled == [True]
