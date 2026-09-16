@@ -17,6 +17,7 @@ from imperial_rag.answering.strict import (
     format_citations,
     format_sources,
     validate_citations,
+    pack_context,
 )
 from imperial_rag.document_ids import content_key, document_key
 from imperial_rag.retrieval.lexical import searchable_document_text
@@ -64,6 +65,7 @@ class QueryState(TypedDict, total=False):
     keyword_candidates: list[Document]
     evidence: list[Document]
     retrieved_documents: list[Document]
+    ranked_documents: list[Document]
     cited_documents: list[Document]
     answer: str
     citations: list[str]
@@ -85,19 +87,6 @@ class _CoercedRetrieval:
     vector_candidates: list[Document]
     keyword_candidates: list[Document]
     retrieval: dict[str, Any] | None = None
-
-
-def _legacy_openai_chat_model():
-    from imperial_rag.integrations.dashscope import QwenProviderSettings
-
-    if not QwenProviderSettings.from_env().allow_legacy_openai:
-        raise RuntimeError(
-            "Legacy OpenAI chat is disabled. Use Qwen provider defaults or set "
-            "IMPERIAL_RAG_ALLOW_LEGACY_OPENAI=true."
-        )
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
 
 def _contains_query_terms(query: str, text: str) -> bool:
@@ -236,6 +225,7 @@ def build_query_workflow(
     chat_model: ChatModel | None = None,
     retrieve=None,
     generate=None,
+    context_token_budget: int | None = None,
 ):
     model = chat_model
 
@@ -252,6 +242,7 @@ def build_query_workflow(
                 "keyword_candidates": coerced.keyword_candidates,
                 "evidence": coerced.evidence,
                 "retrieved_documents": coerced.evidence,
+                "ranked_documents": coerced.evidence,
             }
             if coerced.retrieval is not None:
                 update["retrieval"] = coerced.retrieval
@@ -264,6 +255,7 @@ def build_query_workflow(
             "keyword_candidates": keyword_docs,
             "evidence": evidence,
             "retrieved_documents": evidence,
+            "ranked_documents": evidence,
             "retrieval": {
                 "vector_candidates": len(vector_docs),
                 "keyword_candidates": len(keyword_docs),
@@ -274,6 +266,16 @@ def build_query_workflow(
                 "fallbacks": [],
             },
         }
+
+    def pack_node(state: QueryState) -> QueryState:
+        if context_token_budget is None:
+            return {}
+        packed = pack_context(state.get("evidence", []), context_token_budget)
+        diagnostics = dict(state.get("retrieval") or {})
+        diagnostics["context_packing"] = {key: packed[key] for key in (
+            "proxy_tokens", "tokenizer", "budget", "budget_utilization"
+        )}
+        return {"evidence": packed["documents"], "retrieval": diagnostics}
 
     def call_model(state: QueryState) -> QueryState:
         question = str(state.get("question", ""))
@@ -310,7 +312,9 @@ def build_query_workflow(
                     model_error = _coerce_error(generated)
                     _set_model_generation_trace_attributes(model_span, generated)
                 else:
-                    resolved_model = model or _legacy_openai_chat_model()
+                    if model is None:
+                        raise RuntimeError("Query generation requires an explicit chat_model or generate callback.")
+                    resolved_model = model
                     _set_model_trace_attributes(model_span, resolved_model)
                     answer = build_strict_answer_chain(resolved_model).invoke(
                         {"evidence_prompt": build_evidence_prompt(question, evidence)}
@@ -377,10 +381,12 @@ def build_query_workflow(
     graph = StateGraph(QueryState)
     graph.add_node("normalize_query", normalize_query)
     graph.add_node("retrieve", retrieve_node)
+    graph.add_node("pack_context", pack_node)
     graph.add_node("call_model", call_model)
     graph.add_edge(START, "normalize_query")
     graph.add_edge("normalize_query", "retrieve")
-    graph.add_edge("retrieve", "call_model")
+    graph.add_edge("retrieve", "pack_context")
+    graph.add_edge("pack_context", "call_model")
     graph.add_edge("call_model", END)
     return graph.compile()
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import math
 import sys
 from collections import Counter
 from collections.abc import Mapping
@@ -23,6 +22,14 @@ from imperial_rag.cli import (  # noqa: E402
     log_failure as _log_failure,
     positive_int,
 )
+from imperial_rag.evals.dataset_input import (
+    PhoenixInput, add_dataset_input_arguments, has_phoenix_input, load_phoenix_input,
+    validate_dataset_input_arguments,
+)
+from imperial_rag.evals.evidence import (
+    EvidenceCorpus, load_evidence_corpus,
+)
+from imperial_rag.evals.phoenix_retrieval import PhoenixRetrievalJudge
 from imperial_rag.evals.corpus import clean_context_ids as _clean_context_ids  # noqa: E402
 from imperial_rag.evals.corpus import unique_nonempty as _unique_nonempty  # noqa: E402
 from imperial_rag.jsonl import iter_jsonl_with_line_numbers  # noqa: E402
@@ -33,7 +40,6 @@ DEFAULT_QUESTIONS_PATH = Path("evals/questions.jsonl")
 DEFAULT_EXPERIMENT_NAME = "imperial-rag-citation-grounding"
 DEFAULT_PHOENIX_CONCURRENCY = 3
 DEFAULT_RETRIEVAL_METRIC_K = 5
-CHUNK_RECALL_METRIC_K = 10
 VALID_EXPECTED_BEHAVIORS = {"cite_answer", "refuse_if_not_found", "surface_conflict"}
 VALID_LANES = {
     "indexed_answerability",
@@ -70,9 +76,6 @@ class _RankedIdOverlap(NamedTuple):
     @property
     def hit(self) -> bool:
         return bool(self.matched_ids)
-
-    def precision_at(self, k: int) -> float:
-        return sum(self.ranked_scores) / k if k > 0 else 0.0
 
 
 def load_questions(path: Path = DEFAULT_QUESTIONS_PATH) -> list[dict[str, Any]]:
@@ -143,13 +146,18 @@ def run_target(inputs: dict[str, Any], runtime: Any | None = None) -> dict[str, 
     resolved_runtime = runtime or build_runtime()
     result = _coerce_result(resolved_runtime.query(question))
     evidence = result.get("evidence", []) or result.get("documents", [])
-    return {
+    output = {
         "answer": str(result.get("answer", "")),
         "citations": list(result.get("citations") or result.get("sources") or []),
         "sources": list(result.get("sources") or result.get("citations") or []),
         "documents": [_document_payload(document) for document in evidence],
         "retrieval": dict(result.get("retrieval") or {}),
     }
+    if "ranked_documents" in result:
+        output["ranked_documents"] = [_document_payload(doc) for doc in result["ranked_documents"]]
+    if result.get("error"):
+        output["error"] = result["error"]
+    return output
 
 
 def build_runtime(settings: Any | None = None) -> Any:
@@ -337,44 +345,12 @@ def phoenix_conflict_behavior(
     return conflict_behavior(input or {}, output or {}, expected)
 
 
-def phoenix_retrieval_relevance(
-    output: dict[str, Any],
-    expected: dict[str, Any] | None = None,
-    input: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return retrieval_relevance_metrics(input or {}, output or {}, expected)
-
-
 def phoenix_id_retrieval_relevance(
     output: dict[str, Any],
     expected: dict[str, Any] | None = None,
     input: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return id_retrieval_metrics(input or {}, output or {}, expected)
-
-
-def phoenix_chunk_recall(
-    output: dict[str, Any],
-    expected: dict[str, Any] | None = None,
-    input: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return chunk_recall_metrics(input or {}, output or {}, expected)
-
-
-def phoenix_retrieval_relevance_for_k(k: int) -> Any:
-    retrieval_k = positive_int(k)
-    if retrieval_k == DEFAULT_RETRIEVAL_METRIC_K:
-        return phoenix_retrieval_relevance
-
-    def evaluator(
-        output: dict[str, Any],
-        expected: dict[str, Any] | None = None,
-        input: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return retrieval_relevance_metrics(input or {}, output or {}, expected, k=retrieval_k)
-
-    evaluator.__name__ = f"phoenix_retrieval_relevance_at_{retrieval_k}"
-    return evaluator
 
 
 def phoenix_id_retrieval_relevance_for_k(k: int) -> Any:
@@ -502,12 +478,8 @@ def run_local_eval(
             "reference_context_ids": example.get("reference_context_ids", []),
         }
         outputs = run_target(inputs, runtime=resolved_runtime)
-        retrieval_metrics = retrieval_relevance_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
-        retrieval_metadata = retrieval_metrics.get("metadata", {})
         id_metrics = id_retrieval_metrics(inputs, outputs, reference_outputs, k=retrieval_k)
         id_metadata = id_metrics.get("metadata", {})
-        chunk_metrics = chunk_recall_metrics(inputs, outputs, reference_outputs)
-        chunk_metadata = chunk_metrics.get("metadata", {})
         citation_grounding = citation_grounding_behavior(inputs, outputs, reference_outputs)
         conflict = conflict_behavior(inputs, outputs, reference_outputs)
         rows.append(
@@ -518,9 +490,7 @@ def run_local_eval(
                 "citation_grounding_behavior": citation_grounding["score"],
                 "conflict_behavior": conflict["score"],
                 **_deterministic_retrieval_values(
-                    retrieval_metadata,
                     id_metadata,
-                    chunk_metadata,
                     retrieval_k=retrieval_k,
                 ),
             }
@@ -531,7 +501,7 @@ def run_local_eval(
 def main(argv: list[str] | None = None) -> None:
     _ensure_src_on_path()
     parser = argparse.ArgumentParser(description="Run Imperial RAG citation/refusal evaluations.")
-    parser.add_argument("--questions-path", type=Path, default=DEFAULT_QUESTIONS_PATH)
+    add_dataset_input_arguments(parser)
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--dataset-name")
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
@@ -552,9 +522,10 @@ def main(argv: list[str] | None = None) -> None:
         "--retrieval-k",
         type=positive_int,
         default=DEFAULT_RETRIEVAL_METRIC_K,
-        help="Top-k cutoff for deterministic retrieval relevance metrics.",
+        help="Maximum ranked chunks judged by Phoenix; also the ID-recall cutoff.",
     )
     args = parser.parse_args(argv)
+    validate_dataset_input_arguments(parser, args)
 
     _load_project_env(args.workspace_root)
     settings = _build_settings(args.workspace_root)
@@ -563,7 +534,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if args.trace_phoenix or args.use_phoenix:
             _configure_tracing(settings, enabled=True)
-        examples = load_questions(args.questions_path)
+        source = _run_async(load_phoenix_input(args, settings)) if has_phoenix_input(args) else None
+        examples = source.examples if source else load_questions(args.questions_path or DEFAULT_QUESTIONS_PATH)
+        if source:
+            print(f"phoenix_input={stable_json_dumps(source.binding)}")
         metric_names = parse_phoenix_ragas_metrics(args.ragas_metrics)
 
         if args.use_phoenix:
@@ -575,6 +549,7 @@ def main(argv: list[str] | None = None) -> None:
                 ragas_metric_names=metric_names,
                 concurrency=args.concurrency,
                 retrieval_k=args.retrieval_k,
+                **({"phoenix_input": source} if source else {}),
             )
             _log_eval_completion(
                 started_at,
@@ -626,6 +601,8 @@ def run_phoenix_experiment(
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
     retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
+    evidence_snapshot: dict[str, Any] | None = None,
+    phoenix_input: PhoenixInput | None = None,
 ) -> None:
     return _run_async(
         run_phoenix_experiment_async(
@@ -636,6 +613,8 @@ def run_phoenix_experiment(
             ragas_metric_names=ragas_metric_names,
             concurrency=concurrency,
             retrieval_k=retrieval_k,
+            evidence_snapshot=evidence_snapshot,
+            phoenix_input=phoenix_input,
         )
     )
 
@@ -649,9 +628,22 @@ async def run_phoenix_experiment_async(
     *,
     concurrency: int = DEFAULT_PHOENIX_CONCURRENCY,
     retrieval_k: int = DEFAULT_RETRIEVAL_METRIC_K,
+    evidence_snapshot: dict[str, Any] | None = None,
+    phoenix_input: PhoenixInput | None = None,
 ) -> None:
     concurrency = positive_int(concurrency)
     retrieval_k = positive_int(retrieval_k)
+    if phoenix_input is not None:
+        from imperial_rag.evals.dataset_input import dataset_binding, map_phoenix_examples
+        from imperial_rag.evals.evidence import assemble_benchmark
+
+        if dataset_binding(phoenix_input.dataset, settings.phoenix_client_endpoint) != phoenix_input.binding:
+            raise ValueError("Phoenix input binding changed")
+        questions, annotations = map_phoenix_examples(phoenix_input.dataset)
+        validated = (assemble_benchmark(questions, annotations, evidence_snapshot)["examples"]
+                     if evidence_snapshot is not None else questions)
+        if examples != validated:
+            raise ValueError("Phoenix input does not match the experiment examples")
     if ragas_metric_names is None:
         from imperial_rag.evals.ragas import DEFAULT_RAGAS_METRICS
 
@@ -660,6 +652,27 @@ async def run_phoenix_experiment_async(
         resolved_ragas_metric_names = list(ragas_metric_names)
     _validate_phoenix_ragas_metric_requirements(resolved_ragas_metric_names, examples)
     evaluators = _phoenix_evaluators(resolved_ragas_metric_names, async_mode=True, retrieval_k=retrieval_k)
+    evidence_metadata: dict[str, Any] = {}
+    evidence_corpus = None
+    if evidence_snapshot is not None:
+        from imperial_rag.ingestion.provenance import digest
+
+        if not examples or any("evidence" not in row or "split" not in row for row in examples):
+            raise ValueError("Evidence evaluation requires assembled, validated benchmark examples")
+        evidence_corpus = await run_sync_in_worker_thread(
+            lambda: load_evidence_corpus(settings.extraction_root / "chunks.jsonl", evidence_snapshot)
+        )
+        evidence_metadata = {
+            "evidence_corpus_hash": evidence_corpus.corpus_hash,
+            "snapshot_hash": evidence_snapshot["snapshot_hash"],
+            "dataset_hash": digest({"schema_version": "imperial-evidence-benchmark-v1",
+                                    "snapshot_hash": evidence_snapshot["snapshot_hash"], "examples": examples}),
+        }
+        legacy_names = {"id_retrieval_relevance", "citation_grounding_behavior",
+                        "conflict_behavior", "ragas_id_context_recall"}
+        evaluators = {f"legacy_{name}" if name in legacy_names else name: evaluator
+                      for name, evaluator in evaluators.items()}
+        evaluators.update(_phoenix_evidence_evaluators(documents_key="ranked_documents"))
 
     try:
         from phoenix.client import AsyncClient
@@ -674,30 +687,74 @@ async def run_phoenix_experiment_async(
     if "answer_relevancy" in resolved_ragas_metric_names and has_answer_quality_rows:
         _get_ragas_answer_relevancy_scorer()
     client = AsyncClient(base_url=settings.phoenix_client_endpoint)
-    inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
-    dataset = await client.datasets.create_dataset(
-        name=dataset_name,
-        dataset_description="Imperial RAG gold questions loaded from evals/questions.jsonl.",
-        inputs=inputs,
-        outputs=outputs,
-        metadata=metadata,
-    )
+    retrieval_judge = PhoenixRetrievalJudge(client, k=retrieval_k, concurrency=concurrency)
+    if phoenix_input is not None:
+        dataset = phoenix_input.dataset
+        evidence_metadata["phoenix_dataset"] = phoenix_input.binding
+        if phoenix_input.benchmark is not None:
+            evidence_metadata["dataset_hash"] = phoenix_input.benchmark["dataset_hash"]
+    else:
+        inputs, outputs, metadata = _to_phoenix_dataset_rows(examples)
+        for row, example in zip(metadata, examples):
+            if evidence_metadata:
+                row.update(evidence_metadata | {"split": example["split"]})
+        dataset = await client.datasets.create_dataset(
+            name=dataset_name,
+            dataset_description=("Imperial RAG reviewed source evidence benchmark." if evidence_metadata else
+                                 "Imperial RAG gold questions loaded from evals/questions.jsonl."),
+            inputs=inputs,
+            outputs=outputs,
+            metadata=metadata,
+        )
     runtime = build_runtime(settings=settings)
+    failed_questions: list[str] = []
+    examples_by_id = {_phoenix_dataset_metadata(example, row_index=i,
+                       expected=_phoenix_dataset_expected_payload(example))["id"]: example
+                      for i, example in enumerate(examples)}
 
-    async def bound_target(inputs: dict[str, Any]) -> dict[str, Any]:
-        return await run_sync_in_worker_thread(lambda: run_target(inputs, runtime=runtime))
+    async def bound_target(input: dict[str, Any], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        if evidence_snapshot is None:
+            try:
+                output = await run_sync_in_worker_thread(lambda: run_target(input, runtime=runtime))
+            except Exception as exc:
+                failed_questions.append(type(exc).__name__)
+                return {"retrieval_evaluation": {"status": "error", "error_type": type(exc).__name__,
+                                                 "error_stage": "query"}}
+        else:
+            example = examples_by_id[metadata["id"] if metadata else input["id"]]
+            output = await run_sync_in_worker_thread(
+                lambda: _run_evidence_target(example, runtime, evidence_snapshot, evidence_corpus)
+            )
+            if not output["eligible"]:
+                failed_questions.append(output["evidence_error"])
+                return output
+        example = examples_by_id[metadata["id"]] if metadata else input
+        output["retrieval_evaluation"] = await retrieval_judge.evaluate(example, output)
+        if output["retrieval_evaluation"]["status"] == "error":
+            failed_questions.append(output["retrieval_evaluation"]["error_type"])
+        return output
 
     experiment = await client.experiments.run_experiment(
         dataset=dataset,
         task=bound_target,
+        experiment_metadata=evidence_metadata | retrieval_judge.metadata,
         evaluators=evaluators,
         experiment_name=experiment_name,
-        experiment_description=_phoenix_experiment_description(resolved_ragas_metric_names),
+        experiment_description=(
+            "Source evidence recall and full-evidence success; legacy_* checks are ID-based diagnostics. "
+            if evidence_snapshot is not None else ""
+        ) + "Phoenix LLM retrieval relevance and native trace ranking metrics. "
+        + _phoenix_experiment_description(resolved_ragas_metric_names),
         concurrency=concurrency,
     )
-    print(f"phoenix_dataset={dataset_name}")
+    print(f"phoenix_dataset={phoenix_input.binding['dataset_id'] if phoenix_input else dataset_name}")
+    if phoenix_input is not None:
+        print(f"phoenix_input={stable_json_dumps(phoenix_input.binding)}")
     print(f"phoenix_examples={len(examples)}")
     print(f"phoenix_experiment={_experiment_identifier(experiment)}")
+    if failed_questions:
+        raise RuntimeError(f"Evaluation failed for {len(failed_questions)} task(s): "
+                           + ", ".join(sorted(set(failed_questions))))
 
 
 def _run_phoenix_experiment(
@@ -770,9 +827,7 @@ def _phoenix_evaluators(
         "source_hint_behavior": phoenix_source_hint_behavior,
         "citation_grounding_behavior": phoenix_citation_grounding_behavior,
         "conflict_behavior": phoenix_conflict_behavior,
-        "retrieval_relevance": phoenix_retrieval_relevance_for_k(retrieval_k),
         "id_retrieval_relevance": phoenix_id_retrieval_relevance_for_k(retrieval_k),
-        "chunk_recall": phoenix_chunk_recall,
     }
     if "faithfulness" in metric_names:
         evaluators["ragas_faithfulness"] = (
@@ -845,6 +900,8 @@ def _phoenix_dataset_expected_payload(example: Mapping[str, Any]) -> dict[str, A
         ]
     if example.get("quarantine_reason"):
         expected["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+    if "evidence" in example:
+        expected["evidence"] = example["evidence"]
     return expected
 
 
@@ -865,46 +922,10 @@ def _phoenix_dataset_metadata(
         metadata["lane"] = str(example["lane"])
     if example.get("quarantine_reason"):
         metadata["quarantine_reason"] = str(example["quarantine_reason"]).strip()
+    for key in ("split", "review_status", "question_hash", "snapshot_hash"):
+        if key in example:
+            metadata[key] = example[key]
     return metadata
-
-
-def retrieval_relevance_metrics(
-    inputs: dict[str, Any],
-    outputs: dict[str, Any],
-    reference_outputs: dict[str, Any] | None = None,
-    *,
-    k: int = DEFAULT_RETRIEVAL_METRIC_K,
-) -> dict[str, Any]:
-    hints = _reference_hints(reference_outputs or inputs)
-    if not hints:
-        return {
-            "score": None,
-            "label": "skipped",
-            "explanation": "Retrieval relevance requires expected_source_hints.",
-            "metadata": {"k": k, "reason": "missing_expected_source_hints", "document_scores": []},
-        }
-
-    documents = list(outputs.get("documents") or outputs.get("evidence") or [])
-    document_scores = [_document_relevance_score(document, hints) for document in documents]
-    ranked_scores = document_scores[:k]
-    hit = any(score > 0 for score in ranked_scores)
-    precision = sum(ranked_scores) / k if k > 0 else 0.0
-    ndcg = _ndcg(ranked_scores)
-    relevant_count = int(sum(1 for score in document_scores if score > 0))
-    return {
-        "score": precision,
-        "label": "hit" if hit else "miss",
-        "explanation": f"{relevant_count} of {len(document_scores)} retrieved documents matched expected source hints.",
-        "metadata": {
-            "k": k,
-            f"hit_at_{k}": hit,
-            f"precision_at_{k}": precision,
-            f"ndcg_at_{k}": ndcg,
-            "document_scores": document_scores,
-            "document_count": len(document_scores),
-            "relevant_document_count": relevant_count,
-        },
-    }
 
 
 def id_retrieval_metrics(
@@ -928,8 +949,6 @@ def id_retrieval_metrics(
         )
 
     overlap = _ranked_id_overlap(reference_ids, retrieved_ids, k)
-    mrr = _mrr(overlap.ranked_scores)
-    ndcg = _ndcg_with_ideal(overlap.ranked_scores, relevant_count=len(overlap.reference_set), k=k)
     return {
         "score": overlap.recall,
         "label": "hit" if overlap.hit else "miss",
@@ -937,49 +956,9 @@ def id_retrieval_metrics(
         "metadata": {
             "k": k,
             f"id_hit_at_{k}": overlap.hit,
-            f"id_precision_at_{k}": overlap.precision_at(k),
             f"id_recall_at_{k}": overlap.recall,
-            f"id_mrr_at_{k}": mrr,
-            f"id_ndcg_at_{k}": ndcg,
             "id_document_scores": overlap.ranked_scores,
             "retrieved_context_ids": retrieved_ids,
-            "reference_context_ids": reference_ids,
-            "matched_context_ids": overlap.matched_ids,
-        },
-    }
-
-
-def chunk_recall_metrics(
-    inputs: dict[str, Any],
-    outputs: dict[str, Any],
-    reference_outputs: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    from imperial_rag.evals.ragas import retrieved_chunk_ids_from_output
-
-    chunk_k = CHUNK_RECALL_METRIC_K
-    reference_ids = _reference_context_ids(inputs, reference_outputs)
-    retrieved_ids = retrieved_chunk_ids_from_output(outputs)
-    if not reference_ids:
-        return _missing_reference_context_id_metric(
-            "Chunk recall requires chunk-level reference_context_ids.",
-            k=chunk_k,
-            retrieved_key="retrieved_chunk_ids",
-            retrieved_ids=retrieved_ids,
-            empty_fields={"matched_context_ids": []},
-        )
-
-    overlap = _ranked_id_overlap(reference_ids, retrieved_ids, chunk_k)
-    precision = len(overlap.matched_ids) / chunk_k if chunk_k > 0 else 0.0
-    return {
-        "score": overlap.recall,
-        "label": "hit" if overlap.hit else "miss",
-        "explanation": f"{len(overlap.matched_ids)} of {len(overlap.reference_set)} gold chunk IDs appeared in the top {chunk_k}.",
-        "metadata": {
-            "k": chunk_k,
-            f"chunk_hit_at_{chunk_k}": overlap.hit,
-            f"chunk_recall_at_{chunk_k}": overlap.recall,
-            f"chunk_precision_at_{chunk_k}": precision,
-            "retrieved_chunk_ids": retrieved_ids,
             "reference_context_ids": reference_ids,
             "matched_context_ids": overlap.matched_ids,
         },
@@ -1034,27 +1013,13 @@ def _ranked_id_overlap(
 
 
 def _deterministic_retrieval_values(
-    retrieval_metadata: Mapping[str, Any],
     id_metadata: Mapping[str, Any],
-    chunk_metadata: Mapping[str, Any],
     *,
     retrieval_k: int,
 ) -> dict[str, Any]:
-    chunk_k = CHUNK_RECALL_METRIC_K
     return {
-        f"retrieval_hit_at_{retrieval_k}": retrieval_metadata.get(f"hit_at_{retrieval_k}"),
-        f"retrieval_precision_at_{retrieval_k}": retrieval_metadata.get(f"precision_at_{retrieval_k}"),
-        f"retrieval_ndcg_at_{retrieval_k}": retrieval_metadata.get(f"ndcg_at_{retrieval_k}"),
         f"id_hit_at_{retrieval_k}": id_metadata.get(f"id_hit_at_{retrieval_k}"),
-        f"id_precision_at_{retrieval_k}": id_metadata.get(f"id_precision_at_{retrieval_k}"),
         f"id_recall_at_{retrieval_k}": id_metadata.get(f"id_recall_at_{retrieval_k}"),
-        f"id_mrr_at_{retrieval_k}": id_metadata.get(f"id_mrr_at_{retrieval_k}"),
-        f"id_ndcg_at_{retrieval_k}": id_metadata.get(f"id_ndcg_at_{retrieval_k}"),
-        f"chunk_hit_at_{chunk_k}": chunk_metadata.get(f"chunk_hit_at_{chunk_k}"),
-        f"chunk_recall_at_{chunk_k}": chunk_metadata.get(f"chunk_recall_at_{chunk_k}"),
-        f"chunk_precision_at_{chunk_k}": chunk_metadata.get(f"chunk_precision_at_{chunk_k}"),
-        "retrieved_chunk_ids": list(chunk_metadata.get("retrieved_chunk_ids") or []),
-        "matched_context_ids": list(chunk_metadata.get("matched_context_ids") or []),
     }
 
 
@@ -1096,25 +1061,6 @@ def log_phoenix_eval_annotations(
     if span_annotations:
         client.spans.log_span_annotations(span_annotations=span_annotations, sync=sync)
 
-    document_scores = retrieval_metadata.get("document_scores") or []
-    if retrieval_span_id and document_scores:
-        client.spans.log_document_annotations(
-            document_annotations=[
-                {
-                    "name": "relevance",
-                    "span_id": retrieval_span_id,
-                    "document_position": position,
-                    "annotator_kind": "CODE",
-                    "result": {
-                        "score": float(score),
-                        "label": "relevant" if float(score) > 0 else "not_relevant",
-                    },
-                }
-                for position, score in enumerate(document_scores)
-            ],
-            sync=sync,
-        )
-
 
 def build_eval_artifact_row(
     *,
@@ -1137,21 +1083,15 @@ def build_eval_artifact_row(
     source_hint_verdict = source_hint_behavior(inputs, dict(output), reference_outputs)["score"]
     citation_grounding = citation_grounding_behavior(inputs, dict(output), reference_outputs)
     conflict_verdict = conflict_behavior(inputs, dict(output), reference_outputs)
-    retrieval_metrics = retrieval_relevance_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
-    retrieval_metadata = retrieval_metrics.get("metadata", {})
     id_metrics = id_retrieval_metrics(inputs, dict(output), reference_outputs, k=retrieval_k)
     id_metadata = id_metrics.get("metadata", {})
-    chunk_metrics = chunk_recall_metrics(inputs, dict(output), reference_outputs)
-    chunk_metadata = chunk_metrics.get("metadata", {})
     deterministic = {
         "citation_behavior": citation_verdict,
         "source_hint_behavior": source_hint_verdict,
         "citation_grounding_behavior": citation_grounding.get("score"),
         "conflict_behavior": conflict_verdict.get("score"),
         **_deterministic_retrieval_values(
-            retrieval_metadata,
             id_metadata,
-            chunk_metadata,
             retrieval_k=retrieval_k,
         ),
     }
@@ -1208,7 +1148,6 @@ def summarize_eval_artifact_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str,
             row_list,
             lambda row: _clean_group_values(row.get("source_families") or []) or ["unknown"],
         ),
-        f"chunk_recall_at_{CHUNK_RECALL_METRIC_K}": _chunk_recall_summary(row_list, k=CHUNK_RECALL_METRIC_K),
     }
 
 
@@ -1336,10 +1275,6 @@ def _document_search_text(document: dict[str, Any]) -> str:
     )
 
 
-def _reference_hints(reference: Mapping[str, Any]) -> list[str]:
-    return [str(hint).casefold() for hint in reference.get("expected_source_hints", []) if str(hint).strip()]
-
-
 def _source_family_from_metadata(metadata: Mapping[str, Any]) -> str:
     for field in ("relative_path", "file_path"):
         value = str(metadata.get(field) or "").strip()
@@ -1387,37 +1322,6 @@ def _grouped_pass_rate_summary(rows: Sequence[Mapping[str, Any]], key_fn: Any) -
         for key in keys:
             groups.setdefault(str(key), []).append(row)
     return {key: _pass_rate_summary(groups[key]) for key in sorted(groups)}
-
-
-def _chunk_recall_summary(rows: Sequence[Mapping[str, Any]], *, k: int) -> dict[str, Any]:
-    recall_key = f"chunk_recall_at_{k}"
-    hit_key = f"chunk_hit_at_{k}"
-    precision_key = f"chunk_precision_at_{k}"
-    applicable: list[Mapping[str, Any]] = []
-    for row in rows:
-        deterministic = row.get("deterministic")
-        values = deterministic if isinstance(deterministic, Mapping) else {}
-        if values.get(recall_key) is not None:
-            applicable.append(values)
-    hit_rows = sum(1 for values in applicable if values.get(hit_key) is True)
-    recall_values = [float(values[recall_key]) for values in applicable]
-    precision_values = [float(values[precision_key]) for values in applicable if values.get(precision_key) is not None]
-    return {
-        "applicable_rows": len(applicable),
-        "hit_rows": hit_rows,
-        "hit_rate": hit_rows / len(applicable) if applicable else None,
-        "mean_recall": sum(recall_values) / len(recall_values) if recall_values else None,
-        "mean_precision": sum(precision_values) / len(precision_values) if precision_values else None,
-    }
-
-
-def _document_relevance_score(document: Any, hints: list[str]) -> float:
-    if isinstance(document, Mapping):
-        haystack = _document_search_text(dict(document))
-    else:
-        haystack = _document_search_text(_document_payload(document))
-    normalized = haystack.casefold()
-    return 1.0 if any(hint in normalized for hint in hints) else 0.0
 
 
 def _citation_values(outputs: Mapping[str, Any]) -> list[str]:
@@ -1502,39 +1406,6 @@ def _has_decisive_version_claim(answer: str) -> bool:
     )
 
 
-def _ndcg(scores: list[float]) -> float:
-    if not scores:
-        return 0.0
-    ideal = sorted(scores, reverse=True)
-    ideal_dcg = _dcg(ideal)
-    if ideal_dcg == 0:
-        return 0.0
-    return _dcg(scores) / ideal_dcg
-
-
-def _ndcg_with_ideal(scores: list[float], *, relevant_count: int, k: int) -> float:
-    if k <= 0:
-        return 0.0
-    actual_scores = [*scores[:k], *([0.0] * max(0, k - len(scores)))]
-    ideal_scores = [1.0] * min(relevant_count, k)
-    ideal_scores.extend([0.0] * max(0, k - len(ideal_scores)))
-    ideal_dcg = _dcg(ideal_scores)
-    if ideal_dcg == 0:
-        return 0.0
-    return _dcg(actual_scores) / ideal_dcg
-
-
-def _mrr(scores: list[float]) -> float:
-    for index, score in enumerate(scores, start=1):
-        if score > 0:
-            return 1.0 / index
-    return 0.0
-
-
-def _dcg(scores: list[float]) -> float:
-    return sum(float(score) / math.log2(index + 2) for index, score in enumerate(scores))
-
-
 def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if metric.get("score") is not None:
@@ -1547,16 +1418,7 @@ def _annotation_result(metric: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _retrieval_span_metric_names(metadata: Mapping[str, Any]) -> list[str]:
-    metric_prefixes = (
-        "precision_at_",
-        "ndcg_at_",
-        "id_precision_at_",
-        "id_recall_at_",
-        "id_mrr_at_",
-        "id_ndcg_at_",
-        "chunk_recall_at_",
-        "chunk_precision_at_",
-    )
+    metric_prefixes = ("id_recall_at_",)
     return [
         key
         for key in metadata
@@ -1597,6 +1459,147 @@ def _run_async(awaitable: Any) -> Any:
 
 async def _await_result(awaitable: Any) -> Any:
     return await awaitable
+
+
+def _run_evidence_target(
+    inputs: dict[str, Any], runtime: Any, snapshot: dict[str, Any],
+    evidence_corpus: EvidenceCorpus | None = None,
+) -> dict[str, Any]:
+    from langchain_core.documents import Document
+    from imperial_rag.ingestion.provenance import validate_chunk
+
+    output: dict[str, Any] = {"eligible": False}
+    try:
+        output.update(run_target(inputs, runtime=runtime))
+        output["eligible"] = False
+        if "ranked_documents" not in output:
+            output["evidence_error"] = "missing_ranked_documents"
+            return output
+        sources = {row["source_id"]: row for row in snapshot["sources"]}
+        for row in output["ranked_documents"]:
+            validate_chunk(Document(**row), sources)
+        diagnostics = output["retrieval"]
+        error = output.get("error", {}).get("type")
+        if diagnostics.get("fallbacks") or diagnostics.get("degraded"):
+            output["evidence_error"] = "degraded_retrieval"
+        elif error and error != "no_relevant_documents":
+            output["evidence_error"] = "query_error"
+        else:
+            if evidence_corpus is not None:
+                evidence_corpus.validate_documents([Document(**row) for row in output["ranked_documents"]])
+            output["eligible"] = True
+    except Exception as exc:
+        # Exceptions can contain private text or credentials; publish only the class.
+        output["evidence_error"] = type(exc).__name__
+    return output
+
+
+def phoenix_evidence_evaluator(
+    *, metric: str, k: int | None = None, budget: int | None = None, documents_key: str = "documents",
+):
+    from imperial_rag.answering.strict import pack_context
+    from imperial_rag.evals.evidence import evidence_recall
+    from langchain_core.documents import Document
+
+    def evaluate(output: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+        key = f"{metric}_{'at_' + str(k) if k is not None else 'budget_' + str(budget)}"
+        if not output.get("eligible"):
+            return {"key": key, "score": None,
+                    "explanation": "Invalid or degraded retrieval run: " + output.get("evidence_error", "ineligible")}
+        documents = [Document(**row) for row in output[documents_key]]
+        selected = documents[:k] if k is not None else pack_context(documents, budget)["documents"]
+        score = evidence_recall(expected["evidence"], selected)[metric]
+        return {"key": key, "score": score,
+                "explanation": "Recall is undefined for refusal questions" if score is None else "Exact source union coverage"}
+
+    return evaluate
+
+
+def _phoenix_evidence_evaluators(
+    *, documents_key: str = "documents",
+) -> dict[str, Any]:
+    from imperial_rag.evals.evidence import BUDGETS, KS
+
+    evaluators = {}
+    for metric in ("evidence_recall", "full_evidence_success"):
+        for k in KS:
+            evaluators[f"{metric}_at_{k}"] = phoenix_evidence_evaluator(metric=metric, k=k, documents_key=documents_key)
+        for budget in BUDGETS:
+            evaluators[f"{metric}_budget_{budget}"] = phoenix_evidence_evaluator(
+                metric=metric, budget=budget, documents_key=documents_key,
+            )
+    return evaluators
+
+
+async def publish_evidence_comparison_async(root: Path, settings: Any, *, concurrency: int = 3) -> None:
+    """Replay saved retrieval once per configuration against one pinned dataset version."""
+    import json
+    from phoenix.client import AsyncClient
+    from imperial_rag.evals.chunk_comparison import load_comparison, write_json
+    from imperial_rag.ingestion.provenance import digest
+
+    concurrency = positive_int(concurrency)
+    manifest, benchmark, results = load_comparison(root)
+    examples = [row for row in benchmark["examples"] if row["split"] == manifest["split"]]
+    client = AsyncClient(base_url=settings.phoenix_client_endpoint)
+    if "phoenix_dataset" in manifest:
+        from phoenix.client.resources.datasets import Dataset
+        from imperial_rag.evals.dataset_input import get_pinned_dataset
+
+        binding = manifest["phoenix_dataset"]
+        dataset = await get_pinned_dataset(client, binding, settings.phoenix_client_endpoint)
+        # Filter in memory, retaining server example IDs and the exact dataset version.
+        selected_ids = {row["id"] for row in examples}
+        payload = dataset.to_dict()
+        payload["examples"] = [row for row in dataset.examples if row["metadata"]["id"] in selected_ids]
+        dataset = Dataset.from_dict(payload)
+    else:
+        binding_root = root.parent / "phoenix-datasets"
+        binding_root.mkdir(exist_ok=True)
+        binding_path = binding_root / f"{manifest['dataset_hash']}-{manifest['split']}.json"
+        inputs = [{"id": row["id"], "question": row["question"]} for row in examples]
+        outputs = [_phoenix_dataset_expected_payload(row) for row in examples]
+        if binding_path.exists():
+            binding = json.loads(binding_path.read_text())
+            if binding["endpoint"] != settings.phoenix_client_endpoint:
+                raise ValueError("Pinned dataset belongs to another Phoenix endpoint")
+            dataset = await client.datasets.get_dataset(dataset=binding["dataset_id"], version_id=binding["version_id"])
+        else:
+            dataset = await client.datasets.create_dataset(
+                name=f"imperial-evidence-{manifest['dataset_hash']}-{manifest['split']}",
+                inputs=inputs, outputs=outputs,
+                metadata=[{"id": row["id"], "dataset_hash": manifest["dataset_hash"],
+                           "snapshot_hash": manifest["snapshot_hash"], "split": row["split"]} for row in examples],
+            )
+            binding = {"dataset_id": dataset.id, "version_id": dataset.version_id,
+                       "endpoint": settings.phoenix_client_endpoint}
+            write_json(binding_path, binding)
+        expected_rows = {row["id"]: {"input": row, "output": expected} for row, expected in zip(inputs, outputs)}
+        actual_rows = {row["input"]["id"]: {"input": row["input"], "output": row["output"]} for row in dataset.examples}
+        if len(dataset.examples) != len(examples) or digest(actual_rows) != digest(expected_rows):
+            raise ValueError("Pinned Phoenix dataset does not match the local benchmark")
+    evaluators = _phoenix_evidence_evaluators()
+    published_path = root / "phoenix.json"
+    published = json.loads(published_path.read_text()) if published_path.exists() else binding | {"experiments": {}}
+    if any(published.get(key) != value for key, value in binding.items()):
+        raise ValueError("Published comparison has a different Phoenix dataset binding")
+    for config in manifest["configs"]:
+        config_id = config["config_id"]
+        if config_id in published["experiments"]:
+            continue
+        by_id = {row["id"]: row for row in results if row["config_id"] == config_id}
+
+        async def replay(input: dict[str, Any], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+            return by_id[metadata["id"] if "phoenix_dataset" in manifest and metadata else input["id"]]
+
+        experiment = await client.experiments.run_experiment(
+            dataset=dataset, task=replay, evaluators=evaluators,
+            experiment_name=f"{manifest['run_id']}-{config_id}",
+            experiment_metadata={**manifest, "config": config, "mode": "saved-retrieval-replay"},
+            concurrency=concurrency,
+        )
+        published["experiments"][config_id] = _experiment_identifier(experiment)
+        write_json(published_path, published)
 
 
 if __name__ == "__main__":

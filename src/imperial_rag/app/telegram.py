@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 import os
@@ -14,10 +14,12 @@ from urllib.parse import urlsplit
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
+from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 MAX_HTTP_BODY_BYTES = 16 * 1024
+MAX_DELIVERY_BODY_BYTES = 1024 * 1024
+DELIVERY_SECONDS_PER_CHUNK = 20
 MAX_TELEGRAM_TEXT_LENGTH = 4096
 ACCEPTED_TEXT = "Вопрос принят. Готовлю ответ."
 WELCOME_TEXT = "Задайте вопрос по проиндексированным документам.\n\nИспользуйте /help, чтобы посмотреть доступные команды."
@@ -109,6 +111,7 @@ def create_app(config: TelegramWebhookConfig | None = None) -> Starlette:
         routes=[
             Route("/healthz", healthz, methods=["GET"]),
             Route("/telegram/webhook", telegram_webhook, methods=["POST"]),
+            Route("/internal/telegram/deliver", telegram_deliver, methods=["POST"]),
         ],
         lifespan=_lifespan,
     )
@@ -228,40 +231,45 @@ async def telegram_webhook(request: Request) -> Response:
     return PlainTextResponse("ok\n")
 
 
-async def deliver_once(application: Starlette) -> bool:
-    config = _config(application)
-    response = await application.state.backend_client.post(
-        f"{config.backend_url}/internal/telegram/deliveries/claim",
-        headers={"Authorization": f"Bearer {config.service_token}"},
-        json={},
-    )
-    if response.status_code == 204:
-        return False
-    if response.status_code != 200:
-        raise RuntimeError("backend delivery claim failed")
-    delivery = response.json()
-    update_id = _positive_int(delivery.get("update_id"), "update_id")
-    user_id = _positive_int(delivery.get("user_id"), "user_id")
-    messages = delivery.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise RuntimeError("backend returned an invalid delivery")
-    for message in messages:
-        if not isinstance(message, str) or not message or len(message) > MAX_TELEGRAM_TEXT_LENGTH:
-            raise RuntimeError("backend returned an invalid Telegram message")
-        await _telegram_request(
-            application.state.telegram_client,
-            config,
-            "sendMessage",
-            {"chat_id": user_id, "text": message},
+async def telegram_deliver(request: Request) -> Response:
+    config = _config(request.app)
+    if not compare_digest(request.headers.get("Authorization", ""), f"Bearer {config.service_token}"):
+        return PlainTextResponse("unauthorized\n", status_code=401)
+    try:
+        payload = await _json_body(request, max_bytes=MAX_DELIVERY_BODY_BYTES)
+        for name in ("update_id", "user_id"):
+            if type(payload.get(name)) is not int or payload[name] <= 0:
+                raise PayloadError(f"{name} must be a positive integer", 400)
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise PayloadError("messages must be a non-empty list", 400)
+        if any(not isinstance(message, str) or not message.strip() or len(message) > MAX_TELEGRAM_TEXT_LENGTH for message in messages):
+            raise PayloadError("invalid Telegram message", 400)
+    except PayloadError as exc:
+        return PlainTextResponse(f"{exc}\n", status_code=exc.status_code)
+
+    try:
+        # ponytail: stateless whole-answer retry; persist chunk receipts if duplicates become unacceptable.
+        async with asyncio.timeout(DELIVERY_SECONDS_PER_CHUNK * len(messages)):
+            for message in messages:
+                await _telegram_request(
+                    request.app.state.telegram_client,
+                    config,
+                    "sendMessage",
+                    {"chat_id": payload["user_id"], "text": message},
+                )
+    except (TelegramRequestError, TimeoutError) as exc:
+        from imperial_rag.observability import log_failure
+
+        status = exc.status_code if isinstance(exc, TelegramRequestError) else 504
+        retry_after = exc.retry_after if isinstance(exc, TelegramRequestError) else None
+        log_failure("telegram_delivery", exc, component="telegram-render", http_status=status)
+        return JSONResponse(
+            {"error": "telegram_delivery_failed", "retryable": status in {408, 429} or status >= 500,
+             "retry_after": retry_after},
+            status_code=502,
         )
-    completion = await application.state.backend_client.post(
-        f"{config.backend_url}/internal/telegram/deliveries/{update_id}/complete",
-        headers={"Authorization": f"Bearer {config.service_token}"},
-        json={},
-    )
-    if completion.status_code != 200:
-        raise RuntimeError("backend delivery completion failed")
-    return True
+    return JSONResponse({"update_id": payload["update_id"], "status": "delivered"})
 
 
 @asynccontextmanager
@@ -288,41 +296,43 @@ async def _lifespan(application: Starlette) -> AsyncIterator[None]:
             },
         )
         application.state.ready = True
-        task = asyncio.create_task(_delivery_loop(application))
         try:
             yield
         finally:
             application.state.ready = False
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
 
 
-async def _delivery_loop(application: Starlette) -> None:
-    from imperial_rag.observability import log_failure
+class TelegramRequestError(RuntimeError):
+    def __init__(self, status_code: int = 502, retry_after: int | None = None):
+        super().__init__("Telegram Bot API request failed")
+        self.status_code = status_code
+        self.retry_after = retry_after
 
-    while True:
-        try:
-            await deliver_once(application)
-        except Exception as exc:
-            log_failure("telegram_delivery", exc, component="telegram-render")
-        await asyncio.sleep(2)
+
+def _retry_after(payload: Any) -> int | None:
+    value = payload.get("retry_after") if isinstance(payload, dict) else None
+    return value if type(value) is int and 0 < value <= 2**31 - 1 else None
 
 
 async def _telegram_request(client: Any, config: TelegramWebhookConfig, method: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        response = await client.post(f"https://api.telegram.org/bot{config.bot_token}/{method}", json=payload)
-    except httpx.HTTPError as exc:
-        raise RuntimeError("Telegram Bot API request failed") from exc
-    if response.status_code != 200:
-        raise RuntimeError("Telegram Bot API request failed")
-    data = response.json()
-    if not isinstance(data, dict) or data.get("ok") is not True:
-        raise RuntimeError("Telegram Bot API request failed")
+        async with asyncio.timeout(15):
+            response = await client.post(f"https://api.telegram.org/bot{config.bot_token}/{method}", json=payload)
+    except (httpx.HTTPError, TimeoutError) as exc:
+        raise TelegramRequestError() from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise TelegramRequestError(response.status_code if response.status_code != 200 else 502) from exc
+    if response.status_code != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+        status = data.get("error_code", response.status_code) if isinstance(data, dict) else response.status_code
+        if type(status) is not int or status < 400 or status > 599:
+            status = 502
+        raise TelegramRequestError(status, _retry_after(data.get("parameters")) if isinstance(data, dict) else None)
     return data
 
 
-async def _json_body(request: Request) -> dict[str, Any]:
+async def _json_body(request: Request, *, max_bytes: int = MAX_HTTP_BODY_BYTES) -> dict[str, Any]:
     if request.headers.get("content-type", "").split(";", 1)[0].strip().casefold() != "application/json":
         raise PayloadError("content type must be application/json", 415)
     content_length = request.headers.get("content-length")
@@ -331,12 +341,12 @@ async def _json_body(request: Request) -> dict[str, Any]:
             parsed_content_length = int(content_length)
         except ValueError as exc:
             raise PayloadError("invalid content length", 400) from exc
-        if parsed_content_length > MAX_HTTP_BODY_BYTES:
+        if parsed_content_length > max_bytes:
             raise PayloadError("request body is too large", 413)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > MAX_HTTP_BODY_BYTES:
+        if len(body) > max_bytes:
             raise PayloadError("request body is too large", 413)
     try:
         payload = json.loads(body)

@@ -73,6 +73,7 @@ def test_configure_phoenix_tracing_returns_none_when_disabled(monkeypatch, tmp_p
 
 
 def test_configure_phoenix_tracing_registers_once(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_BATCH", raising=False)
     _reset_phoenix_tracing_for_tests()
     calls: list[dict[str, object]] = []
     provider = object()
@@ -106,6 +107,7 @@ def test_configure_phoenix_tracing_registers_once(monkeypatch, tmp_path: Path) -
 
 
 def test_configure_phoenix_tracing_rejects_changed_key_after_configuration(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("IMPERIAL_RAG_TRACE_BATCH", raising=False)
     _reset_phoenix_tracing_for_tests()
     calls: list[dict[str, object]] = []
     provider = object()

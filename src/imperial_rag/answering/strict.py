@@ -113,6 +113,28 @@ def build_context(documents: list[Document]) -> str:
     )
 
 
+def pack_context(documents: list[Document], budget: int | None = None) -> dict:
+    """Whole-chunk rank-order packing, measured in cl100k_base proxy tokens."""
+    import tiktoken
+
+    if budget is not None and (type(budget) is not int or budget < 1):
+        raise ValueError("Context budget must be a positive integer")
+    encoding = tiktoken.get_encoding("cl100k_base")
+    selected: list[Document] = []
+    context = ""
+    tokens = 0
+    # ponytail: re-render each candidate; at most 100 chunks in comparison runs.
+    for document in documents:
+        candidate = build_context([*selected, document])
+        count = len(encoding.encode(candidate, disallowed_special=()))
+        if budget is None or count <= budget:
+            selected.append(document)
+            context, tokens = candidate, count
+    return {"documents": selected, "context": context, "proxy_tokens": tokens,
+            "tokenizer": "cl100k_base", "budget": budget,
+            "budget_utilization": tokens / budget if budget else None}
+
+
 def build_evidence_prompt(question: str, documents: list[Document]) -> str:
     return f"""You are answering questions about internal company documents.
 Use only the evidence below.

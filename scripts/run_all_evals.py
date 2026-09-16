@@ -10,6 +10,12 @@ from _bootstrap import ensure_src_on_path as _ensure_src_on_path
 _ensure_src_on_path(__file__)
 
 import run_phoenix_eval as phoenix_eval
+from imperial_rag.evals.dataset_input import (
+    add_dataset_input_arguments, has_phoenix_input, load_phoenix_input, validate_dataset_input_arguments,
+)
+from imperial_rag.evals.evidence import assemble_benchmark
+from imperial_rag.ingestion.provenance import load_snapshot
+from imperial_rag.jsonl import read_jsonl
 from imperial_rag.cli import (  # noqa: E402
     configure_observability as _configure_observability,
     duration_ms as _duration_ms,
@@ -26,14 +32,16 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run all currently runnable Imperial RAG evals and store one Phoenix experiment."
     )
-    parser.add_argument("--questions-path", type=Path, default=phoenix_eval.DEFAULT_QUESTIONS_PATH)
+    add_dataset_input_arguments(parser)
+    parser.add_argument("--snapshot", type=Path, required=True, help="Frozen source snapshot for evidence recall.")
+    parser.add_argument("--annotations", type=Path, help="Reviewed evidence sidecar matching the questions and snapshot.")
     parser.add_argument("--workspace-root", type=Path)
     parser.add_argument("--dataset-name")
     parser.add_argument("--experiment-name", default=DEFAULT_EXPERIMENT_NAME)
     parser.add_argument(
         "--ragas-metrics",
         default="faithfulness,answer_relevancy",
-        help="Comma-separated Ragas metrics to attach, or 'none' for deterministic-only.",
+        help="Comma-separated Ragas metrics to attach, or 'none' to skip answer-quality judging; Phoenix retrieval judging still runs.",
     )
     parser.add_argument(
         "--concurrency",
@@ -41,8 +49,25 @@ def main(argv: list[str] | None = None) -> None:
         default=phoenix_eval.DEFAULT_PHOENIX_CONCURRENCY,
         help="Maximum concurrent Phoenix experiment tasks.",
     )
+    parser.add_argument("--retrieval-k", type=phoenix_eval.positive_int,
+                        default=phoenix_eval.DEFAULT_RETRIEVAL_METRIC_K,
+                        help="Maximum ranked chunks judged by Phoenix; also the ID-recall cutoff.")
     args = parser.parse_args(argv)
+    validate_dataset_input_arguments(parser, args, evidence=True)
 
+    snapshot = load_snapshot(args.snapshot)
+    source = None
+    if has_phoenix_input(args):
+        phoenix_eval._load_project_env(args.workspace_root)
+        source = phoenix_eval._run_async(load_phoenix_input(args, phoenix_eval._build_settings(args.workspace_root), snapshot=snapshot))
+        benchmark = source.benchmark
+        assert benchmark is not None
+    else:
+        benchmark = assemble_benchmark(phoenix_eval.load_questions(args.questions_path or phoenix_eval.DEFAULT_QUESTIONS_PATH),
+                                       read_jsonl(args.annotations), snapshot)
+    examples = benchmark["examples"]
+    if not examples:
+        parser.error("Evidence evaluation requires at least one question.")
     phoenix_eval._load_project_env(args.workspace_root)
     settings = phoenix_eval._build_settings(args.workspace_root)
     _configure_observability(settings)
@@ -51,7 +76,6 @@ def main(argv: list[str] | None = None) -> None:
         _assert_phoenix_reachable(settings.phoenix_client_endpoint)
         phoenix_eval._configure_tracing(settings, enabled=True)
 
-        examples = phoenix_eval.load_questions(args.questions_path)
         metric_names = phoenix_eval.parse_phoenix_ragas_metrics(args.ragas_metrics)
         phoenix_eval.run_phoenix_experiment(
             examples=examples,
@@ -60,6 +84,9 @@ def main(argv: list[str] | None = None) -> None:
             experiment_name=args.experiment_name,
             ragas_metric_names=metric_names,
             concurrency=args.concurrency,
+            retrieval_k=args.retrieval_k,
+            evidence_snapshot=snapshot,
+            **({"phoenix_input": source} if source else {}),
         )
         _log_completion(started_at, example_count=len(examples), ragas_metrics=",".join(metric_names))
     except (Exception, SystemExit) as exc:

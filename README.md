@@ -37,7 +37,7 @@ Core code lives in `src/imperial_rag/`:
 - `indexing/`: Qdrant vector indexing helpers and stable chunk identifiers.
 - `retrieval/`: Elasticsearch keyword search, vector/keyword fusion, and reranking.
 - `answering/`: query runtime, LangGraph workflows, and strict answer formatting.
-- `integrations/`: DashScope/Qwen provider adapters and legacy provider escape hatches.
+- `integrations/`: DashScope/Qwen provider adapters.
 - `observability/`: structured logs, event logs, Phoenix tracing, and privacy controls.
 - `app/`: Streamlit UI/auth, the Render Telegram adapter, the Russian job API/worker, and local chat history.
 
@@ -65,7 +65,7 @@ Create local configuration:
 cp .env.example .env
 ```
 
-Fill in `DASHSCOPE_API_KEY` and the Streamlit credentials. Telegram additionally needs the six variables
+Fill in `DASHSCOPE_API_KEY` and the Streamlit credentials. Telegram additionally needs the environment variables
 listed under [Render Telegram deployment](#render-telegram-deployment). The allowlist is a comma-separated
 set of trusted numeric Telegram user IDs. Both HTTP boundaries reject groups and users outside that list.
 
@@ -206,10 +206,32 @@ and the secret-token header. For each private message, Render first sends only t
 username, and any explicitly shared contact to the authenticated Russian access endpoint. Question text is
 submitted only after authorization succeeds. A matching username binds automatically; a phone grant binds
 only when Telegram marks the shared contact as belonging to the sender. Accepted questions are idempotently
-stored in Russia before Render returns `200`. The Russian worker processes jobs sequentially; Render leases
-completed responses every two seconds and acknowledges delivery after Telegram accepts all message chunks.
-Expired processing and delivery leases recover after restarts. Delivery is at least once, so a reply can
-rarely be duplicated if Telegram accepts it but the completion acknowledgement fails.
+stored in Russia before Render returns `200`. The Russian worker processes jobs sequentially and saves each
+completed answer before a separate backend delivery task claims it. That task calls Render's authenticated
+`POST /internal/telegram/deliver` with `{update_id, user_id, messages}`. Render validates the entire batch,
+sends chunks sequentially, and returns `200` with `{update_id, status: "delivered"}` only after Telegram
+accepts every chunk. The backend then marks the matching delivery attempt delivered. Render does not poll.
+
+Set `IMPERIAL_RAG_TELEGRAM_RENDER_URL` on the Russian backend to the Render HTTPS origin (no path,
+query, fragment, or embedded credentials). The existing service token authenticates both directions.
+The backend delivery task checks its local queue once per second when idle. SQLite adds
+`delivery_attempts` and `next_delivery_at` with a repeatable, additive migration preserving existing jobs.
+Transient failures retry after 5, 10, 20 seconds, doubling to a five-minute cap; a larger Telegram
+`retry_after` takes precedence. Non-transient failures remain queued with a 15-minute retry delay and
+sanitized logs. Due jobs proceed while other jobs wait. Retry timing and expired lease recovery survive
+restarts; stale attempts cannot acknowledge or reschedule newer claims.
+
+Each Telegram call has a 15-second deadline. For N chunks, Render's total deadline is 20N seconds,
+the backend deadline is 20N + 15, and the delivery lease is 20N + 45. Delivery batches have a 1 MiB
+JSON body limit, separate from the existing 16 KiB webhook/job limit. Oversized or invalid batches
+remain queued for operator correction. Delivery is at least once: retries resend the whole answer,
+so partial sends or lost success confirmations can duplicate chunks. Render stores no delivery state.
+
+For deployment, coordinate any live automatic deployment settings to enforce this order. Fully replace Render first and ensure all old polling processes have stopped, then
+configure and activate the new backend. Completed answers remain queued during the gap. Do not run
+old Render pollers alongside backend push. For rollback, stop backend push before restoring the old
+backend and Render poller; retain the queue database and additive columns. The backend's former
+HTTP delivery claim/completion routes are removed. Incoming webhooks and access/job routes remain.
 
 Render also registers the private-chat command menu in Russian. `/start` welcomes the user, `/help` lists
 the available commands, and `/new` creates a fresh conversation on the Russian backend without querying the
@@ -293,7 +315,7 @@ uv run python scripts/promote_ingestion.py migration-v1 --workspace-root /Users/
 uv run python scripts/query.py "question text"
 
 # Run all configured evals
-uv run python scripts/run_all_evals.py
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
 ```
 
 ## Services And State
@@ -313,7 +335,7 @@ uv run python scripts/run_all_evals.py
 | `.imperial_rag/active-ingestion.json` | local file | Atomically replaced pointer to the promoted artifacts and search aliases |
 | `.imperial_rag/auth.sqlite3` | local file | Streamlit users, browser sessions, and Telegram access grants |
 | `.imperial_rag/chat_history.sqlite3` | local file | Local chat history |
-| `telegram_jobs` | table in chat-history SQLite | Durable Telegram job, result, attempt, and lease state |
+| `telegram_jobs` | table in chat-history SQLite | Durable jobs, results, processing/delivery attempts, leases, and retry due times |
 | `telegram_access_grants` | table in auth SQLite | Username/phone grants, masked labels, and bound Telegram IDs |
 
 Use the live files, database tables, and service health checks as source of truth for generated state. Snapshot counts in documentation drift quickly after corpus rebuilds.
@@ -326,13 +348,14 @@ Important settings are documented in `.env.example`.
 
 | Variable | Notes |
 | --- | --- |
-| `DASHSCOPE_API_KEY` | Required for Qwen chat, embeddings, OCR, reranking, and Ragas model-backed metrics |
+| `DASHSCOPE_API_KEY` | Required for Qwen chat, embeddings, OCR, reranking, and Phoenix/Ragas model-backed metrics |
 | `IMPERIAL_RAG_WORKSPACE_ROOT` | Workspace root; defaults to this checkout in host runs and `/app` in Compose |
 | `TELEGRAM_BOT_TOKEN` | Required Telegram Bot API token; keep only in local/server environment configuration |
 | `IMPERIAL_RAG_TELEGRAM_ALLOWED_USER_IDS` | Optional comma-separated bootstrap allowlist of trusted numeric Telegram user IDs |
 | `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET` | Required Russia-only HMAC secret for phone-number grants |
 | `TELEGRAM_WEBHOOK_URL` / `TELEGRAM_WEBHOOK_SECRET` | Exact Render webhook URL and strong Telegram secret-token value |
 | `IMPERIAL_RAG_TELEGRAM_BACKEND_URL` / `IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN` | Russian HTTPS origin and shared bearer secret |
+| `IMPERIAL_RAG_TELEGRAM_RENDER_URL` | Required on the Russian backend: Render HTTPS origin for answer delivery |
 | `IMPERIAL_RAG_ADMIN_EMAIL` / `IMPERIAL_RAG_ADMIN_PASSWORD` | Streamlit admin access |
 | `ELASTICSEARCH_URL` / `ELASTICSEARCH_INDEX` | Keyword search endpoint and index |
 | `QDRANT_URL` / `QDRANT_COLLECTION` | Optional vector search endpoint and collection |
@@ -344,7 +367,7 @@ Important settings are documented in `.env.example`.
 | `IMPERIAL_RAG_EVENTLOG_*` | Optional local Elasticsearch event-log settings |
 | `IMPERIAL_RAG_CHUNK_*`, `IMPERIAL_RAG_VECTOR_*`, `IMPERIAL_RAG_KEYWORD_LIMIT`, `IMPERIAL_RAG_RERANK_*` | Retrieval, chunking, and reranking tuning |
 
-Legacy OpenAI, Azure OpenAI, and Cohere keys are compatibility escape hatches only. They must be enabled explicitly with `IMPERIAL_RAG_ALLOW_LEGACY_OPENAI` or `IMPERIAL_RAG_ALLOW_LEGACY_COHERE`.
+The default runtime uses DashScope/Qwen. Direct `build_query_workflow` callers must supply `chat_model` or `generate` to generate an answer; empty evidence still returns a refusal without a model.
 
 ## Tracing And Logs
 
@@ -392,11 +415,32 @@ Allowed event fields are operational metadata such as timings, counts, statuses,
 
 Gold questions live in `evals/questions.jsonl`.
 
-Run the full configured eval suite:
+Run the full configured eval suite with a frozen snapshot and reviewed evidence annotations:
 
 ```bash
-uv run python scripts/run_all_evals.py
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
 ```
+
+Both evidence inputs are required; corrected questions alone do not enable a run.
+See [the evidence evaluation guide](docs/evidence-evaluation.md) to prepare them.
+This runner scores source evidence at k=1/3/5/10 and budgets 1000/2000/4000, using
+ranked retrieval before answer packing. ID-based checks appear as `legacy_*` diagnostics.
+Phoenix mode judges each of the first `--retrieval-k` ranked chunks with Phoenix's
+`DocumentRelevanceEvaluator` and the configured Qwen model (default cutoff: 5).
+The experiment output's `retrieval_evaluation` contains status and trace/span IDs.
+Open the `evaluation.retrieval_relevance` span to inspect document labels,
+explanations and Phoenix-native nDCG, MRR, precision and hit rate. No ranking
+arithmetic is implemented locally, and MAP is no longer emitted. These scores
+are not comparable to historical complete-evidence ranking scores.
+Full evidence evaluation still validates the active corpus against the frozen
+snapshot and reports evidence recall/completeness separately; local chunk
+comparisons retain only those diagnostics. See the
+[metric and trace contract](docs/evidence-evaluation.md#phoenix-llm-retrieval-ranking).
+The separate `chunk_recall` evaluator and its chunk hit/precision metrics are removed;
+`id_recall` and optional Ragas `id_context_recall` remain available.
+Invalid source mappings or degraded retrieval fail the run; existing indexes may need
+rebuilding to carry valid `source_spans`. `--ragas-metrics none` disables Ragas judges,
+but Phoenix retrieval judging and the query answer model still run when applicable.
 
 Run deterministic citation/refusal/source-hint checks:
 
@@ -404,7 +448,7 @@ Run deterministic citation/refusal/source-hint checks:
 uv run python scripts/run_phoenix_eval.py
 ```
 
-Store a deterministic-only Phoenix experiment:
+Store a Phoenix experiment with retrieval judging and no Ragas answer judges:
 
 ```bash
 uv run python scripts/run_phoenix_eval.py --use-phoenix --ragas-metrics none
@@ -417,6 +461,148 @@ uv run python scripts/run_ragas_eval.py
 ```
 
 Ragas metrics need the dev dependencies and model credentials configured in `.env`.
+
+### Chunk-independent evidence comparison
+
+`scripts/compare_chunking.py` compares isolated indexes against one frozen extraction
+snapshot and reviewed source-span annotations. The existing gold questions and ID
+metrics are unchanged. See [the evidence evaluation guide](docs/evidence-evaluation.md)
+for the annotation contract, metrics, and provider boundaries.
+
+```bash
+uv run python scripts/compare_chunking.py freeze --output .imperial_rag/evidence-eval/snapshot.json
+uv run python scripts/generate_eval_evidence_packets.py --snapshot .imperial_rag/evidence-eval/snapshot.json --output-path .imperial_rag/evidence-eval/annotations.jsonl
+# Review annotations against the snapshot before validation or running providers.
+uv run python scripts/compare_chunking.py validate --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl
+uv run python scripts/compare_chunking.py run --snapshot .imperial_rag/evidence-eval/snapshot.json --annotations .imperial_rag/evidence-eval/annotations.jsonl --output .imperial_rag/evidence-eval/runs/first
+uv run python scripts/compare_chunking.py answers --run .imperial_rag/evidence-eval/runs/first
+uv run python scripts/compare_chunking.py phoenix --run .imperial_rag/evidence-eval/runs/first
+```
+
+`freeze` and annotation preparation are local. `run` calls embedding/query/reranking
+providers and writes fresh shadow indexes; `answers` separately calls the answer
+model. `phoenix` publishes saved results without repeating retrieval. No command
+promotes indexes or changes active aliases. Keep every generated artifact private
+under `.imperial_rag/`; use a new output directory for each run.
+
+Application context packing is opt-in with `IMPERIAL_RAG_CONTEXT_TOKEN_BUDGET`.
+It counts the rendered evidence using the fixed `cl100k_base` proxy tokenizer,
+including source labels and separators; these are not exact Qwen billing tokens.
+Unset the variable to retain existing application behavior.
+
+### Phoenix datasets as experiment input
+
+Maintain questions, reference answers and reviewed evidence in an **existing**
+Phoenix dataset instead of local questions/annotation JSONL. `snapshot.json` stays
+local and frozen: it is still the source for rechunking and exact evidence-span
+validation. No dataset is created, uploaded, overwritten or marked reviewed when
+Phoenix is the input source.
+
+All four eval entrypoints accept `--phoenix-dataset-name NAME` or
+`--phoenix-dataset-id ID`, plus optional `--phoenix-dataset-version-id VERSION_ID`.
+Omitting the version resolves latest once per command; the returned immutable
+version is retained for every configuration. Use an explicit version to bind
+separate validation and execution commands to the same reviewed dataset.
+`--dataset-name` retains its existing **upload destination** meaning and conflicts
+with Phoenix input. Explicit local questions, local annotations, and a second
+Phoenix selector also conflict; a version flag requires a Phoenix selector.
+Without a Phoenix selector, existing local defaults and commands above still work.
+
+Each Phoenix example uses these objects (the Phoenix example ID is separate from
+the stable Imperial question ID in metadata):
+
+| Object | Fields |
+| --- | --- |
+| `input` | `question`: nonempty string |
+| `output` | `reference_answer`, `expected_behavior`, `lane`; optional `expected_source_hints`, `reference_context_ids`, `quarantine_reason`, `evidence` |
+| `metadata` | `id`, `suite`; optional string-list `tags`; evidence runs also require `split`, `review_status`, `question_hash`, `snapshot_hash` |
+
+The existing question contract applies: `expected_behavior` is `cite_answer`,
+`surface_conflict` or `refuse_if_not_found`, and `lane` must match that behavior.
+For compatibility, `lane` and `quarantine_reason` may also live in metadata;
+duplicate values must agree. Optional fields remain absent when omitted.
+`expected_source_hints` and legacy `reference_context_ids` are lists of strings.
+Question IDs must be unique, nonempty strings; suite and reference answer are required.
+
+Evidence has the existing shape:
+
+```text
+evidence: [
+  {evidence_id: "claim-1", support_sets: [
+    [{source_id, text_sha256, start, end, quote}],
+    [{source_id, text_sha256, start, end, quote}]
+  ]}
+]
+```
+
+Each support set requires all its spans; any complete support set supports the
+unit. Offsets are Python Unicode character indices with exclusive ends. Exact
+source identity, text hash, bounds and quote must match the frozen snapshot.
+Answerable questions require evidence, conflict questions need at least two units,
+and refusals require an explicit empty evidence list. `split` is `dev` or `test`;
+`review_status` must explicitly be `reviewed`. The importer never fills in review
+approval or repairs hashes. All rows are validated before selecting a comparison split.
+
+`question_hash` is `imperial_rag.ingestion.provenance.digest(mapped_question)`:
+combine `input.question`, the listed question fields from output (excluding
+`evidence`), and `metadata.id/suite/tags/lane/quarantine_reason` when present.
+Review fields and Phoenix example IDs are excluded. Do not insert absent optional
+fields before hashing. `snapshot_hash` is the verified snapshot's `snapshot_hash`.
+After editing a question or its reference fields, re-review its evidence and
+update the hash in Phoenix. This read-only helper prints current question hashes;
+it does not approve annotations:
+
+```bash
+uv run python - <<'PY'
+import asyncio
+from phoenix.client import AsyncClient
+from imperial_rag.config import Settings
+from imperial_rag.env import load_project_env
+from imperial_rag.evals.dataset_input import map_phoenix_examples
+from imperial_rag.ingestion.provenance import digest
+async def main():
+    load_project_env()
+    dataset = await AsyncClient(base_url=Settings().phoenix_client_endpoint).datasets.get_dataset(dataset="imperial-reviewed-questions")
+    print("dataset_id=", dataset.id, "version_id=", dataset.version_id)
+    for question in map_phoenix_examples(dataset)[0]:
+        print(question["id"], digest(question))
+asyncio.run(main())
+PY
+```
+
+Basic evaluation accepts datasets without evidence annotations. It uses the
+question/reference contract; source-evidence validation and metrics belong to
+`run_all_evals.py` and `compare_chunking.py validate/run`:
+
+```bash
+# Basic evaluation; --use-phoenix stores an experiment on the original dataset.
+uv run python scripts/run_phoenix_eval.py --phoenix-dataset-name imperial-reviewed-questions --use-phoenix --ragas-metrics none
+uv run python scripts/run_ragas_eval.py --phoenix-dataset-name imperial-reviewed-questions --output-path .imperial_rag/ragas-phoenix.jsonl
+
+# Use the dataset/version IDs reported by the helper or shown in Phoenix.
+PHOENIX_INPUT_ID='replace-with-dataset-id'
+PHOENIX_INPUT_VERSION='replace-with-version-id'
+uv run python scripts/compare_chunking.py validate --snapshot .imperial_rag/evidence-eval/snapshot.json --phoenix-dataset-id "$PHOENIX_INPUT_ID" --phoenix-dataset-version-id "$PHOENIX_INPUT_VERSION"
+uv run python scripts/run_all_evals.py --snapshot .imperial_rag/evidence-eval/snapshot.json --phoenix-dataset-id "$PHOENIX_INPUT_ID" --phoenix-dataset-version-id "$PHOENIX_INPUT_VERSION" --ragas-metrics none
+uv run python scripts/compare_chunking.py run --snapshot .imperial_rag/evidence-eval/snapshot.json --phoenix-dataset-id "$PHOENIX_INPUT_ID" --phoenix-dataset-version-id "$PHOENIX_INPUT_VERSION" --configs 400:50,256:0 --output .imperial_rag/evidence-eval/runs/phoenix-first
+uv run python scripts/compare_chunking.py answers --run .imperial_rag/evidence-eval/runs/phoenix-first
+uv run python scripts/compare_chunking.py phoenix --run .imperial_rag/evidence-eval/runs/phoenix-first
+```
+
+Phoenix-backed `validate` only reads Phoenix and the local snapshot. Other eval/run
+commands retain their provider requirements: disabling Ragas judges does not
+disable answer generation or retrieval providers. Comparison indexes remain
+isolated; active indexes and aliases are unchanged.
+
+The `phoenix_dataset` binding records endpoint, dataset ID/name, version ID and an
+example-content hash in comparison benchmarks/manifests/results, answer artifacts,
+Ragas records and Phoenix experiment metadata; CLI output also reports the binding.
+Comparison `answers` uses saved retrieval and retains the binding without reading
+latest. `phoenix` fetches the recorded version, verifies its content and endpoint,
+and replays the selected split on the original dataset with original example IDs.
+Deletion/unavailability or a mismatch fails publication rather than re-uploading.
+Local-file comparison publication retains its existing upload-once/pinned replay.
+All snapshots, bindings and outputs remain private under `.imperial_rag/`.
 
 ## Testing
 
@@ -466,11 +652,14 @@ If vector search is unavailable, start Qdrant and rerun ingestion with `--index-
 If model-backed chat, OCR, embeddings, reranking, or Ragas metrics fail, confirm `DASHSCOPE_API_KEY` is present in `.env` or the process environment.
 
 If the Telegram backend is unhealthy, confirm `IMPERIAL_RAG_TELEGRAM_PHONE_HASH_SECRET` and
-`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, and ensure the optional numeric allowlist contains only integers.
+`IMPERIAL_RAG_TELEGRAM_SERVICE_TOKEN`, the Render origin `IMPERIAL_RAG_TELEGRAM_RENDER_URL`, and ensure the optional numeric allowlist contains only integers.
 Then inspect `docker compose logs --tail=200 telegram-api`. An authenticated `200` from local port `8502`
 proves that the API and worker initialized; it does not prove that Qwen, Elasticsearch, or Qdrant will
 answer a new question. On Render, verify `/healthz` and Telegram `getWebhookInfo`, including the exact URL
-and an empty `last_error_message`.
+and an empty `last_error_message`. If completed answers are not arriving, inspect `telegram_delivery`
+logs on the backend and Render: status, attempt, and retry delay contain no answer text. Check queue
+counts by status and `next_delivery_at` without printing questions or results. `/healthz` proves
+initialization, not end-to-end Telegram acceptance.
 
 If Phoenix validation fails, start Phoenix, run a fresh traced query with a stable `IMPERIAL_RAG_TRACE_RUN_ID`, then validate that run ID.
 

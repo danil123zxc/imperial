@@ -20,13 +20,6 @@ def env_str(name: str, default: str, *, strip: bool = True) -> str:
     return raw.strip() if strip else raw
 
 
-def env_optional_str(name: str, *, strip: bool = True) -> str | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return raw.strip() if strip else raw
-
-
 def env_int(name: str, default: int, *, minimum: int | None = None, invalid: str = "raise") -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -41,13 +34,6 @@ def env_int(name: str, default: int, *, minimum: int | None = None, invalid: str
     if minimum is not None:
         return max(value, minimum)
     return value
-
-
-def env_optional_int(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return int(raw)
 
 
 def env_float(name: str, default: float, *, invalid: str = "raise") -> float:
@@ -69,15 +55,13 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().casefold() in TRUE_ENV_VALUES
 
 
-def env_optional_bool(name: str) -> bool | None:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return None
-    return raw.strip().casefold() in TRUE_ENV_VALUES
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(populate_by_name=True, frozen=True, extra="ignore")
+
+    context_token_budget: int | None = Field(
+        None, gt=0,
+        validation_alias=AliasChoices("IMPERIAL_RAG_CONTEXT_TOKEN_BUDGET", "context_token_budget"),
+    )
 
     workspace_root: Path = Field(
         DEFAULT_WORKSPACE_ROOT,

@@ -13,7 +13,7 @@ from imperial_rag.ingestion.manifest import (
     scan_files,
     stable_file_id,
 )
-from imperial_rag.ingestion.ocr import LegacyOpenAIOcrClient, OcrCache, OcrResult, QwenOcrClient
+from imperial_rag.ingestion.ocr import OcrCache, OcrResult, QwenOcrClient
 from imperial_rag.ingestion.pipeline import IngestionSummary, ingest_corpus, run_ingestion
 from imperial_rag.ingestion.workflow import IngestionState, build_ingestion_workflow
 
@@ -24,7 +24,6 @@ __all__ = [
     "IndexStatus",
     "IngestionSummary",
     "IngestionState",
-    "LegacyOpenAIOcrClient",
     "ManifestStore",
     "OcrCache",
     "OcrResult",

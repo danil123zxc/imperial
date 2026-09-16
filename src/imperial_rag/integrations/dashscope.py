@@ -91,14 +91,6 @@ class QwenProviderSettings(BaseSettings):
         DEFAULT_QWEN_RERANK_MODEL,
         validation_alias=AliasChoices("IMPERIAL_RAG_QWEN_RERANK_MODEL", "rerank_model"),
     )
-    allow_legacy_openai: bool = Field(
-        False,
-        validation_alias=AliasChoices("IMPERIAL_RAG_ALLOW_LEGACY_OPENAI", "allow_legacy_openai"),
-    )
-    allow_legacy_cohere: bool = Field(
-        False,
-        validation_alias=AliasChoices("IMPERIAL_RAG_ALLOW_LEGACY_COHERE", "allow_legacy_cohere"),
-    )
 
     @classmethod
     def from_env(cls) -> "QwenProviderSettings":
@@ -111,7 +103,7 @@ class QwenProviderSettings(BaseSettings):
             raise PydanticUseDefault()
         return value
 
-    @field_validator("allow_legacy_openai", "allow_legacy_cohere", "ocr_enable_rotate", mode="before")
+    @field_validator("ocr_enable_rotate", mode="before")
     @classmethod
     def _coerce_bool_env(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -227,7 +219,7 @@ def create_chat_model(settings: QwenProviderSettings | None = None) -> Any:
     resolved = settings or QwenProviderSettings.from_env()
     api_key = resolved.require_api_key()
     chat_cls = _import_chat_qwen()
-    return chat_cls(model=resolved.chat_model, temperature=0, api_key=cast(Any, api_key), base_url=resolved.compat_base_url)
+    return chat_cls(model=resolved.chat_model, temperature=0, enable_thinking=False, api_key=cast(Any, api_key), base_url=resolved.compat_base_url)
 
 
 def create_reranker(top_n: int, settings: QwenProviderSettings | None = None) -> Any:

@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_phoenix_retrieval_judge")
+
 from imperial_rag.serialization import stable_json_dumps
 
 
@@ -389,27 +391,10 @@ def test_eval_runner_includes_retrieval_diagnostics_in_outputs():
     assert output["retrieval"] == diagnostics
 
 
-def test_retrieval_relevance_metrics_use_source_hints_and_rank_order():
+def test_custom_ranking_evaluators_are_removed():
     module = _load_eval_runner()
-
-    metrics = module.retrieval_relevance_metrics(
-        {"question": "Как оформить возврат брака?"},
-        {
-            "documents": [
-                {"page_content": "Нерелевантный текст.", "metadata": {"relative_path": "documents/other.docx"}},
-                {"page_content": "Регламент описывает возврат брака из магазина.", "metadata": {}},
-            ]
-        },
-        {"expected_source_hints": ["возврат брака"]},
-        k=2,
-    )
-
-    assert metrics["score"] == 0.5
-    assert metrics["label"] == "hit"
-    assert metrics["metadata"]["document_scores"] == [0.0, 1.0]
-    assert metrics["metadata"]["hit_at_2"] is True
-    assert metrics["metadata"]["precision_at_2"] == 0.5
-    assert metrics["metadata"]["ndcg_at_2"] == pytest.approx(0.6309297536)
+    assert "retrieval_relevance" not in module._phoenix_evaluators([])
+    assert not hasattr(module, "retrieval_relevance_metrics")
 
 
 def test_id_retrieval_metrics_use_gold_context_ids_and_rank_order():
@@ -432,10 +417,7 @@ def test_id_retrieval_metrics_use_gold_context_ids_and_rank_order():
     assert metrics["label"] == "hit"
     assert metrics["metadata"]["id_document_scores"] == [0.0, 1.0, 0.0]
     assert metrics["metadata"]["id_hit_at_3"] is True
-    assert metrics["metadata"]["id_precision_at_3"] == pytest.approx(1 / 3)
     assert metrics["metadata"]["id_recall_at_3"] == 0.5
-    assert metrics["metadata"]["id_mrr_at_3"] == 0.5
-    assert metrics["metadata"]["id_ndcg_at_3"] == pytest.approx(0.3868528072)
     assert metrics["metadata"]["retrieved_context_ids"] == ["wrong-file", "file-a", "file-b"]
     assert metrics["metadata"]["reference_context_ids"] == ["file-a", "file-c"]
 
@@ -446,62 +428,6 @@ def test_id_retrieval_metrics_skip_without_gold_context_ids():
     metrics = module.id_retrieval_metrics(
         {"question": "Как оформить возврат брака?"},
         {"documents": [{"metadata": {"file_id": "file-a"}}]},
-        {"expected_behavior": "cite_answer"},
-    )
-
-    assert metrics["score"] is None
-    assert metrics["label"] == "skipped"
-    assert metrics["metadata"]["reason"] == "missing_reference_context_ids"
-
-
-def test_chunk_recall_metrics_use_chunk_ids_not_file_ids():
-    module = _load_eval_runner()
-
-    metrics = module.chunk_recall_metrics(
-        {"question": "Как оформить возврат брака?"},
-        {
-            "documents": [
-                {"page_content": "Same file, wrong level.", "metadata": {"file_id": "file-a"}},
-                {"page_content": "Wrong chunk.", "metadata": {"file_id": "file-a", "chunk_id": "chunk-x"}},
-                {"page_content": "Gold chunk.", "metadata": {"file_id": "file-b", "chunk_id": "chunk-b"}},
-            ]
-        },
-        {"reference_context_ids": ["chunk-a", "chunk-b"]},
-    )
-
-    assert metrics["score"] == 0.5
-    assert metrics["label"] == "hit"
-    assert metrics["metadata"]["k"] == 10
-    assert metrics["metadata"]["chunk_hit_at_10"] is True
-    assert metrics["metadata"]["chunk_recall_at_10"] == 0.5
-    assert metrics["metadata"]["chunk_precision_at_10"] == 0.1
-    assert metrics["metadata"]["retrieved_chunk_ids"] == ["chunk-x", "chunk-b"]
-    assert metrics["metadata"]["reference_context_ids"] == ["chunk-a", "chunk-b"]
-    assert metrics["metadata"]["matched_context_ids"] == ["chunk-b"]
-
-
-def test_chunk_recall_metrics_miss_when_only_file_id_matches():
-    module = _load_eval_runner()
-
-    metrics = module.chunk_recall_metrics(
-        {"question": "Как оформить возврат брака?"},
-        {"documents": [{"page_content": "Right file only.", "metadata": {"file_id": "gold-file"}}]},
-        {"reference_context_ids": ["gold-file"]},
-    )
-
-    assert metrics["score"] == 0.0
-    assert metrics["label"] == "miss"
-    assert metrics["metadata"]["chunk_hit_at_10"] is False
-    assert metrics["metadata"]["retrieved_chunk_ids"] == []
-    assert metrics["metadata"]["matched_context_ids"] == []
-
-
-def test_chunk_recall_metrics_skip_without_gold_context_ids():
-    module = _load_eval_runner()
-
-    metrics = module.chunk_recall_metrics(
-        {"question": "Как оформить возврат брака?"},
-        {"documents": [{"metadata": {"chunk_id": "chunk-a"}}]},
         {"expected_behavior": "cite_answer"},
     )
 
@@ -612,19 +538,8 @@ def test_run_local_eval_includes_retrieval_quality_metrics():
             "source_hint_behavior": True,
             "citation_grounding_behavior": True,
             "conflict_behavior": None,
-            "retrieval_hit_at_5": True,
-            "retrieval_precision_at_5": 0.2,
-            "retrieval_ndcg_at_5": 1.0,
             "id_hit_at_5": False,
-            "id_precision_at_5": 0.0,
             "id_recall_at_5": 0.0,
-            "id_mrr_at_5": 0.0,
-            "id_ndcg_at_5": 0.0,
-            "chunk_hit_at_10": True,
-            "chunk_recall_at_10": 1.0,
-            "chunk_precision_at_10": 0.1,
-            "retrieved_chunk_ids": ["chunk-a"],
-            "matched_context_ids": ["chunk-a"],
         }
     ]
 
@@ -663,10 +578,8 @@ def test_run_local_eval_uses_configurable_retrieval_k():
         retrieval_k=10,
     )
 
-    assert rows[0]["retrieval_hit_at_10"] is True
-    assert rows[0]["retrieval_precision_at_10"] == 0.1
     assert rows[0]["id_recall_at_10"] == 0.0
-    assert rows[0]["chunk_recall_at_10"] == 1.0
+    assert not any(key.startswith("chunk_") for key in rows[0])
     assert "retrieval_hit_at_5" not in rows[0]
     assert "id_recall_at_5" not in rows[0]
 
@@ -728,19 +641,8 @@ def test_build_eval_artifact_row_includes_verdicts_ragas_scores_and_failure_clas
             "source_hint_behavior": True,
             "citation_grounding_behavior": False,
             "conflict_behavior": None,
-            "retrieval_hit_at_5": True,
-            "retrieval_precision_at_5": 0.2,
-            "retrieval_ndcg_at_5": 1.0,
             "id_hit_at_5": False,
-            "id_precision_at_5": 0.0,
             "id_recall_at_5": 0.0,
-            "id_mrr_at_5": 0.0,
-            "id_ndcg_at_5": 0.0,
-            "chunk_hit_at_10": True,
-            "chunk_recall_at_10": 1.0,
-            "chunk_precision_at_10": 0.1,
-            "retrieved_chunk_ids": ["chunk-a"],
-            "matched_context_ids": ["chunk-a"],
         },
         "ragas_scores": {"faithfulness": 0.9, "id_context_recall": 1.0},
         "ragas_explanations": {"faithfulness": "grounded", "id_context_recall": None},
@@ -781,10 +683,8 @@ def test_build_eval_artifact_row_uses_configurable_retrieval_k():
         retrieval_k=10,
     )
 
-    assert artifact["deterministic"]["retrieval_hit_at_10"] is True
-    assert artifact["deterministic"]["retrieval_precision_at_10"] == 0.1
     assert artifact["deterministic"]["id_recall_at_10"] == 0.0
-    assert artifact["deterministic"]["chunk_recall_at_10"] == 1.0
+    assert not any(key.startswith("chunk_") for key in artifact["deterministic"])
     assert "retrieval_hit_at_5" not in artifact["deterministic"]
     assert "id_recall_at_5" not in artifact["deterministic"]
 
@@ -846,13 +746,7 @@ def test_summarize_eval_artifact_rows_reports_pass_rates_by_lane_tag_and_source_
     assert summary["by_tag"]["out_of_corpus"]["pass_rate"] == 1.0
     assert summary["by_source_family"]["logistics"]["pass_rate"] == 0.5
     assert summary["by_source_family"]["unknown"]["pass_rate"] == 1.0
-    assert summary["chunk_recall_at_10"] == {
-        "applicable_rows": 2,
-        "hit_rows": 1,
-        "hit_rate": 0.5,
-        "mean_recall": 0.5,
-        "mean_precision": 0.05,
-    }
+    assert "chunk_recall_at_10" not in summary
 
 
 def test_eval_failure_class_prioritizes_behavior_failures():
@@ -1069,9 +963,7 @@ def test_phoenix_evaluators_use_stable_mapping_names():
         "source_hint_behavior",
         "citation_grounding_behavior",
         "conflict_behavior",
-        "retrieval_relevance",
         "id_retrieval_relevance",
-        "chunk_recall",
         "ragas_faithfulness",
         "ragas_answer_relevancy",
         "ragas_id_context_recall",
@@ -1080,9 +972,7 @@ def test_phoenix_evaluators_use_stable_mapping_names():
     assert evaluators["source_hint_behavior"] is module.phoenix_source_hint_behavior
     assert evaluators["citation_grounding_behavior"] is module.phoenix_citation_grounding_behavior
     assert evaluators["conflict_behavior"] is module.phoenix_conflict_behavior
-    assert evaluators["retrieval_relevance"] is module.phoenix_retrieval_relevance
     assert evaluators["id_retrieval_relevance"] is module.phoenix_id_retrieval_relevance
-    assert evaluators["chunk_recall"] is module.phoenix_chunk_recall
     assert evaluators["ragas_faithfulness"] is module.phoenix_ragas_faithfulness_async
     assert evaluators["ragas_answer_relevancy"] is module.phoenix_ragas_answer_relevancy_async
     assert evaluators["ragas_id_context_recall"] is module.phoenix_id_context_recall_async
@@ -1104,7 +994,6 @@ def test_phoenix_retrieval_evaluators_use_configurable_retrieval_k():
     )
 
     assert result["metadata"]["id_recall_at_10"] == 1.0
-    assert result["metadata"]["id_precision_at_10"] == 0.1
     assert "id_recall_at_5" not in result["metadata"]
 
 
@@ -1171,9 +1060,7 @@ def test_phoenix_experiment_uses_documented_python_dataset_arguments(monkeypatch
         "source_hint_behavior": module.phoenix_source_hint_behavior,
         "citation_grounding_behavior": module.phoenix_citation_grounding_behavior,
         "conflict_behavior": module.phoenix_conflict_behavior,
-        "retrieval_relevance": module.phoenix_retrieval_relevance,
         "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
-        "chunk_recall": module.phoenix_chunk_recall,
         "ragas_faithfulness": module.phoenix_ragas_faithfulness_async,
         "ragas_answer_relevancy": module.phoenix_ragas_answer_relevancy_async,
     }
@@ -1231,95 +1118,23 @@ def test_phoenix_experiment_can_run_id_context_recall_without_reference_answer(m
         "source_hint_behavior": module.phoenix_source_hint_behavior,
         "citation_grounding_behavior": module.phoenix_citation_grounding_behavior,
         "conflict_behavior": module.phoenix_conflict_behavior,
-        "retrieval_relevance": module.phoenix_retrieval_relevance,
         "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
-        "chunk_recall": module.phoenix_chunk_recall,
         "ragas_id_context_recall": module.phoenix_id_context_recall_async,
     }
 
 
-def test_phoenix_annotation_hook_logs_span_and_document_metrics():
+def test_phoenix_annotation_hook_keeps_id_recall_without_code_relevance():
     module = _load_eval_runner()
-    captured: dict[str, Any] = {}
-
-    class FakeSpans:
-        def log_span_annotations(self, **kwargs):
-            captured["span_annotations"] = kwargs
-
-        def log_document_annotations(self, **kwargs):
-            captured["document_annotations"] = kwargs
-
+    captured = {}
+    spans = SimpleNamespace(log_span_annotations=lambda **kw: captured.update(kw),
+                            log_document_annotations=lambda **kw: pytest.fail("CODE relevance is retired"))
     module.log_phoenix_eval_annotations(
-        SimpleNamespace(spans=FakeSpans()),
-        span_id="query-span",
-        retrieval_span_id="retrieval-span",
-        answer_metrics=[
-            {"name": "citation_behavior", "score": 1.0, "label": "pass", "explanation": "citation present"}
-        ],
-        retrieval_metrics={
-            "metadata": {
-                "document_scores": [1.0, 0.0],
-                "precision_at_2": 0.5,
-                "ndcg_at_2": 1.0,
-                "chunk_recall_at_10": 0.5,
-                "chunk_precision_at_10": 0.1,
-            }
-        },
+        SimpleNamespace(spans=spans), retrieval_span_id="retrieval-span",
+        retrieval_metrics={"metadata": {"document_scores": [1.0], "ndcg_at_2": 1.0, "id_recall_at_2": 0.5}},
         sync=True,
     )
-
-    span_annotations = captured["span_annotations"]["span_annotations"]
-    document_annotations = captured["document_annotations"]["document_annotations"]
-
-    assert captured["span_annotations"]["sync"] is True
-    assert span_annotations == [
-        {
-            "name": "citation_behavior",
-            "span_id": "query-span",
-            "annotator_kind": "CODE",
-            "result": {"score": 1.0, "label": "pass", "explanation": "citation present"},
-        },
-        {
-            "name": "precision@2",
-            "span_id": "retrieval-span",
-            "annotator_kind": "CODE",
-            "result": {"score": 0.5},
-        },
-        {
-            "name": "ndcg@2",
-            "span_id": "retrieval-span",
-            "annotator_kind": "CODE",
-            "result": {"score": 1.0},
-        },
-        {
-            "name": "chunk_recall@10",
-            "span_id": "retrieval-span",
-            "annotator_kind": "CODE",
-            "result": {"score": 0.5},
-        },
-        {
-            "name": "chunk_precision@10",
-            "span_id": "retrieval-span",
-            "annotator_kind": "CODE",
-            "result": {"score": 0.1},
-        },
-    ]
-    assert document_annotations == [
-        {
-            "name": "relevance",
-            "span_id": "retrieval-span",
-            "document_position": 0,
-            "annotator_kind": "CODE",
-            "result": {"score": 1.0, "label": "relevant"},
-        },
-        {
-            "name": "relevance",
-            "span_id": "retrieval-span",
-            "document_position": 1,
-            "annotator_kind": "CODE",
-            "result": {"score": 0.0, "label": "not_relevant"},
-        },
-    ]
+    assert captured == {"sync": True, "span_annotations": [{"name": "id_recall@2",
+        "span_id": "retrieval-span", "annotator_kind": "CODE", "result": {"score": 0.5}}]}
 
 
 def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
@@ -1373,9 +1188,7 @@ def test_phoenix_experiment_can_disable_ragas_evaluators(monkeypatch):
         "source_hint_behavior": module.phoenix_source_hint_behavior,
         "citation_grounding_behavior": module.phoenix_citation_grounding_behavior,
         "conflict_behavior": module.phoenix_conflict_behavior,
-        "retrieval_relevance": module.phoenix_retrieval_relevance,
         "id_retrieval_relevance": module.phoenix_id_retrieval_relevance,
-        "chunk_recall": module.phoenix_chunk_recall,
     }
 
 
