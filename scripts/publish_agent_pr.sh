@@ -17,6 +17,26 @@ info() {
   printf '%s\n' "$*"
 }
 
+cleanup_created_pr_worktree() {
+  if [[ "$repo_root" == "$canonical_workspace_root" ]]; then
+    info "Primary worktree retained: $repo_root"
+    return
+  fi
+
+  if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+    printf 'warning: linked worktree is not clean and was retained: %s\n' "$repo_root" >&2
+    return
+  fi
+
+  cd "$canonical_workspace_root"
+  if git worktree remove "$repo_root"; then
+    git worktree prune
+    info "Removed clean linked worktree: $repo_root"
+  else
+    printf 'warning: linked worktree cleanup failed and must be completed manually: %s\n' "$repo_root" >&2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --verifier-approved)
@@ -160,4 +180,5 @@ if [[ -n "$open_pr_number" ]]; then
 else
   pr_url=$(gh pr create --draft --base "$base_branch" --head "$branch" --title "$title" --body "$body")
   info "Created draft PR: $pr_url"
+  cleanup_created_pr_worktree
 fi

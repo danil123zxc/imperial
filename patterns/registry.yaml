@@ -6,7 +6,7 @@ patterns:
     status: active
     level: L2
     cadence: manual
-    trigger: exact-publish-draft-pr-task-marker
+    trigger: code-change-without-local-only-or-do-not-publish-opt-out
     goal: Publish one verified, scoped agent task as a draft pull request.
     allowed_writes:
       - explicitly approved task paths
@@ -25,17 +25,17 @@ patterns:
     budget:
       suggested_daily_cap_tokens: 500000
       expected_runs_per_day: 1
-      early_exit: Stop on dirty scope, stale base, failed checks, verifier rejection, or unsafe paths.
+      early_exit: Stop on opt-out, no diff, dirty scope, stale base, failed checks, verifier rejection, or unsafe paths.
     verifier:
       source_gate: ./scripts/check.sh
       base_diff_gate: git diff --check origin/main...HEAD
       independent_verdict: loop-verifier APPROVE required before publish.
     human_gates:
-      - 'exact Publish: draft-pr marker'
       - protected or high-risk paths
       - changes touching more than 10 files
       - ready-for-review transition
       - merge
+    cleanup: Remove a clean linked worktree without force after creating a new draft PR; retain the primary worktree, branch, PR, and worktrees used to update existing drafts.
 
   - id: daily-triage
     name: Daily Triage
